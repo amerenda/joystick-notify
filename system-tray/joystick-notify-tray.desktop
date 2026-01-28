@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Joystick Notify Tray
+Comment=Tray icon to start/stop joystick-notify
+Exec=/usr/local/bin/joystick-notify-tray
+Icon=input-gaming
+Terminal=false
+Categories=Utility;
+StartupNotify=false

@@ -1,0 +1,5 @@
+# /etc/udev/rules.d/98-monitor-hotplug.rules
+# Trigger on display changes (hotplug/unplug) to enforce desk-primary state.
+# Uses systemd-run to execute the script in the user's session context.
+
+ACTION=="change", SUBSYSTEM=="drm", RUN+="/usr/bin/systemctl --user --machine=alex@.host start force-desk-primary.service"

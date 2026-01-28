@@ -1,0 +1,16 @@
+# ~/.config/systemd/user/joystick-notify-steam-shutdown.service
+[Unit]
+Description=Shutdown Steam when couch-mode ends (fixes stuck gamepad UI scaling)
+
+[Service]
+Type=oneshot
+
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+# Only shutdown Steam when the couch-mode lock is gone (avoid killing Steam on connect).
+# IMPORTANT: Guard against respawning Steam just to shut it down.
+# `steam -shutdown` will launch Steam if it isn't running; we only want to call it when Steam is active.
+ExecStart=/usr/bin/bash -lc 'if [ ! -e /tmp/joystick-owner.lock ]; then if pgrep -x steam >/dev/null 2>&1; then steam -shutdown || pkill -TERM -x steam || true; fi; fi'
+
+

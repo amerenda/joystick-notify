@@ -1,0 +1,117 @@
+# /etc/udev/rules.d/99-joystick-notify.rules
+#
+# Consolidated rules for controller + couch-mode automation.
+# Put everything here so you can remove other overlapping rules files.
+#
+# Goals:
+# - Trigger joystick-notify using a stable device ID (HID_UNIQ / Bluetooth MAC).
+# - Avoid spurious duplicate events during driver bind/unbind churn.
+# - Keep Steam happy by *not* ignoring evdev; only ignore legacy joydev js* (optional).
+
+# -------------------------------------------------------------------
+# 1) Joystick-notify: Bluetooth controllers (preferred)
+#
+# Why HID-based?
+# - Some controllers (notably Xbox) may not set ID_INPUT_JOYSTICK/ID_INPUT_GAMEPAD.
+# - HID exposes HID_UNIQ (Bluetooth MAC), which is stable across event number churn.
+#
+# IMPORTANT:
+# - We intentionally only use ACTION add/remove (not bind/unbind) to reduce noisy flapping.
+# -------------------------------------------------------------------
+
+# connect-ish
+ACTION=="add", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Controller*", RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+ACTION=="add", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Gamepad*",   RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+ACTION=="add", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*8BitDo*",    RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+
+# disconnect-ish
+ACTION=="remove", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Controller*", RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+ACTION=="remove", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Gamepad*",   RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+ACTION=="remove", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*8BitDo*",    RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+
+# -------------------------------------------------------------------
+# 2) Xbox Elite Series 2: hide legacy joydev node (js*)
+#
+# This only ignores /dev/input/js* (legacy joydev) while leaving evdev (/dev/input/event*)
+# available for Steam and other apps.
+# -------------------------------------------------------------------
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="js*", ENV{ID_INPUT_JOYSTICK}=="1", ATTRS{name}=="Xbox Wireless Controller", OPTIONS+="ignore_device"
+
+# -------------------------------------------------------------------
+# 3) 8BitDo USB receiver forcing xpad (legacy rule you had in 99-8bitdo-xinput.rules)
+# -------------------------------------------------------------------
+ACTION=="add", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="3106", RUN+="/sbin/modprobe xpad", RUN+="/bin/sh -c 'echo 2dc8 3106 > /sys/bus/usb/drivers/xpad/new_id'"
+
+# -------------------------------------------------------------------
+# 4) Joystick-notify: USB joysticks/gamepads (e.g. 8BitDo Ultimate wireless Controller for PC)
+#
+# Your 8BitDo dongle exposes evdev only (no /dev/input/js*), so trigger on event*.
+# We log a stable identifier that is available on both add and remove: eventXX (kernel name).
+# -------------------------------------------------------------------
+
+# connect-ish (8BitDo 2dc8:3106)
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_BUS}=="usb", ENV{ID_INPUT_JOYSTICK}=="1", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="3106", RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %k"
+
+# disconnect-ish
+ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="3106", RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %k"
+
+
+# -------------------------------------------------------------------
+# 5) Power + permissions + driver binding rules (Bluetooth adapter + 8BitDo)
+#
+# Consolidated from:
+# - 71-8bitdo-controllers.rules
+# - 98-local-8bitdo.rules
+# - old/99-steam-bazzite-parity.rules
+# -------------------------------------------------------------------
+
+# --- Steam Input parity (Bazzite-style)
+# Ensure Steam can access uinput for virtual devices and has per-seat access to hidraw.
+KERNEL=="uinput", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# --- 8BitDo hidraw access (scoped)
+# We intentionally scope this to the 8BitDo vendor id, instead of granting uaccess to all
+# hidraw devices system-wide.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2dc8", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# Also cover Bluetooth HID (no USB idVendor/idProduct attributes on the hidraw node).
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*2DC8:*", MODE="0660", GROUP="input", TAG+="uaccess"
+
+# --- Bluetooth adapter power-save mitigation (Realtek Bluetooth Controller on ASUS boards)
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0b05", ATTR{idProduct}=="1bf6", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0b05", ATTR{idProduct}=="1bf6", TEST=="power/autosuspend", ATTR{power/autosuspend}="-1"
+
+# --- 8BitDo Ultimate 2 Wireless over Bluetooth (VID/PID 2dc8:6012)
+# Allow Steam/SDL HIDAPI to open hidraw.
+KERNEL=="hidraw*", KERNELS=="*2DC8:6012*", MODE="0660", TAG+="uaccess"
+
+# --- 8BitDo receivers / dongles
+
+# 8BitDo "IDLE" dongle mode (2dc8:3109) — vendor-defined HID; allow HIDAPI access.
+KERNEL=="hidraw*", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="3109", MODE="0660", TAG+="uaccess"
+
+# 8BitDo Ultimate 2 Wireless Controller for PC (2.4GHz receiver) (2dc8:310b)
+# Allow HIDAPI access.
+KERNEL=="hidraw*", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="310b", MODE="0660", TAG+="uaccess"
+
+# Some firmwares enumerate briefly as "Ultimate 2" before switching to 310b.
+KERNEL=="hidraw*", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="6013", MODE="0660", TAG+="uaccess"
+
+# --- 2.4GHz receiver driver mode for 2dc8:310b
+#
+# IMPORTANT:
+# - For **extra buttons / paddles remapping in Steam**, prefer the HIDAPI path.
+# - Forcing `xpad` can make Steam prefer the evdev/xpad device, which often hides the
+#   extra buttons because XInput has a limited standard button set.
+#
+# If `xpad/new_id` was previously set (manually or by an older rule), the kernel will
+# keep binding 2dc8:310b to xpad until it is removed. The rules below actively prevent
+# (or undo) xpad binding so Steam can prefer HIDAPI/hidraw for extra buttons.
+#
+# NOTE: udev variables like %k are expanded by udev before invoking the shell.
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="310b", ATTR{bInterfaceNumber}=="00", TEST=="driver_override", ATTR{driver_override}="none"
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="310b", ATTR{bInterfaceNumber}=="00", RUN+="/bin/sh -c 'echo -n %k > /sys/bus/usb/drivers/xpad/unbind 2>/dev/null || true; echo 2dc8 310b > /sys/bus/usb/drivers/xpad/remove_id 2>/dev/null || true'"
+
+# If you want to force XInput anyway, uncomment the rule below:
+# ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2dc8", ATTR{idProduct}=="310b", RUN+="/sbin/modprobe xpad", RUN+="/bin/sh -c 'echo 2dc8 310b > /sys/bus/usb/drivers/xpad/new_id'"
+

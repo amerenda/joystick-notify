@@ -1,0 +1,13 @@
+# ~/.config/systemd/user/joystick-notify-steam-shutdown.path
+[Unit]
+Description=Watch couch-mode lockfile and shutdown Steam when it disappears
+
+[Path]
+# Triggers on create/modify/delete; the service checks for absence before shutting down Steam.
+PathChanged=/tmp/joystick-owner.lock
+Unit=joystick-notify-steam-shutdown.service
+
+[Install]
+WantedBy=default.target
+
+

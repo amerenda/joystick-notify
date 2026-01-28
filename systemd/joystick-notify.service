@@ -1,0 +1,30 @@
+# ~/.config/systemd/user/joystick-notify.service
+[Unit]
+Description=Notify when joystick is connected
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+After=pipewire.service pipewire-pulse.service wireplumber.service graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+
+# Ensure correct runtime directory (expanded by systemd: %U = UID)
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+# Do NOT set PULSE_SERVER here; let libpulse discover it.
+
+# Wait for audio server to be ready
+ExecStartPre=/usr/bin/bash -lc 'for i in {1..50}; do pactl info &>/dev/null && exit 0; sleep 0.1; done; echo "pactl not ready" >&2; exit 1'
+
+ExecStart=/usr/local/bin/monitor-switcher.sh
+Restart=on-failure
+RestartSec=1
+
+# On exit, revert audio/display and clean lockfile
+# Defaults: DESK_PORT=HDMI-A-2, COUCH_PORT=HDMI-A-1, DESK_MODE=2560x1440@144
+ExecStopPost=/usr/bin/bash -lc 'pactl set-default-sink alsa_output.usb-SteelSeries_Arctis_Nova_7X-00.iec958-stereo || true'
+ExecStopPost=/usr/bin/bash -lc 'kscreen-doctor output.HDMI-A-2.enable output.HDMI-A-2.mode.2560x1440@144 output.HDMI-A-2.position.0,0 output.HDMI-A-1.disable 2>/dev/null || true'
+ExecStopPost=/usr/bin/bash -lc 'rm -f /tmp/joystick-owner.lock || true'
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,10 @@
+# ~/.config/systemd/user/force-desk-primary.service
+[Unit]
+Description=Force desk monitor as primary display
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/force-desk-primary.sh
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
