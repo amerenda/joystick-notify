@@ -253,6 +253,34 @@ tail -f /tmp/joystick-events.log
 
 ## Troubleshooting
 
+### Bluetooth Controller Stability
+
+If your Bluetooth controller (e.g., 8BitDo Ultimate 2) randomly disconnects:
+
+1. **USB 3.0 Interference**: USB 3.0 ports emit RF noise in the 2.4GHz band (same as Bluetooth). Move your Bluetooth dongle to a **USB 2.0 port** or use a USB extension cable to distance it from USB 3.0 devices.
+
+2. **Power Management**: The udev rules include generic Bluetooth adapter power management rules to prevent autosuspend. After installation, reboot to ensure they take effect.
+
+3. **Debug Logging**: Enable `DEBUG_BLUETOOTH=true` in your systemd drop-in to log all controller events to `/tmp/bluetooth-events.log`:
+   ```ini
+   [Service]
+   Environment=DEBUG_BLUETOOTH=true
+   ```
+
+### Game Not Re-detecting Controller After Reconnect
+
+Some games (e.g., Vampire Survivors) don't re-detect the controller after a Bluetooth reconnect because they hold onto the old device handle.
+
+**Workarounds (in order of preference):**
+
+1. **Steam Input Re-initialization**: Press **Guide + B** (or Guide + Start) to open the Steam overlay. This sometimes forces Steam Input to re-enumerate controllers. Close the overlay and check if the game detects the controller.
+
+2. **Toggle Controller Support**: Open the Steam overlay, go to Controller Settings, toggle "Xbox Configuration Support" off and on, then return to the game.
+
+3. **Disable Steam Input for the Game** (last resort): Right-click the game in Steam, then Properties, then Controller, then Disable Steam Input. This makes the game use SDL directly, which may handle hotplug better. Note: You lose Steam button remapping.
+
+### Other Issues
+
 - **TV doesn’t power on or switch input**
   - Confirm `cec-client` works manually (see commands above).
   - Confirm your user can read/write the adapter (commonly `/dev/ttyACM0`). If it is `root:uucp`, ensure your user is in `uucp` and you have re-logged in.

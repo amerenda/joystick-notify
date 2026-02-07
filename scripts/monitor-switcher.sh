@@ -19,6 +19,13 @@ launcher_exists() { [ -x "$LAUNCHER" ]; }
 couch_mode_activate() {
     local dev="${1:-unknown}"
     debug "SWITCHER" "couch_mode_activate: dev=$dev"
+    
+    # Don't activate if manual desk mode is active (unless this IS a manual couch request)
+    if is_manual_desk && [ "$dev" != "manual" ]; then
+        log "couch_mode_activate: blocked by manual desk mode ($dev)"
+        return 0
+    fi
+    
     cancel_pending_timer
     
     if [ -e "$LOCK" ]; then
@@ -70,6 +77,13 @@ couch_mode_activate() {
 couch_mode_teardown() {
     local why="${1:-}"
     local dev="${2:-}"
+    
+    # Don't tear down if manual couch mode is active (unless this IS a manual desk request)
+    if is_manual_couch && [ "$why" != "manual_desk" ]; then
+        log "teardown: blocked by manual couch mode ($why $dev)"
+        return 0
+    fi
+    
     log "teardown: $why ${dev:-}"
     cancel_pending_timer
     cancel_steam_watcher
@@ -147,6 +161,23 @@ while IFS= read -r line; do
             ;;
         steam_exit)
             [ -e "$LOCK" ] && couch_mode_teardown "steam_exit" "$DEV" || log "steam: exit ignored (no lock)"
+            ;;
+        manual_couch)
+            log "manual: couch mode requested"
+            if [ ! -e "$LOCK" ]; then
+                # Not in couch mode - activate it
+                couch_mode_activate "manual"
+            else
+                log "manual: already in couch mode"
+            fi
+            ;;
+        manual_desk)
+            log "manual: desk mode requested"
+            if [ -e "$LOCK" ]; then
+                couch_mode_teardown "manual_desk" "manual"
+            else
+                log "manual: already in desk mode"
+            fi
             ;;
     esac
 done < <(stdbuf -oL -eL tail -F -n 0 "$LOG")

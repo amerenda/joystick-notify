@@ -81,6 +81,19 @@ KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*2DC8:*", MODE="0660", GROUP="
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0b05", ATTR{idProduct}=="1bf6", TEST=="power/control", ATTR{power/control}="on"
 ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0b05", ATTR{idProduct}=="1bf6", TEST=="power/autosuspend", ATTR{power/autosuspend}="-1"
 
+# --- Generic Bluetooth adapter power-save mitigation (for USB dongles)
+# Disable autosuspend on all USB Bluetooth adapters to prevent random disconnects
+# Device Class e0 = Wireless Controller, Subclass 01 = Bluetooth
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bDeviceClass}=="e0", ATTR{bDeviceSubClass}=="01", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bDeviceClass}=="e0", ATTR{bDeviceSubClass}=="01", TEST=="power/autosuspend", ATTR{power/autosuspend}="-1"
+
+# Also catch Bluetooth adapters that identify via interface class
+ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_CLASS}=="wireless", ENV{ID_USB_SUBCLASS}=="01", TEST=="power/control", ATTR{power/control}="on"
+
+# --- 8BitDo Ultimate 2 Bluetooth - keep connection alive
+# Match by Bluetooth HID vendor:product (2DC8:6012) and disable power management
+ACTION=="add", SUBSYSTEM=="hid", KERNELS=="*2DC8:6012*", RUN+="/bin/sh -c 'echo on > /sys$DEVPATH/../../../power/control 2>/dev/null || true'"
+
 # --- 8BitDo Ultimate 2 Wireless over Bluetooth (VID/PID 2dc8:6012)
 # Allow Steam/SDL HIDAPI to open hidraw.
 KERNEL=="hidraw*", KERNELS=="*2DC8:6012*", MODE="0660", TAG+="uaccess"

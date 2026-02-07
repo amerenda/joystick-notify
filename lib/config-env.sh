@@ -4,6 +4,7 @@
 # ===================== CONFIG =====================
 DEBUG_MODE="${DEBUG_MODE:-true}"
 DEBUG_AUDIO="${DEBUG_AUDIO:-true}"
+DEBUG_BLUETOOTH="${DEBUG_BLUETOOTH:-false}"
 DEBUG_DISPLAY="${DEBUG_DISPLAY:-false}"
 DEBUG_CEC="${DEBUG_CEC:-false}"
 DEBUG_PLASMA="${DEBUG_PLASMA:-false}"
@@ -29,7 +30,7 @@ COUCH_ACTIVITY_ID="${COUCH_ACTIVITY_ID:-}"
 # Display outputs
 DESK_PORT="${DESK_PORT:-HDMI-A-2}"
 COUCH_PORT="${COUCH_PORT:-HDMI-A-1}"
-FORCE_DESK_PRIMARY="${FORCE_DESK_PRIMARY:-true}"
+FORCE_DESK_PRIMARY="${FORCE_DESK_PRIMARY:-false}"
 
 # Display modes
 DESK_MODE="${DESK_MODE:-2560x1440@144}"
@@ -50,6 +51,7 @@ export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 LOG=/tmp/joystick-events.log
 EVENTS_LOCK=/tmp/joystick-events.lock
 LOCK=/tmp/joystick-owner.lock
+MANUAL_LOCK=/tmp/joystick-manual.lock
 LAUNCHER="/usr/local/bin/launch-bigpicture.sh"
 WATCHLOG=/tmp/joystick-watcher.log
 JOY_EVENT="/usr/local/bin/joystick-event.sh"
@@ -67,4 +69,16 @@ is_couch_mode() {
 
 is_desk_mode() {
     ! is_couch_mode
+}
+
+is_manual_couch() {
+    [ -f "$MANUAL_LOCK" ] && [ "$(cat "$MANUAL_LOCK" 2>/dev/null)" = "couch" ]
+}
+
+is_manual_desk() {
+    [ -f "$MANUAL_LOCK" ] && [ "$(cat "$MANUAL_LOCK" 2>/dev/null)" = "desk" ]
+}
+
+is_manual_mode() {
+    [ -f "$MANUAL_LOCK" ]
 }
