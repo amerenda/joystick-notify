@@ -46,16 +46,27 @@ export XDG_SESSION_TYPE=wayland
 export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 
-# Paths
-LOG=/tmp/joystick-events.log
-EVENTS_LOCK=/tmp/joystick-events.lock
-LOCK=/tmp/joystick-owner.lock
+# Base directories
+JN_BASE=/tmp/joystick-notify
+JN_LOGS="$JN_BASE/logs"
+JN_LOCKS="$JN_BASE/locks"
+
+# Paths - Logs
+LOG="$JN_LOGS/events.log"
+WATCHLOG="$JN_LOGS/watcher.log"
+BT_DEBUG_LOG="$JN_LOGS/bluetooth-events.log"
+
+# Paths - Locks and state
+EVENTS_LOCK="$JN_LOCKS/events.lock"
+LOCK="$JN_LOCKS/owner.lock"
+MANUAL_LOCK="$JN_LOCKS/manual.lock"
+DESKTOP_STATE="$JN_LOCKS/prev-desktop.$(id -u)"
+ACTIVITY_STATE="$JN_LOCKS/prev-activity.$(id -u)"
+CEC_STATE="$JN_LOCKS/cec-used.$(id -u)"
+
+# Paths - Scripts
 LAUNCHER="/usr/local/bin/launch-bigpicture.sh"
-WATCHLOG=/tmp/joystick-watcher.log
 JOY_EVENT="/usr/local/bin/joystick-event.sh"
-DESKTOP_STATE="/tmp/joystick-prev-desktop.$(id -u)"
-ACTIVITY_STATE="/tmp/joystick-prev-activity.$(id -u)"
-CEC_STATE="/tmp/joystick-cec-used.$(id -u)"
 
 # Helpers
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -67,4 +78,32 @@ is_couch_mode() {
 
 is_desk_mode() {
     ! is_couch_mode
+}
+
+is_manual_couch() {
+    [ -f "$MANUAL_LOCK" ] && [ "$(cat "$MANUAL_LOCK" 2>/dev/null)" = "couch" ]
+}
+
+is_manual_desk() {
+    [ -f "$MANUAL_LOCK" ] && [ "$(cat "$MANUAL_LOCK" 2>/dev/null)" = "desk" ]
+}
+
+is_manual_mode() {
+    [ -f "$MANUAL_LOCK" ]
+}
+
+# Ensure directories exist with proper permissions
+ensure_jn_dirs() {
+    if [ ! -d "$JN_BASE" ]; then
+        mkdir -p "$JN_BASE" 2>/dev/null || true
+        chmod 777 "$JN_BASE" 2>/dev/null || true
+    fi
+    if [ ! -d "$JN_LOGS" ]; then
+        mkdir -p "$JN_LOGS" 2>/dev/null || true
+        chmod 777 "$JN_LOGS" 2>/dev/null || true
+    fi
+    if [ ! -d "$JN_LOCKS" ]; then
+        mkdir -p "$JN_LOCKS" 2>/dev/null || true
+        chmod 777 "$JN_LOCKS" 2>/dev/null || true
+    fi
 }

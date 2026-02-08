@@ -12,6 +12,14 @@ for lib in "$LIB_DIR"/*.sh; do
     [ -f "$lib" ] && source "$lib"
 done
 
+# Ensure directories exist
+ensure_jn_dirs
+
+# --- Runtime State ---
+# Track whether we've successfully activated couch mode in THIS service run.
+# This helps us detect stale lock files that we couldn't delete.
+COUCH_ACTIVATED_THIS_RUN=false
+
 # --- Main Logic ---
 
 launcher_exists() { [ -x "$LAUNCHER" ]; }
@@ -19,18 +27,52 @@ launcher_exists() { [ -x "$LAUNCHER" ]; }
 couch_mode_activate() {
     local dev="${1:-unknown}"
     debug "SWITCHER" "couch_mode_activate: dev=$dev"
+    
+    # Don't activate if manual desk mode is active (unless this IS a manual couch request)
+    if is_manual_desk && [ "$dev" != "manual" ]; then
+        log "couch_mode_activate: blocked by manual desk mode ($dev)"
+        return 0
+    fi
+    
+    # Debounce: wait 1 second and verify controller is still present
+    # This prevents false triggers from brief connections (e.g., docking to charge)
+    # Skip debounce for manual requests
+    if [ "$dev" != "manual" ]; then
+        debug "SWITCHER" "debounce: waiting 1s before activation ($dev)"
+        sleep 1
+        if ! id_present "$dev"; then
+            log "couch_mode_activate: aborted - controller disconnected during debounce ($dev)"
+            return 0
+        fi
+        debug "SWITCHER" "debounce: controller still present, proceeding ($dev)"
+    fi
+    
     cancel_pending_timer
     
     if [ -e "$LOCK" ]; then
-        # Already in couch mode. Update owner ID but skip display/CEC setup.
-        echo -n "$dev" > "$LOCK"
-        log "lock: updated owner to $dev (resuming existing session)"
-        note "🎮 Controller Reconnected" "$dev (new owner)"
-        start_steam_watcher
-        return 0
+        local current_owner
+        current_owner="$(lock_owner)"
+        
+        # If lock exists but is empty, it's stale - remove it and do full activation
+        if [ -z "$current_owner" ]; then
+            log "lock: found empty lock file, clearing and doing full activation"
+            rm -f "$LOCK" 2>/dev/null || true
+        # If we haven't activated in this service run, the lock is stale (leftover from crash/reboot)
+        elif [ "$COUCH_ACTIVATED_THIS_RUN" = "false" ]; then
+            log "lock: found stale lock from previous session (owner=$current_owner), doing full activation"
+            rm -f "$LOCK" 2>/dev/null || true
+        else
+            # Already in couch mode with valid owner (activated this run). Update owner ID but skip display/CEC setup.
+            echo -n "$dev" > "$LOCK"
+            log "lock: updated owner to $dev (resuming existing session)"
+            note "🎮 Controller Reconnected" "$dev (new owner)"
+            start_steam_watcher
+            return 0
+        fi
     fi
 
     if acquire_lock "$dev"; then
+        COUCH_ACTIVATED_THIS_RUN=true
         log "begin: couch_mode_activate ($dev)"
         debug "SWITCHER" "Applying couch mode settings..."
         set_dnd true
@@ -70,6 +112,13 @@ couch_mode_activate() {
 couch_mode_teardown() {
     local why="${1:-}"
     local dev="${2:-}"
+    
+    # Don't tear down if manual couch mode is active (unless this IS a manual desk request)
+    if is_manual_couch && [ "$why" != "manual_desk" ]; then
+        log "teardown: blocked by manual couch mode ($why $dev)"
+        return 0
+    fi
+    
     log "teardown: $why ${dev:-}"
     cancel_pending_timer
     cancel_steam_watcher
@@ -147,6 +196,23 @@ while IFS= read -r line; do
             ;;
         steam_exit)
             [ -e "$LOCK" ] && couch_mode_teardown "steam_exit" "$DEV" || log "steam: exit ignored (no lock)"
+            ;;
+        manual_couch)
+            log "manual: couch mode requested"
+            if [ ! -e "$LOCK" ]; then
+                # Not in couch mode - activate it
+                couch_mode_activate "manual"
+            else
+                log "manual: already in couch mode"
+            fi
+            ;;
+        manual_desk)
+            log "manual: desk mode requested"
+            if [ -e "$LOCK" ]; then
+                couch_mode_teardown "manual_desk" "manual"
+            else
+                log "manual: already in desk mode"
+            fi
             ;;
     esac
 done < <(stdbuf -oL -eL tail -F -n 0 "$LOG")

@@ -2,10 +2,14 @@
 # game-wrapper.sh
 # Usage in Steam: game-wrapper.sh %command%
 
+# Base directories - must match lib/config-env.sh
+JN_LOGS="/tmp/joystick-notify/logs"
+mkdir -p "$JN_LOGS" 2>/dev/null || true
+
 # FOOLPROOF LOGGING - does not depend on libraries
-echo "WRAPPER_CALLED_AT=$(date -Is)" >> /tmp/game-wrapper-init.log
-echo "ARGS: $*" >> /tmp/game-wrapper-init.log
-echo "PREFIX_ENV: ${STEAM_COMPAT_COMMAND_PREFIX:-NOT_SET}" >> /tmp/game-wrapper-init.log
+echo "WRAPPER_CALLED_AT=$(date -Is)" >> "$JN_LOGS/game-wrapper-init.log"
+echo "ARGS: $*" >> "$JN_LOGS/game-wrapper-init.log"
+echo "PREFIX_ENV: ${STEAM_COMPAT_COMMAND_PREFIX:-NOT_SET}" >> "$JN_LOGS/game-wrapper-init.log"
 
 # Source modular libraries
 LIB_DIR="/usr/local/lib/joystick-notify"
@@ -14,7 +18,7 @@ for lib in "$LIB_DIR"/*.sh; do
     [ -f "$lib" ] && source "$lib"
 done
 
-LOG="/tmp/game-wrapper.log"
+LOG="$JN_LOGS/game-wrapper.log"
 WRAPPER_DEBUG="${WRAPPER_DEBUG:-false}"
 
 # Integration with central debug logger

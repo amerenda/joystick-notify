@@ -11,8 +11,13 @@ set -euo pipefail
 
 HIDE_CURSOR="${HIDE_CURSOR:-1}"
 HIDE_CURSOR_TIMEOUT="${HIDE_CURSOR_TIMEOUT:-1}"
-LOCKFILE="${LOCKFILE:-/tmp/launch-bigpicture.lock}"
-STATE_FILE="/tmp/launch-bigpicture-state.$(id -u)"
+
+# Base directories - must match lib/config-env.sh
+JN_LOCKS="/tmp/joystick-notify/locks"
+mkdir -p "$JN_LOCKS" 2>/dev/null || true
+
+LOCKFILE="${LOCKFILE:-$JN_LOCKS/launch-bigpicture.lock}"
+STATE_FILE="$JN_LOCKS/launch-bigpicture-state.$(id -u)"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
