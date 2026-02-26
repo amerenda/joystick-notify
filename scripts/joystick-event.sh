@@ -40,8 +40,16 @@ else
     chmod 666 "$LOCK" 2>/dev/null || true
 fi
 
-# Append-only write with lock
+# Append-only write with lock. Cooldown: if we're writing "add" and the last line is already "add" for this DEV and the log was just written to (within 5s), skip to avoid spamming from udev "change" firing repeatedly.
 {
     flock -n 9 || exit 0
+    if [ "$ACT" = "add" ] && [ -s "$LOG" ]; then
+        last="$(tail -n1 "$LOG" 2>/dev/null)"
+        mtime="$(stat -c %Y "$LOG" 2>/dev/null)" || mtime=0
+        now="$(date +%s)"
+        if [[ "$last" == *" add ${DEV}" ]] && [ "$(( now - mtime ))" -lt 5 ]; then
+            exit 0
+        fi
+    fi
     printf '%s %s %s\n' "$(date -Is)" "$ACT" "$DEV" >> "$LOG"
 } 9>"$LOCK"

@@ -12,13 +12,13 @@ This folder contains everything needed to install the workflow:
 
 ```mermaid
 flowchart TD
-  UdevAdd["udev: controller add/remove"] --> JoyEvent["joystick-event.sh writes /tmp/joystick-events.log"]
+  UdevAdd["udev: controller add/remove"] --> JoyEvent["joystick-event.sh writes events.log"]
   JoyEvent --> Monitor["monitor-switcher.sh tails events log"]
 
-  Monitor -->|add| Lock["Acquire /tmp/joystick-owner.lock"]
+  Monitor -->|add| Lock["Acquire owner.lock"]
   Lock --> Desktop["Switch to Couch virtual desktop (KWin)"]
   Desktop --> Steam["launch-bigpicture.sh (hide cursor + start Steam)"]
-  Steam --> CEC["cec-client: TV power on + set active source (HDMI3)"]
+  Steam --> CEC["CEC: wake + set active source (Shield-like)"]
   CEC --> Outputs["kscreen-doctor: switch display output"]
   Outputs --> Audio["pactl: switch default sink + move streams"]
 
@@ -33,10 +33,10 @@ flowchart TD
 
 ### `scripts/joystick-event.sh`
 Runs as root via udev and appends a single line per event to:
-- **`/tmp/joystick-events.log`** (mode `666`)
+- **`/tmp/joystick-notify/logs/events.log`** (mode `666`)
 
 It also ensures the flock lock is usable from both root (udev) and your user service:
-- **`/tmp/joystick-events.lock`** (mode `666`)
+- **`/tmp/joystick-notify/locks/events.lock`** (mode `666`)
 
 Log format:
 ```
@@ -48,10 +48,10 @@ Device id is an opaque identifier; typically:
 - Some USB cases: `eventNN`
 
 ### `scripts/monitor-switcher.sh`
-Long-running user service that tails `/tmp/joystick-events.log` and drives the workflow.
+Long-running user service that tails `/tmp/joystick-notify/logs/events.log` and drives the workflow.
 
 Key concepts:
-- **Owner lock**: `/tmp/joystick-owner.lock` contains the “owner” device id (first controller to connect).
+- **Owner lock**: `/tmp/joystick-notify/locks/owner.lock` contains the “owner” device id (first controller to connect).
 - **Persistence**: Couch Mode stays active even if the controller disconnects, as long as a game (detected via `gamescope`) is running.
 - **Grace period**: 
   - If a controller disconnects while Steam is running but no game is active, a 30-second grace period starts.
@@ -60,16 +60,14 @@ Key concepts:
 - **Immediate Teardown**: If Steam is closed, Couch Mode ends immediately regardless of controller state.
 - **Synthetic events**: internal timers/watchers emit events back into the same log stream (e.g. `grace_timeout`, `steam_exit`) using a reliable append.
 - **KWin virtual desktop isolation**:
-  - Saves current desktop to `/tmp/joystick-prev-desktop.$UID`
+  - Saves current desktop to `/tmp/joystick-notify/locks/prev-desktop.$UID`
   - Switches to a desktop named `Couch` (or `COUCH_DESKTOP_NUM`)
   - Restores the previous desktop on teardown (after switching outputs back to desk)
-- **CEC** (libcec):
-  - Uses `cec-client -p <port>` (your port is HDMI3 by default)
-  - Wakes TV and switches input on connect; optionally sends TV standby on teardown
+- **CEC** (libcec / v4l-utils): Shield-like behavior when possible: discovers the CEC adapter’s physical address and sends power-on + active source so the TV (and receiver, if present) switch to the PC’s input automatically; no port configuration is needed for typical setups. Uses `cec-ctl` when available; falls back to `cec-client` with `CEC_HDMI_PORT`. Optionally set `CEC_WAKE_DELAY` (e.g. 1–2 s) for receiver chains. Sends TV standby on teardown when enabled.
 
 Logs:
-- **`/tmp/joystick-watcher.log`**: monitor-switcher internal log
-- **`/tmp/joystick-events.log`**: raw event stream (udev + synthetic)
+- **`/tmp/joystick-notify/logs/watcher.log`**: monitor-switcher internal log
+- **`/tmp/joystick-notify/logs/events.log`**: raw event stream (udev + synthetic)
 
 ### `scripts/launch-bigpicture.sh`
 Starts Steam Big Picture in a way that works well on Plasma Wayland and manages cursor hiding:
@@ -78,12 +76,12 @@ Starts Steam Big Picture in a way that works well on Plasma Wayland and manages 
 - Starts Steam:
   - If already running: `steam://open/bigpicture`
   - Otherwise: `steam -gamepadui`
-- Stays alive while `/tmp/joystick-owner.lock` exists so cursor hiding remains active
+- Stays alive while `/tmp/joystick-notify/locks/owner.lock` exists so cursor hiding remains active
 
 ### `scripts/force-desk-primary.sh`
 Enforces the desk monitor as the primary display and **disables the TV** by default.
 - Triggered by `udev` on any display change.
-- Checks for `/tmp/joystick-owner.lock`; if it exists (Couch Mode), it exits without doing anything.
+- Checks for `/tmp/joystick-notify/locks/owner.lock`; if it exists (Couch Mode), it exits without doing anything.
 - If no lock exists, it ensures `HDMI-A-2` is primary and `HDMI-A-1` is disabled.
 - This prevents the TV from stealing focus or being used as a secondary monitor when you just want to use your desk.
 
@@ -143,7 +141,7 @@ Highlights:
 - On service stop, runs `ExecStopPost` to revert audio/display and remove the lock file.
 
 ### `systemd/joystick-notify-steam-shutdown.path` and `.service`
-Watches `/tmp/joystick-owner.lock` changes. When couch mode ends (lock disappears) it runs a oneshot that attempts to shut down Steam.
+Watches `/tmp/joystick-notify/locks/owner.lock` changes. When couch mode ends (lock disappears) it runs a oneshot that attempts to shut down Steam.
 
 Important detail:
 - The service is guarded so it only calls `steam -shutdown` if Steam is already running (prevents “spawn Steam just to shut it down”).
@@ -185,8 +183,8 @@ Required (core workflow):
 - Steam: `steam`
 
 CEC (recommended):
-- `cec-client` (libcec)
-  - Ensure your user can access the adapter device (typically `/dev/ttyACM0`). On many systems this means being in the `uucp` group and re-logging in.
+- `cec-ctl` (v4l-utils) and/or `cec-client` (libcec). Prefer `cec-ctl` for automatic input switching (no port config).
+- Ensure your user can access the CEC adapter (e.g. `/dev/cec0` for cec-ctl, or `/dev/ttyACM0` for some USB CEC dongles with cec-client; `uucp` group may be required).
 
 Tray icon (optional):
 - `python3`
@@ -207,7 +205,10 @@ Virtual desktop:
 
 CEC:
 - `CEC_ENABLED=true`
-- `CEC_HDMI_PORT=3` (your PC input)
+- `CEC_HDMI_PORT=3` (fallback for cec-client when cec-ctl is not used)
+- `CEC_COUCH_PORT` (when cec-ctl discovery fails, if 1–4 used as phys-addr N.0.0.0 for set-stream-path/active-source)
+- `CEC_ACTIVE_SOURCE_PHYS_ADDR` (optional, e.g. `2.0.0.0` for receiver HDMI 2; overrides discovered address so the AVR switches to the correct input)
+- `CEC_WAKE_DELAY=0` (seconds to wait after wake before set-stream-path/active-source; set to 1–2 for receiver chains if the TV or AVR does not switch reliably)
 - `CEC_POWER_OFF_ON_TEARDOWN=true`
 
 Audio:
@@ -247,19 +248,45 @@ printf 'standby 0\nq\n' | cec-client -s -d 1 -p 3
 
 ### Observe the automation logs
 ```bash
-tail -f /tmp/joystick-watcher.log
-tail -f /tmp/joystick-events.log
+tail -f /tmp/joystick-notify/logs/watcher.log
+tail -f /tmp/joystick-notify/logs/events.log
 ```
 
 ## Troubleshooting
 
+- **Does the GPU see both HDMI cables?**
+  - The GPU reports each connector as **connected** or **disconnected** in the kernel. If the port to your receiver shows disconnected, the issue is detection (cable, receiver, or GPU), not the couch/desk scripts.
+  - **Quick check:** run the diagnostic script (after install: `/usr/local/bin/check-gpu-connectors.sh`) or run manually:
+    ```bash
+    for c in /sys/class/drm/card*-HDMI-*; do [ -d "$c" ] && [ -f "$c/status" ] && echo "${c##*/}: $(cat "$c/status")"; done
+    ```
+  - If the receiver’s port stays **disconnected**: reconnect the HDMI cable between GPU and receiver, power on the receiver and set it to the PC input, then **reboot the PC** so the GPU re-probes. Run the check again after reboot to see if that port becomes **connected**.
+
+- **TV works during boot (shows boot messages) but is missing after boot (connector shows disconnected)**
+  - **Check dmesg:** `dmesg | grep -iE 'EDID|HDMI-A-1|amdgpu.*ERROR'`. If you see **`EDID err: 2, on connector: HDMI-A-1`** and **`No EDID read`**, the GPU *is* probing that port but the **EDID read is failing** (err 2 = DDC/I2C: no response from the receiver). The driver then marks the connector disconnected. So the cause is **receiver not responding on the EDID (DDC) line**, not “kernel only using one connector”.
+  - **No reboot required.** With receiver **on** and set to PC input, wait 10–15 s then run `sudo udevadm trigger --action=change /sys/class/drm/card1-HDMI-A-1` (adjust path) and run `check-gpu-connectors.sh` again. If it still shows disconnected, the receiver does not present EDID to the PC when that input is selected (receiver limitation). **Hardware workaround:** an **HDMI EDID emulator** between PC and receiver can always advertise a display so the PC sees the connector as connected.
+  - **GRUB `video=`:** If dmesg does *not* show EDID errors, try removing `video=HDMI-A-2:...` from GRUB and rebooting once to test.
+  - **amdgpu:** Some kernels ignore modprobe `enable_dc`; use kernel cmdline only if needed.
+
 - **TV doesn’t power on or switch input**
-  - Confirm `cec-client` works manually (see commands above).
-  - Confirm your user can read/write the adapter (commonly `/dev/ttyACM0`). If it is `root:uucp`, ensure your user is in `uucp` and you have re-logged in.
+  - With a receiver in the chain, try `CEC_WAKE_DELAY=2` so the TV has time to wake before the active-source command.
+  - Confirm `cec-client` or `cec-ctl` works manually (see commands above). For cec-ctl: `cec-ctl -d /dev/cec0 --playback -s -S` to see topology.
+  - Confirm your user can access the adapter (e.g. `/dev/cec0` or `/dev/ttyACM0`). If it is `root:uucp`, ensure your user is in `uucp` and you have re-logged in.
+
+- **Receiver not switching to PC input (e.g. HDMI-2)**
+  - If the TV wakes but the AVR stays on another input, the CEC dongle may be on a different receiver port than the PC’s video. Set **`CEC_ACTIVE_SOURCE_PHYS_ADDR=2.0.0.0`** (use the receiver’s HDMI input number as the first octet) so the script sends Set Stream Path and Active Source with that address and the receiver switches to the correct input. Optionally set **`CEC_WAKE_DELAY=2`** so the receiver has time to wake before those commands. Restart the joystick-notify user service after changing env; no reboot required.
+
+- **TV doesn’t appear as a display (receiver in chain)**
+  - When entering couch mode, the script triggers a DRM rescan and waits up to ~20s (6×4s) for the couch connector to become connected so the receiver has time to present EDID after CEC wakes it. No reboot required. Check `/tmp/joystick-notify/logs/watcher.log` for “receiver EDID” or “still … after … attempts”.
+  - If you see “DRM rescan skipped (udevadm failed)” in the watcher log, the rescan needs root. Test manually (receiver on, on PC input, wait 10–15s first): `sudo udevadm trigger --action=change /sys/class/drm/card1-HDMI-A-1` (adjust connector path if needed).
+  - If the connector stays disconnected even with receiver on and after manual rescan, the receiver is not responding on the EDID (DDC) line when the GPU probes—a receiver/handshake limitation, not something the script can fix. **Hardware workaround:** an **HDMI EDID emulator** (small device between PC and receiver) can always present a fixed EDID to the PC so the connector shows “connected” and the PC outputs; the emulator forwards video/audio to the receiver.
 
 - **Couch desktop doesn’t switch**
   - Ensure you have a virtual desktop named exactly `Couch` in Plasma settings, or set `COUCH_DESKTOP_NUM`.
   - Confirm DBus works: `qdbus6 org.kde.KWin /KWin org.kde.KWin.currentDesktop`.
+
+- **Bluetooth controller won’t reconnect after idle**
+  - On some stacks (BlueZ/UHID), the HID device is not removed on idle disconnect, so udev does not emit a new `add` on reconnection. The udev rules include `ACTION=="change"` for the same Bluetooth HID devices and treat it as `add`, so a reconnection can be detected when the link comes back. After updating the rules (e.g. re-run `./install.sh` or copy `udev/99-joystick-notify.rules` to `/etc/udev/rules.d/`), run `sudo udevadm control --reload-rules`. If you still never see an `add` in the events log when reconnecting, the kernel may not emit `change` either; use manual couch/desk or restart the service after reconnecting.
 
 - **Random teardown on brief controller hiccups**
   - Increase `DISCONNECT_GRACE`.
@@ -298,6 +325,6 @@ sudo udevadm control --reload-rules
 
 Runtime files:
 ```bash
-rm -f /tmp/joystick-events.log /tmp/joystick-events.lock /tmp/joystick-owner.lock /tmp/joystick-watcher.log
+rm -f /tmp/joystick-notify/logs/events.log /tmp/joystick-notify/locks/events.lock /tmp/joystick-notify/locks/owner.lock /tmp/joystick-notify/logs/watcher.log
 ```
 

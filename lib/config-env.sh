@@ -18,6 +18,10 @@ CEC_ENABLED="${CEC_ENABLED:-true}"
 CEC_HDMI_PORT="${CEC_HDMI_PORT:-3}"
 CEC_COUCH_PORT="${CEC_COUCH_PORT:-$CEC_HDMI_PORT}"
 CEC_ADAPTER="${CEC_ADAPTER:-}"
+# Seconds to wait after Image View On before sending Active Source (e.g. 1-2 for receiver chains)
+CEC_WAKE_DELAY="${CEC_WAKE_DELAY:-0}"
+# Override physical address for Set Stream Path / Active Source (e.g. 2.0.0.0 = receiver HDMI 2). When set, used instead of discovered address so the receiver switches to the correct input even if the CEC dongle is on a different port.
+CEC_ACTIVE_SOURCE_PHYS_ADDR="${CEC_ACTIVE_SOURCE_PHYS_ADDR:-}"
 CEC_POWER_OFF_ON_TEARDOWN="${CEC_POWER_OFF_ON_TEARDOWN:-true}"
 
 # KDE Plasma
