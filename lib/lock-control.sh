@@ -106,10 +106,30 @@ any_controller_present() {
 
 check_stale_lock() {
     if [ -f "$LOCK" ]; then
+        local owner
         owner="$(lock_owner)"
-        if [ -n "$owner" ] && ! id_present "$owner"; then
-            log "lock: stale ($owner) -> clearing"
-            rm -f "$LOCK"
+        
+        # Case 1: Empty lock file (invalid state)
+        if [ -z "$owner" ]; then
+            log "lock: stale (empty) -> clearing"
+            if ! rm -f "$LOCK" 2>/dev/null; then
+                log "lock: WARN: cannot remove empty lock (run: sudo rm -f $LOCK)"
+                # Try truncating instead if we can't delete
+                : > "$LOCK" 2>/dev/null && rm -f "$LOCK" 2>/dev/null || true
+            fi
+            return
         fi
+        
+        # Case 2: Owner device is not present
+        if ! id_present "$owner"; then
+            log "lock: stale ($owner not present) -> clearing"
+            if ! rm -f "$LOCK" 2>/dev/null; then
+                log "lock: WARN: cannot remove stale lock (run: sudo rm -f $LOCK)"
+            fi
+            return
+        fi
+        
+        # Case 3: Lock exists with valid owner that is present - this is fine
+        debug "SWITCHER" "lock: valid lock found (owner=$owner)"
     fi
 }

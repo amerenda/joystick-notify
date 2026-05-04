@@ -16,13 +16,21 @@
 # - HID exposes HID_UNIQ (Bluetooth MAC), which is stable across event number churn.
 #
 # IMPORTANT:
-# - We intentionally only use ACTION add/remove (not bind/unbind) to reduce noisy flapping.
+# - We use ACTION add/remove for connect/disconnect.
+# - On some stacks (BlueZ/UHID), the HID device is not removed on BT idle disconnect,
+#   so reconnection does not emit a new "add". We also trigger on ACTION=="change" and
+#   treat it as "add" so reconnection after idle is seen by the watcher.
 # -------------------------------------------------------------------
 
-# connect-ish
+# connect-ish (initial connect)
 ACTION=="add", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Controller*", RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
 ACTION=="add", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Gamepad*",   RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
 ACTION=="add", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*8BitDo*",    RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+
+# reconnect-ish (Bluetooth idle disconnect: HID node may stay; "change" fires when link is back)
+ACTION=="change", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Controller*", RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+ACTION=="change", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Gamepad*",   RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
+ACTION=="change", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*8BitDo*",    RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"
 
 # disconnect-ish
 ACTION=="remove", SUBSYSTEM=="hid", ENV{HID_UNIQ}=="*:*", ENV{HID_NAME}=="*Controller*", RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %E{HID_UNIQ}"

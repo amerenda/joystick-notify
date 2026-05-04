@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG=/tmp/joystick-events.log
-LOCK=/tmp/joystick-events.lock   # flock file
-BT_DEBUG_LOG=/tmp/bluetooth-events.log
+# Base directories - must match lib/config-env.sh
+JN_BASE=/tmp/joystick-notify
+JN_LOGS="$JN_BASE/logs"
+JN_LOCKS="$JN_BASE/locks"
 
-# Source config for DEBUG_BLUETOOTH setting
+LOG="$JN_LOGS/events.log"
+LOCK="$JN_LOCKS/events.lock"   # flock file
+BT_DEBUG_LOG="$JN_LOGS/bluetooth-events.log"
+
+# Source config for DEBUG_BLUETOOTH override if installed.
 LIB_DIR="/usr/local/lib/joystick-notify"
 if [ -f "$LIB_DIR/config-env.sh" ]; then
     # shellcheck disable=SC1091
@@ -19,28 +24,43 @@ ACT="${ACTION:-add}"
 # We treat the arg as an opaque device identifier (typically HID_UNIQ / Bluetooth MAC).
 DEV="${1:-unknown}"
 
+# Ensure directories exist with world-writable permissions
+# (udev runs as root, user service runs as user - both need access)
+for dir in "$JN_BASE" "$JN_LOGS" "$JN_LOCKS"; do
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2>/dev/null || true
+        chmod 777 "$dir" 2>/dev/null || true
+    fi
+done
+
 # Ensure events log exists and is writable
 if [ ! -e "$LOG" ]; then
-  : >"$LOG"
-  chown root:root "$LOG" || true
-  chmod 666 "$LOG" || true
+    : >"$LOG"
+    chmod 666 "$LOG" 2>/dev/null || true
 fi
 
 # Ensure lock file exists and is writable by both root (udev) and the user service.
 # Without this, monitor-switcher (running as user) may be unable to flock() the lock,
 # causing synthetic grace_timeout/steam_exit events to be dropped.
 if [ ! -e "$LOCK" ]; then
-  ( umask 0; : >"$LOCK" ) 2>/dev/null || true
-  chown root:root "$LOCK" || true
-  chmod 666 "$LOCK" || true
+    ( umask 0; : >"$LOCK" ) 2>/dev/null || true
+    chmod 666 "$LOCK" 2>/dev/null || true
 else
-  chmod 666 "$LOCK" || true
+    chmod 666 "$LOCK" 2>/dev/null || true
 fi
 
-# Append-only write with lock
+# Append-only write with lock. Cooldown: if we're writing "add" and the last line is already "add" for this DEV and the log was just written to (within 5s), skip to avoid spamming from udev "change" firing repeatedly.
 {
-  flock -n 9 || exit 0
-  printf '%s %s %s\n' "$(date -Is)" "$ACT" "$DEV" >> "$LOG"
+    flock -n 9 || exit 0
+    if [ "$ACT" = "add" ] && [ -s "$LOG" ]; then
+        last="$(tail -n1 "$LOG" 2>/dev/null)"
+        mtime="$(stat -c %Y "$LOG" 2>/dev/null)" || mtime=0
+        now="$(date +%s)"
+        if [[ "$last" == *" add ${DEV}" ]] && [ "$(( now - mtime ))" -lt 5 ]; then
+            exit 0
+        fi
+    fi
+    printf '%s %s %s\n' "$(date -Is)" "$ACT" "$DEV" >> "$LOG"
 } 9>"$LOCK"
 
 # Optional Bluetooth debug logging to track disconnect frequency

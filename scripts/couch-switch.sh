@@ -14,9 +14,13 @@ for lib in "$LIB_DIR"/*.sh; do
     [ -f "$lib" ] && source "$lib"
 done
 
+# Ensure directories exist
+ensure_jn_dirs
+
 case "${1:-status}" in
     couch)
         echo "couch" > "$MANUAL_LOCK"
+        chmod 666 "$MANUAL_LOCK" 2>/dev/null || true
         log "manual: switching to couch mode"
         # Trigger couch mode activation by writing synthetic event
         printf '%s %s %s\n' "$(date -Is)" "manual_couch" "manual" >> "$LOG"
@@ -24,6 +28,7 @@ case "${1:-status}" in
         ;;
     desk)
         echo "desk" > "$MANUAL_LOCK"
+        chmod 666 "$MANUAL_LOCK" 2>/dev/null || true
         log "manual: switching to desk mode"
         # Trigger desk mode by writing synthetic event
         printf '%s %s %s\n' "$(date -Is)" "manual_desk" "manual" >> "$LOG"

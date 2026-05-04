@@ -48,6 +48,7 @@ sudo install -Dm0755 "$ROOT/scripts/launch-bigpicture.sh" /usr/local/bin/launch-
 sudo install -Dm0755 "$ROOT/scripts/game-wrapper.sh" /usr/local/bin/game-wrapper.sh
 sudo install -Dm0755 "$ROOT/scripts/force-desk-primary.sh" /usr/local/bin/force-desk-primary.sh
 sudo install -Dm0755 "$ROOT/scripts/couch-switch.sh" /usr/local/bin/couch-switch.sh
+sudo install -Dm0755 "$ROOT/scripts/check-gpu-connectors.sh" /usr/local/bin/check-gpu-connectors.sh
 sudo install -Dm0755 "$ROOT/system-tray/joystick-tray.py" /usr/local/bin/joystick-notify-tray
 
 echo "[joystick-notify] Installing library components to /usr/local/lib/joystick-notify ..."
