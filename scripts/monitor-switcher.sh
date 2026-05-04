@@ -51,7 +51,7 @@ couch_mode_activate() {
         fi
         debug "SWITCHER" "debounce: controller still present, proceeding ($dev)"
     fi
-    
+
     cancel_pending_timer
     
     if [ -e "$LOCK" ]; then

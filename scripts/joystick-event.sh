@@ -8,6 +8,15 @@ JN_LOCKS="$JN_BASE/locks"
 
 LOG="$JN_LOGS/events.log"
 LOCK="$JN_LOCKS/events.lock"   # flock file
+BT_DEBUG_LOG="$JN_LOGS/bluetooth-events.log"
+
+# Source config for DEBUG_BLUETOOTH override if installed.
+LIB_DIR="/usr/local/lib/joystick-notify"
+if [ -f "$LIB_DIR/config-env.sh" ]; then
+    # shellcheck disable=SC1091
+    source "$LIB_DIR/config-env.sh"
+fi
+DEBUG_BLUETOOTH="${DEBUG_BLUETOOTH:-false}"
 
 # udev normally sets ACTION, but we also override it in the udev rule to map bind/unbind -> add/remove.
 ACT="${ACTION:-add}"
@@ -53,3 +62,13 @@ fi
     fi
     printf '%s %s %s\n' "$(date -Is)" "$ACT" "$DEV" >> "$LOG"
 } 9>"$LOCK"
+
+# Optional Bluetooth debug logging to track disconnect frequency
+if [ "$DEBUG_BLUETOOTH" = "true" ]; then
+    # Ensure BT debug log exists and is writable
+    if [ ! -e "$BT_DEBUG_LOG" ]; then
+        : >"$BT_DEBUG_LOG"
+        chmod 666 "$BT_DEBUG_LOG" 2>/dev/null || true
+    fi
+    echo "$(date -Is) BT_EVENT: $ACT $DEV" >> "$BT_DEBUG_LOG"
+fi

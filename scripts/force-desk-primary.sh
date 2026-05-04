@@ -21,8 +21,12 @@ if is_couch_mode; then
     exit 0
 fi
 
+# Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
+sleep 1
+
 # Enforce desk monitor as primary (priority 1) and DISABLE the couch output
-kscreen-doctor \
+# Use timeout to prevent hangs if driver is stuck
+timeout 10 kscreen-doctor \
     "output.${DESK_PORT}.enable" \
     "output.${DESK_PORT}.priority.1" \
     "output.${DESK_PORT}.mode.${DESK_MODE}" \
