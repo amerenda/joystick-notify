@@ -12,8 +12,13 @@ for lib in "$LIB_DIR"/*.sh; do
     [ -f "$lib" ] && source "$lib"
 done
 
-# Ensure directories exist
+# Ensure directories exist and pre-create the events log.
+# This must happen before the tail starts so that tail -n 0 is watching when
+# the first udev event arrives. Without this, the file is created by udev at
+# the same instant the watcher begins — the initial add line is already in the
+# file when tail starts and gets skipped by -n 0.
 ensure_jn_dirs
+( umask 0; [ -e "$LOG" ] || { : >"$LOG"; chmod 666 "$LOG"; } ) 2>/dev/null || true
 
 # --- Runtime State ---
 # Track whether we've successfully activated couch mode in THIS service run.
@@ -134,8 +139,6 @@ couch_mode_teardown() {
 
 # --- Event Loop ---
 
-# Wait until events file exists
-while [ ! -e "$LOG" ]; do log "waiting for $LOG to appear..."; sleep 0.5; done
 log "watcher started, tailing $LOG"
 
 # Initial cleanup and state enforcement
