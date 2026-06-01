@@ -2,14 +2,14 @@
 # config-env.sh - Global configuration and environment settings
 
 # ===================== CONFIG =====================
-DEBUG_MODE="${DEBUG_MODE:-true}"
-DEBUG_AUDIO="${DEBUG_AUDIO:-true}"
+DEBUG_MODE="${DEBUG_MODE:-false}"
+DEBUG_AUDIO="${DEBUG_AUDIO:-false}"
 DEBUG_BLUETOOTH="${DEBUG_BLUETOOTH:-false}"
 DEBUG_DISPLAY="${DEBUG_DISPLAY:-false}"
 DEBUG_CEC="${DEBUG_CEC:-false}"
 DEBUG_PLASMA="${DEBUG_PLASMA:-false}"
-DEBUG_SWITCHER="${DEBUG_SWITCHER:-true}"
-DEBUG_WRAPPER="${DEBUG_WRAPPER:-true}"
+DEBUG_SWITCHER="${DEBUG_SWITCHER:-false}"
+DEBUG_WRAPPER="${DEBUG_WRAPPER:-false}"
 
 DISCONNECT_GRACE="${DISCONNECT_GRACE:-30}"
 STEAM_POLL="${STEAM_POLL:-2}"

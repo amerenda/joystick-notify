@@ -89,22 +89,21 @@ cec_standby_best_effort() {
     [ "$CEC_POWER_OFF_ON_TEARDOWN" = "true" ] || [ "$CEC_POWER_OFF_ON_TEARDOWN" = "1" ] || return 0
     [ -e "$CEC_STATE" ] || return 0
 
+    # Mirror wake's tool preference: cec-ctl first (kernel CEC), cec-client fallback (Pulse-Eight USB).
+    if have cec-ctl && compgen -G "/dev/cec*" >/dev/null; then
+        local adapter_args=()
+        [ -n "${CEC_ADAPTER:-}" ] && adapter_args+=( -d "$CEC_ADAPTER" )
+        cec-ctl "${adapter_args[@]}" --to 0 --standby >/dev/null 2>&1 || true
+        log "cec: standby sent (cec-ctl ${CEC_ADAPTER:-auto})"
+        return 0
+    fi
+
     if have cec-client; then
         if printf 'standby 0\nq\n' | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1; then
             log "cec: standby OK (cec-client -p $CEC_HDMI_PORT)"
         else
             log "cec: warn: standby failed (cec-client -p $CEC_HDMI_PORT)"
         fi
-        return 0
-    fi
-
-    if have cec-ctl && compgen -G "/dev/cec*" >/dev/null; then
-        local adapter_args=()
-        if [ -n "${CEC_ADAPTER:-}" ]; then
-            adapter_args+=( -d "$CEC_ADAPTER" )
-        fi
-        cec-ctl "${adapter_args[@]}" --to 0 --standby >/dev/null 2>&1 || true
-        log "cec: standby sent (cec-ctl ${CEC_ADAPTER:-auto})"
         return 0
     fi
 }

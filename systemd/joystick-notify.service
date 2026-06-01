@@ -13,6 +13,9 @@ Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 # Do NOT set PULSE_SERVER here; let libpulse discover it.
 
+# Ensure runtime directories exist with world-writable perms (udev writes here as root).
+ExecStartPre=/usr/bin/install -dm 0777 /tmp/joystick-notify /tmp/joystick-notify/logs /tmp/joystick-notify/locks
+
 # Wait for audio server to be ready
 ExecStartPre=/usr/bin/bash -lc 'for i in {1..50}; do pactl info &>/dev/null && exit 0; sleep 0.1; done; echo "pactl not ready" >&2; exit 1'
 

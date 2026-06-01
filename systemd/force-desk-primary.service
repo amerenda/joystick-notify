@@ -5,6 +5,8 @@ After=graphical-session.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=20
 ExecStart=/usr/local/bin/force-desk-primary.sh
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=WAYLAND_DISPLAY=wayland-0

@@ -67,12 +67,15 @@ if is_couch_mode; then
         -f -r 60
         -e
         --adaptive-sync
-        --rt
         --force-grab-cursor
         --borderless
         --expose-wayland
         --
     )
+    # --rt requires realtime or gamemode group membership; add only when available.
+    if groups 2>/dev/null | tr ' ' '\n' | grep -qE '^(realtime|gamemode)$'; then
+        GAMESCOPE_CMD=( "${GAMESCOPE_CMD[@]:0:${#GAMESCOPE_CMD[@]}-1}" --rt -- )
+    fi
 
     debug_wrap "Gamescope prefix: ${GAMESCOPE_CMD[*]}"
     debug_wrap "Final command: ${GAMESCOPE_CMD[@]} $*"
