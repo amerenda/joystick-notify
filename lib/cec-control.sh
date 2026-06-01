@@ -60,22 +60,29 @@ cec_wake_and_select_input_best_effort() {
         return 0
     fi
 
-    # cec-client only: use CEC_HDMI_PORT fallback
+    # cec-client fallback (Pulse-Eight USB and similar).
+    # Mirror cec-ctl order: wake first, apply CEC_WAKE_DELAY, then assert active source.
     if have cec-client; then
         local ok=0 attempt
-        debug "CEC" "Using cec-client (port=$CEC_HDMI_PORT fallback)"
+        debug "CEC" "Using cec-client (port=$CEC_HDMI_PORT)"
+        # Step 1: Image View On — ask the TV/receiver to power on.
+        printf 'is\nq\n' | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1 || true
+        log "cec: image-view-on sent (cec-client -p $CEC_HDMI_PORT)"
+        # Step 2: Wait for receiver to fully wake before asserting active source.
+        [ "${CEC_WAKE_DELAY:-0}" -gt 0 ] 2>/dev/null && sleep "$CEC_WAKE_DELAY"
+        # Step 3: Active Source — tell receiver/TV to switch to this input.
         for attempt in 1 2 3 4 5; do
-            if printf 'as\nis\nq\n' | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1; then
+            if printf 'as\nq\n' | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1; then
                 ok=1
                 break
             fi
-            debug "CEC" "Attempt $attempt failed, retrying..."
+            debug "CEC" "active-source attempt $attempt failed, retrying..."
             sleep 1
         done
         if [ "$ok" -eq 1 ]; then
             log "cec: active-source asserted (cec-client -p $CEC_HDMI_PORT)"
         else
-            log "cec: warn: active-source failed (cec-client -p $CEC_HDMI_PORT)"
+            log "cec: warn: active-source failed after 5 attempts (cec-client -p $CEC_HDMI_PORT)"
         fi
         ( umask 077; : >"$CEC_STATE" ) 2>/dev/null || true
         return 0

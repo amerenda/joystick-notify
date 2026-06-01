@@ -38,10 +38,10 @@ _trigger_couch_connector_rescan() {
     local c
     for c in /sys/class/drm/card*-"${COUCH_PORT}"; do
         [ -d "$c" ] || continue
-        if udevadm trigger --action=change "$c" 2>/dev/null; then
+        if sudo -n udevadm trigger --action=change "$c" 2>/dev/null; then
             log "display: triggered DRM rescan for $COUCH_PORT"
         else
-            log "display: DRM rescan skipped (udevadm failed; try as root: sudo udevadm trigger --action=change $c)"
+            log "display: DRM rescan failed (missing sudoers rule? install.sh adds /etc/sudoers.d/joystick-notify)"
         fi
         return 0
     done
