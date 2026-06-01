@@ -60,6 +60,18 @@ if [ -f "$ROOT/steam-bigpicture-primary.sh" ]; then
   sudo install -Dm0755 "$ROOT/steam-bigpicture-primary.sh" /usr/local/bin/steam-bigpicture-primary.sh
 fi
 
+echo "[joystick-notify] Installing tmpfiles.d (runtime directory creation at boot) ..."
+sudo install -Dm0644 "$ROOT/tmpfiles/joystick-notify.conf" /etc/tmpfiles.d/joystick-notify.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/joystick-notify.conf
+
+echo "[joystick-notify] Installing sudoers rule (DRM rescan without password) ..."
+# Grants NOPASSWD sudo for udevadm trigger on DRM sysfs paths only.
+# Required so the user service can re-probe HDMI EDID after CEC wakes the receiver.
+printf '%s ALL=(root) NOPASSWD: /usr/bin/udevadm trigger --action=change /sys/class/drm/*\n' \
+    "${USER:-$(id -un)}" \
+    | sudo tee /etc/sudoers.d/joystick-notify > /dev/null
+sudo chmod 0440 /etc/sudoers.d/joystick-notify
+
 echo "[joystick-notify] Installing udev rules ..."
 sudo install -Dm0644 "$ROOT/udev/99-joystick-notify.rules" /etc/udev/rules.d/99-joystick-notify.rules
 sudo install -Dm0644 "$ROOT/udev/98-monitor-hotplug.rules" /etc/udev/rules.d/98-monitor-hotplug.rules

@@ -12,8 +12,13 @@ for lib in "$LIB_DIR"/*.sh; do
     [ -f "$lib" ] && source "$lib"
 done
 
-# Ensure directories exist
+# Ensure directories exist and pre-create the events log.
+# This must happen before the tail starts so that tail -n 0 is watching when
+# the first udev event arrives. Without this, the file is created by udev at
+# the same instant the watcher begins — the initial add line is already in the
+# file when tail starts and gets skipped by -n 0.
 ensure_jn_dirs
+( umask 0; [ -e "$LOG" ] || { : >"$LOG"; chmod 666 "$LOG"; } ) 2>/dev/null || true
 
 # --- Runtime State ---
 # Track whether we've successfully activated couch mode in THIS service run.
@@ -27,14 +32,10 @@ launcher_exists() { [ -x "$LAUNCHER" ]; }
 couch_mode_activate() {
     local dev="${1:-unknown}"
     debug "SWITCHER" "couch_mode_activate: dev=$dev"
-    # #region agent log - branch tracking (hypotheses B,C,E)
-    _dbg_log="${DEBUG_LOG_PATH:-/home/alex/projects/joystick-notify/.cursor/debug.log}"
-    # #endregion
 
     # Don't activate if manual desk mode is active (unless this IS a manual couch request)
     if is_manual_desk && [ "$dev" != "manual" ]; then
         log "couch_mode_activate: blocked by manual desk mode ($dev)"
-        printf '{"timestamp":%s,"location":"couch_mode_activate","message":"branch","data":{"branch":"manual_desk_block"},"hypothesisId":"E"}\n' "$(date +%s)000" >> "$_dbg_log" 2>/dev/null || true
         return 0
     fi
     
@@ -46,7 +47,6 @@ couch_mode_activate() {
         sleep 1
         if ! id_present "$dev"; then
             log "couch_mode_activate: aborted - controller disconnected during debounce ($dev)"
-            printf '{"timestamp":%s,"location":"couch_mode_activate","message":"branch","data":{"branch":"debounce_abort","dev":"%s"},"hypothesisId":"C"}\n' "$(date +%s)000" "$dev" >> "$_dbg_log" 2>/dev/null || true
             return 0
         fi
         debug "SWITCHER" "debounce: controller still present, proceeding ($dev)"
@@ -70,7 +70,6 @@ couch_mode_activate() {
             # Already in couch mode with valid owner (activated this run). Update owner ID but skip display/CEC setup.
             echo -n "$dev" > "$LOCK"
             log "lock: updated owner to $dev (resuming existing session)"
-            printf '{"timestamp":%s,"location":"couch_mode_activate","message":"branch","data":{"branch":"resume_owner_update","dev":"%s"},"hypothesisId":"B"}\n' "$(date +%s)000" "$dev" >> "$_dbg_log" 2>/dev/null || true
             note "🎮 Controller Reconnected" "$dev (new owner)"
             start_steam_watcher
             return 0
@@ -78,7 +77,6 @@ couch_mode_activate() {
     fi
 
     if acquire_lock "$dev"; then
-        printf '{"timestamp":%s,"location":"couch_mode_activate","message":"branch","data":{"branch":"acquire_ok","dev":"%s"},"hypothesisId":"B"}\n' "$(date +%s)000" "$dev" >> "$_dbg_log" 2>/dev/null || true
         COUCH_ACTIVATED_THIS_RUN=true
         log "begin: couch_mode_activate ($dev)"
         debug "SWITCHER" "Applying couch mode settings..."
@@ -113,7 +111,6 @@ couch_mode_activate() {
         log "end: couch_mode_activate"
     else
         log "info: add ignored (owner=$(lock_owner))"
-        printf '{"timestamp":%s,"location":"couch_mode_activate","message":"branch","data":{"branch":"acquire_fail","dev":"%s","owner":"%s"},"hypothesisId":"B"}\n' "$(date +%s)000" "$dev" "$(lock_owner)" >> "$_dbg_log" 2>/dev/null || true
     fi
 }
 
@@ -142,8 +139,6 @@ couch_mode_teardown() {
 
 # --- Event Loop ---
 
-# Wait until events file exists
-while [ ! -e "$LOG" ]; do log "waiting for $LOG to appear..."; sleep 0.5; done
 log "watcher started, tailing $LOG"
 
 # Initial cleanup and state enforcement
@@ -165,12 +160,6 @@ while IFS= read -r line; do
 
     case "$ACT" in
         add)
-            # #region agent log - add event and lock state (hypotheses A,B,C,E)
-            _dbg_log="${DEBUG_LOG_PATH:-/home/alex/projects/joystick-notify/.cursor/debug.log}"
-            _owner_add="$(lock_owner)"
-            _id_ok="false"; id_present "$DEV" && _id_ok="true"
-            printf '{"timestamp":%s,"location":"monitor-switcher:add","message":"add event","data":{"act":"add","dev":"%s","owner":"%s","id_present":%s},"hypothesisId":"A,B,E"}\n' "$(date +%s)000" "$DEV" "$_owner_add" "$_id_ok" >> "$_dbg_log" 2>/dev/null || true
-            # #endregion
             couch_mode_activate "$DEV"
             ;;
         remove)
