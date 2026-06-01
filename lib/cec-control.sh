@@ -39,10 +39,6 @@ cec_wake_and_select_input_best_effort() {
             debug "CEC" "Using cec-ctl (override phys-addr=$addr)"
         else
             addr="$(get_cec_phys_addr 2>/dev/null)" || true
-            if [ -z "$addr" ] && [ -n "${CEC_COUCH_PORT:-}" ] && [ "$CEC_COUCH_PORT" -ge 1 ] 2>/dev/null && [ "$CEC_COUCH_PORT" -le 4 ] 2>/dev/null; then
-                addr="${CEC_COUCH_PORT}.0.0.0"
-                debug "CEC" "Using cec-ctl (fallback phys-addr=$addr from CEC_COUCH_PORT)"
-            fi
         fi
 
         if [ -n "$addr" ]; then

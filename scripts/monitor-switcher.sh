@@ -24,6 +24,7 @@ ensure_jn_dirs
 # Track whether we've successfully activated couch mode in THIS service run.
 # This helps us detect stale lock files that we couldn't delete.
 COUCH_ACTIVATED_THIS_RUN=false
+AUDIO_RETRY_PID=
 
 # --- Main Logic ---
 
@@ -104,6 +105,7 @@ couch_mode_activate() {
                     [ -n "${couch_sink:-}" ] && set_audio_to_sink "$couch_sink"
                 done
             ) >/dev/null 2>&1 &
+            AUDIO_RETRY_PID=$!
         else
             log "warn: launcher missing/not executable: $LAUNCHER"
         fi
@@ -121,12 +123,15 @@ couch_mode_teardown() {
     # Don't tear down if manual couch mode is active (unless this IS a manual desk request)
     if is_manual_couch && [ "$why" != "manual_desk" ]; then
         log "teardown: blocked by manual couch mode ($why $dev)"
+        cancel_pending_timer
         return 0
     fi
     
     log "teardown: $why ${dev:-}"
     cancel_pending_timer
     cancel_steam_watcher
+    [ -n "${AUDIO_RETRY_PID:-}" ] && kill "$AUDIO_RETRY_PID" 2>/dev/null || true
+    AUDIO_RETRY_PID=
     desk_mode_active
     restore_previous_desktop_best_effort
     restore_previous_activity_best_effort

@@ -74,7 +74,9 @@ sudo chmod 0440 /etc/sudoers.d/joystick-notify
 
 echo "[joystick-notify] Installing udev rules ..."
 sudo install -Dm0644 "$ROOT/udev/99-joystick-notify.rules" /etc/udev/rules.d/99-joystick-notify.rules
-sudo install -Dm0644 "$ROOT/udev/98-monitor-hotplug.rules" /etc/udev/rules.d/98-monitor-hotplug.rules
+sed "s/__USER__/${USER:-$(id -un)}/g" "$ROOT/udev/98-monitor-hotplug.rules" \
+    | sudo tee /etc/udev/rules.d/98-monitor-hotplug.rules > /dev/null
+sudo chmod 0644 /etc/udev/rules.d/98-monitor-hotplug.rules
 sudo udevadm control --reload-rules
 
 echo "[joystick-notify] Installing systemd user unit ..."
