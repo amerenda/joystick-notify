@@ -60,13 +60,24 @@ debug_wrap "STEAM_COMPAT_COMMAND_PREFIX: ${STEAM_COMPAT_COMMAND_PREFIX:-NOT_SET}
 if is_couch_mode; then
     debug_wrap "Couch Mode active, preparing gamescope command..."
     
+    # Check whether the couch display supports VRR before requesting adaptive sync.
+    # With an EDID override active (e.g. injected via debugfs), the display may
+    # report VRR as incapable even if the physical panel supports it. Passing
+    # --adaptive-sync to a non-VRR display causes gamescope to crash.
+    GAMESCOPE_ADAPTIVE_SYNC=()
+    if kscreen-doctor -o 2>/dev/null | grep -A20 "Output:.*${COUCH_PORT}" | grep -q "Vrr: "; then
+        if ! kscreen-doctor -o 2>/dev/null | grep -A20 "Output:.*${COUCH_PORT}" | grep -q "Vrr: incapable\|Vrr: Never"; then
+            GAMESCOPE_ADAPTIVE_SYNC=(--adaptive-sync)
+        fi
+    fi
+
     GAMESCOPE_CMD=(
         gamescope
         -W "$OUT_W" -H "$OUT_H"
         -w "$GAME_W" -h "$GAME_H"
         -f -r 60
         -e
-        --adaptive-sync
+        "${GAMESCOPE_ADAPTIVE_SYNC[@]}"
         --force-grab-cursor
         --borderless
         --expose-wayland
