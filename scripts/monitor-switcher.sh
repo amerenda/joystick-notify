@@ -155,7 +155,20 @@ fi
 # Ensure watcher is running if we boot into an active session
 [ -e "$LOCK" ] && start_steam_watcher || true
 
-# Tail the event log and react
+# Tail the event log and react.
+# Note: The tail -n 0 will skip to the end of the file as the loop starts.
+# However, any events written after tail is attached to the file will be read.
+(
+    # Detect already-connected controllers and inject synthetic add events.
+    # This runs in a subshell to avoid blocking the main loop.
+    # Small sleep to allow tail to attach to the file.
+    sleep 0.1
+    for uniq in $(list_present_controller_uniq); do
+        debug "SWITCHER" "Found already-connected controller at startup: $uniq"
+        emit_event "add" "$uniq"
+    done
+) >/dev/null 2>&1 &
+
 while IFS= read -r line; do
     ACT="$(awk '{print $2}' <<<"$line" 2>/dev/null || echo)"
     DEV="$(norm_id "$(awk '{print $3}' <<<"$line" 2>/dev/null || echo)")"

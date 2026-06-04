@@ -80,6 +80,24 @@ id_present() {
     hid_uniq_present "$id"
 }
 
+list_present_controller_uniq() {
+    local f name uniq
+    for f in /sys/bus/hid/devices/*/uevent; do
+        [ -e "$f" ] || continue
+        name="$(grep -m1 '^HID_NAME=' "$f" 2>/dev/null | cut -d= -f2- || true)"
+        uniq="$(grep -m1 '^HID_UNIQ=' "$f" 2>/dev/null | cut -d= -f2- || true)"
+        # Match the same patterns as the udev rules (99-joystick-notify.rules)
+        [[ "$name" == *Controller* ]] || [[ "$name" == *Gamepad* ]] || [[ "$name" == *8BitDo* ]] || continue
+        # Exclude LED, light, and other non-game peripherals
+        [[ "$name" == *LED* ]] && continue
+        [[ "$name" == *Light* ]] && continue
+        [[ "$name" == *Lighting* ]] && continue
+        # UNIQ can be Bluetooth MAC (e4:17:d8:bb:e0:03) or hex string (C5E29E249D)
+        [ -n "$uniq" ] || continue
+        echo "$uniq"
+    done
+}
+
 any_controller_present() {
     local f name uniq
     for f in /sys/bus/hid/devices/*/uevent; do
