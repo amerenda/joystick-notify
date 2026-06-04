@@ -182,6 +182,13 @@ Required (core workflow):
 - Notifications: `notify-send` (optional; best-effort)
 - Steam: `steam`
 
+GPU / Display Driver (critical for TV output):
+- **GPU driver must support DDC/I2C (EDID) on all HDMI ports.** The GPU must be able to detect and read EDID from any HDMI display, including the receiver/TV port.
+- **AMD (amdgpu):** Enable DC (display composition): check BIOS for "Integrated Graphics" enabled, and ensure kernel has `amdgpu` loaded. Some systems may need GRUB cmdline: `amdgpu.dc=1` or firmware updates.
+- **NVIDIA:** Ensure NVIDIA driver is installed and X11/Wayland can detect all HDMI connectors. May require EDID emulator if receiver doesn't present EDID during cold boots.
+- **Intel iGPU:** Usually works out-of-box; may need kernel DRM module (`i915` or `xe`) and up-to-date firmware.
+- **Receiver/TV HDMI handshake:** Your receiver/TV must respond on the DDC/I2C line when the GPU probes for EDID. Some older receivers or setups may need an HDMI EDID emulator (hardware workaround) if they don't present a display on cold probes.
+
 CEC (recommended):
 - `cec-ctl` (v4l-utils) and/or `cec-client` (libcec). Prefer `cec-ctl` for automatic input switching (no port config).
 - Ensure your user can access the CEC adapter (e.g. `/dev/cec0` for cec-ctl, or `/dev/ttyACM0` for some USB CEC dongles with cec-client; `uucp` group may be required).
@@ -253,6 +260,17 @@ tail -f /tmp/joystick-notify/logs/events.log
 ```
 
 ## Troubleshooting
+
+- **Stopped working after reboot (was working before)**
+  - After a PC reboot, the receiver may not fully initialize in time for the GPU's initial EDID probe. The GPU then marks the port disconnected.
+  - **Recovery:** Power on your receiver, set it to the PC input (e.g. HDMI 2), wait 10–15 seconds, then:
+    ```bash
+    sudo udevadm trigger --action=change /sys/class/drm/card1-HDMI-A-1
+    /usr/local/bin/check-gpu-connectors.sh
+    ```
+    If `HDMI-A-1` now shows `connected`, your receiver was slow to initialize. Try connecting the controller again.
+  - **Workaround:** If this happens frequently, increase the delay after CEC wakes the receiver. Set `CEC_WAKE_DELAY=5` (or higher) in your systemd drop-in to give the receiver more time to present EDID before the GPU probes. Restart the service and try again.
+  - **Permanent fix:** Some receivers require an **HDMI EDID emulator** (hardware device between GPU and receiver) to always present a display during GPU probes. This is a receiver limitation, not a software issue.
 
 - **Does the GPU see both HDMI cables?**
   - The GPU reports each connector as **connected** or **disconnected** in the kernel. If the port to your receiver shows disconnected, the issue is detection (cable, receiver, or GPU), not the couch/desk scripts.

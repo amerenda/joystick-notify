@@ -53,7 +53,10 @@ couch_mode_active() {
     debug "DISPLAY" "Switching to couch output: port=$COUCH_PORT mode=$COUCH_MODE"
 
     # If couch connector is disconnected, the receiver may need 10–20s after CEC wakes it
-    # before it presents EDID. Trigger DRM rescan and retry with longer waits (no reboot needed).
+    # before it presents EDID. Allow 5s initial settle time for CEC wake + receiver EDID,
+    # then trigger DRM rescan and retry with longer waits (no reboot needed).
+    log "display: waiting 5s for receiver to respond after CEC wake..."
+    sleep 5
     _trigger_couch_connector_rescan
     _attempt=1
     _max_attempts=15
