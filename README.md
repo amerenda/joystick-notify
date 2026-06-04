@@ -183,11 +183,27 @@ Required (core workflow):
 - Steam: `steam`
 
 GPU / Display Driver (critical for TV output):
-- **GPU driver must support DDC/I2C (EDID) on all HDMI ports.** The GPU must be able to detect and read EDID from any HDMI display, including the receiver/TV port.
-- **AMD (amdgpu):** Enable DC (display composition): check BIOS for "Integrated Graphics" enabled, and ensure kernel has `amdgpu` loaded. Some systems may need GRUB cmdline: `amdgpu.dc=1` or firmware updates.
-- **NVIDIA:** Ensure NVIDIA driver is installed and X11/Wayland can detect all HDMI connectors. May require EDID emulator if receiver doesn't present EDID during cold boots.
-- **Intel iGPU:** Usually works out-of-box; may need kernel DRM module (`i915` or `xe`) and up-to-date firmware.
-- **Receiver/TV HDMI handshake:** Your receiver/TV must respond on the DDC/I2C line when the GPU probes for EDID. Some older receivers or setups may need an HDMI EDID emulator (hardware workaround) if they don't present a display on cold probes.
+- **The couch HDMI port must be visible to the OS as "connected" for `kscreen-doctor` to switch output to it.** If the TV/receiver is off at boot, the GPU may not detect the port and mark it disconnected — in which case no software can switch to it.
+- **AMD (amdgpu) on Navi/RDNA:** `amdgpu.dc=1` must be set as a kernel parameter. Despite being documented as default on some GPUs, it is not always applied automatically and must be explicit. Without it, display composition (DCN) is disabled and multi-connector hotplug may not function correctly.
+- **EDID at boot:** If the TV/receiver is off when the machine boots, the GPU cannot read EDID from that port and marks it disconnected. The fix is a boot-time EDID override via the DRM debugfs interface. You need:
+  1. An EDID binary for your TV saved to `/lib/firmware/edid/tv.bin` (capture with `get-edid | tee /lib/firmware/edid/tv.bin` while the TV is on, or dump it from `/sys/class/drm/card1-HDMI-A-1/edid`).
+  2. A system service that injects it at boot:
+     ```ini
+     # /etc/systemd/system/hdmi-edid-override.service
+     [Unit]
+     Description=Inject EDID override for HDMI-A-1 (TV/receiver presents no DDC at boot)
+     After=sys-kernel-debug.mount systemd-udev-settle.service
+
+     [Service]
+     Type=oneshot
+     ExecStart=/bin/sh -c 'cp /lib/firmware/edid/tv.bin /sys/kernel/debug/dri/1/HDMI-A-1/edid_override && echo on > /sys/kernel/debug/dri/1/HDMI-A-1/force && echo 1 > /sys/kernel/debug/dri/1/HDMI-A-1/trigger_hotplug'
+     RemainAfterExit=yes
+
+     [Install]
+     WantedBy=multi-user.target
+     ```
+     Enable with `sudo systemctl enable --now hdmi-edid-override.service`. Adjust the DRI path (`dri/1`) and connector name (`HDMI-A-1`) to match your GPU.
+  3. Kernel parameters: `amdgpu.dc=1 drm.edid_firmware=card1-HDMI-A-1:edid/tv.bin video=card1-HDMI-A-1:e` in GRUB as a belt-and-suspenders fallback (the service above is the reliable path).
 
 CEC (recommended):
 - `cec-ctl` (v4l-utils) and/or `cec-client` (libcec). Prefer `cec-ctl` for automatic input switching (no port config).
