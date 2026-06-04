@@ -88,7 +88,11 @@ couch_mode_activate() {
 
         if launcher_exists; then
             ( cec_wake_and_select_input_best_effort ) >/dev/null 2>&1 &
-            couch_mode_active
+            if ! couch_mode_active; then
+                log "couch_mode_activate: FAILED to establish display/audio on TV, tearing down"
+                couch_mode_teardown "display_failed" "$dev"
+                return 0
+            fi
             sleep 1
             log "action: launch steam big picture ($LAUNCHER)"
             debug "SWITCHER" "Setting STEAM_COMPAT_COMMAND_PREFIX=/usr/local/bin/game-wrapper.sh for launch"

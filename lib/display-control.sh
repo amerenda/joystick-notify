@@ -56,11 +56,12 @@ couch_mode_active() {
     # before it presents EDID. Trigger DRM rescan and retry with longer waits (no reboot needed).
     _trigger_couch_connector_rescan
     _attempt=1
-    _max_attempts=6
-    _retry_delay=4
+    _max_attempts=15
+    _retry_delay=2
     while [ "$_attempt" -le "$_max_attempts" ]; do
         _status="$(_couch_connector_status 2>/dev/null)"
         if [ "$_status" = "connected" ]; then
+            log "display: $COUCH_PORT connected (attempt $_attempt/$_max_attempts)"
             break
         fi
         if [ "$_attempt" -lt "$_max_attempts" ]; then
@@ -68,7 +69,9 @@ couch_mode_active() {
             log "display: $COUCH_PORT is $_status (attempt $_attempt/$_max_attempts), waiting ${_retry_delay}s for receiver EDID"
             sleep "$_retry_delay"
         else
-            log "display: $COUCH_PORT still $_status after $_max_attempts attempts - receiver may not be presenting EDID to the PC (try again in a few seconds or see README re EDID emulator)"
+            log "display: FAILED - $COUCH_PORT still $_status after $_max_attempts attempts. Exiting couch mode."
+            log "display: TV/receiver may not be responding to CEC or presenting EDID. Returning to desk mode."
+            return 1
         fi
         _attempt=$((_attempt + 1))
     done
@@ -76,12 +79,15 @@ couch_mode_active() {
     # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
     sleep 0.5
     # Use timeout to prevent hangs if driver is stuck
-    timeout 10 kscreen-doctor \
+    if ! timeout 10 kscreen-doctor \
         "output.${COUCH_PORT}.enable" \
         "output.${COUCH_PORT}.priority.1" \
         "output.${COUCH_PORT}.mode.${COUCH_MODE}" \
         "output.${COUCH_PORT}.position.0,0" \
-        "output.${DESK_PORT}.disable" 2>/dev/null || debug "DISPLAY" "kscreen-doctor failed or timed out for couch"
+        "output.${DESK_PORT}.disable" 2>/dev/null; then
+        log "display: FAILED - kscreen-doctor failed to switch display to $COUCH_PORT. Returning to desk mode."
+        return 1
+    fi
 
     if couch_sink="$(resolve_couch_sink_with_wait)"; then
         log "audio: resolved couch sink -> $couch_sink"
