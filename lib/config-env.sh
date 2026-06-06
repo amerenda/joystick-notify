@@ -24,6 +24,10 @@ CEC_WAKE_DELAY="${CEC_WAKE_DELAY:-0}"
 # Override physical address for Set Stream Path / Active Source (e.g. 2.0.0.0 = receiver HDMI 2). When set, used instead of discovered address so the receiver switches to the correct input even if the CEC dongle is on a different port.
 CEC_ACTIVE_SOURCE_PHYS_ADDR="${CEC_ACTIVE_SOURCE_PHYS_ADDR:-}"
 CEC_POWER_OFF_ON_TEARDOWN="${CEC_POWER_OFF_ON_TEARDOWN:-true}"
+# Re-assert Active Source N times after initial wake to beat competing CEC devices (e.g. Shield).
+# Each retry fires CEC_ACTIVE_SOURCE_RETRY_DELAY seconds after the previous assertion.
+CEC_ACTIVE_SOURCE_RETRIES="${CEC_ACTIVE_SOURCE_RETRIES:-2}"
+CEC_ACTIVE_SOURCE_RETRY_DELAY="${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
 
 # KDE Plasma
 COUCH_DESKTOP_NAME="${COUCH_DESKTOP_NAME:-Couch}"

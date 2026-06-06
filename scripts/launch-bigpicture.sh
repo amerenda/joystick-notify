@@ -145,8 +145,12 @@ main() {
   enable_hidecursor_best_effort
 
   if is_steam_running; then
-    # Steam already running → just switch it into Big Picture
-    open_bigpicture &
+    # Steam already running → switch to Big Picture, then move its window to the
+    # current virtual desktop (Couch). Without this, the existing Steam window stays
+    # on whatever desktop it was on and is invisible from the Couch workspace.
+    open_bigpicture
+    sleep 2
+    move_steam_windows_to_current_desktop_best_effort
   else
     # Steam not running → start directly into Big Picture
     steam -gamepadui &

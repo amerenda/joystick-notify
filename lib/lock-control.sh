@@ -104,8 +104,11 @@ any_controller_present() {
         [ -e "$f" ] || continue
         name="$(grep -m1 '^HID_NAME=' "$f" 2>/dev/null | cut -d= -f2- || true)"
         uniq="$(grep -m1 '^HID_UNIQ=' "$f" 2>/dev/null | cut -d= -f2- || true)"
-        [[ "$name" == *Controller* ]] || continue
-        [[ "$uniq" == *:* ]] || continue
+        [[ "$name" == *Controller* ]] || [[ "$name" == *Gamepad* ]] || [[ "$name" == *8BitDo* ]] || continue
+        [[ "$name" == *LED* ]] && continue
+        [[ "$name" == *Light* ]] && continue
+        [[ "$name" == *Lighting* ]] && continue
+        [ -n "$uniq" ] || continue
         return 0
     done
 

@@ -48,6 +48,18 @@ cec_wake_and_select_input_best_effort() {
             [ "${CEC_WAKE_DELAY:-0}" -gt 0 ] 2>/dev/null && sleep "$CEC_WAKE_DELAY"
             cec-ctl "${adapter_args[@]}" --to 0 --set-stream-path "phys-addr=$addr" >/dev/null 2>&1 || true
             cec-ctl "${adapter_args[@]}" --to 0 --active-source "phys-addr=$addr" >/dev/null 2>&1 || true
+            # Re-assert active source in background to reclaim input from competing CEC devices
+            # (e.g. Nvidia Shield waking and sending its own Active Source on cold start).
+            if [ "${CEC_ACTIVE_SOURCE_RETRIES:-2}" -gt 0 ] 2>/dev/null; then
+                (
+                    for _r in $(seq 1 "${CEC_ACTIVE_SOURCE_RETRIES:-2}"); do
+                        sleep "${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
+                        log "cec: active-source re-assert (retry $_r/${CEC_ACTIVE_SOURCE_RETRIES:-2}) phys-addr=$addr"
+                        cec-ctl "${adapter_args[@]}" --to 0 --set-stream-path "phys-addr=$addr" >/dev/null 2>&1 || true
+                        cec-ctl "${adapter_args[@]}" --to 0 --active-source "phys-addr=$addr" >/dev/null 2>&1 || true
+                    done
+                ) &
+            fi
         else
             log "cec: input switch skipped (no address: set CEC_ACTIVE_SOURCE_PHYS_ADDR=2.0.0.0 for receiver HDMI 2)"
             cec-ctl "${adapter_args[@]}" --to 0 --image-view-on >/dev/null 2>&1 || true
@@ -92,6 +104,16 @@ cec_wake_and_select_input_best_effort() {
         done
         if [ "$ok" -eq 1 ]; then
             log "cec: active-source sent (cec-client -p $CEC_HDMI_PORT addr=${CEC_ACTIVE_SOURCE_PHYS_ADDR:-own})"
+            # Re-assert active source in background to reclaim input from competing CEC devices.
+            if [ "${CEC_ACTIVE_SOURCE_RETRIES:-2}" -gt 0 ] 2>/dev/null; then
+                (
+                    for _r in $(seq 1 "${CEC_ACTIVE_SOURCE_RETRIES:-2}"); do
+                        sleep "${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
+                        log "cec: active-source re-assert (retry $_r/${CEC_ACTIVE_SOURCE_RETRIES:-2})"
+                        printf '%s\nq\n' "$tx_cmd" | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1 || true
+                    done
+                ) &
+            fi
         else
             log "cec: warn: active-source failed after 5 attempts (cec-client -p $CEC_HDMI_PORT)"
         fi

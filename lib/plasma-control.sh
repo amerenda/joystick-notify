@@ -152,6 +152,27 @@ save_and_switch_to_couch_activity_best_effort() {
     fi
 }
 
+move_steam_windows_to_current_desktop_best_effort() {
+    have qdbus6 || return 0
+    local tmpscript sid
+    tmpscript="$(mktemp /tmp/kwin-jn-XXXXX.js 2>/dev/null)" || return 0
+    # Plasma 6 KWin scripting: w.desktops takes an array of VirtualDesktop objects.
+    cat >"$tmpscript" <<'KWIN_JS'
+var wins = workspace.windowList();
+for (var i = 0; i < wins.length; i++) {
+    var w = wins[i];
+    if (w.resourceClass === "steam" || w.resourceName === "steam") {
+        w.desktops = [workspace.currentDesktop];
+    }
+}
+KWIN_JS
+    sid="$(qdbus6 org.kde.KWin /Scripting loadScript "$tmpscript" "jn-steam-desktop" 2>/dev/null)" || { rm -f "$tmpscript"; return 0; }
+    qdbus6 org.kde.KWin "/Scripting/Script${sid}" run 2>/dev/null || true
+    qdbus6 org.kde.KWin "/Scripting/Script${sid}" stop 2>/dev/null || true
+    rm -f "$tmpscript" 2>/dev/null || true
+    log "plasma: moved steam windows to current desktop"
+}
+
 restore_previous_activity_best_effort() {
     local prev
     [ -r "$ACTIVITY_STATE" ] || return 0
