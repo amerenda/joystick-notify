@@ -79,6 +79,7 @@ couch_mode_activate() {
 
     if acquire_lock "$dev"; then
         COUCH_ACTIVATED_THIS_RUN=true
+        echo "couch" > "$LAST_MODE_FILE" 2>/dev/null || true
         log "begin: couch_mode_activate ($dev)"
         debug "SWITCHER" "Applying couch mode settings..."
         set_dnd true
@@ -132,6 +133,7 @@ couch_mode_teardown() {
     fi
     
     log "teardown: $why ${dev:-}"
+    echo "desk" > "$LAST_MODE_FILE" 2>/dev/null || true
     cancel_pending_timer
     cancel_steam_watcher
     [ -n "${AUDIO_RETRY_PID:-}" ] && kill "$AUDIO_RETRY_PID" 2>/dev/null || true
@@ -163,14 +165,28 @@ fi
 # Note: The tail -n 0 will skip to the end of the file as the loop starts.
 # However, any events written after tail is attached to the file will be read.
 (
-    # Detect already-connected controllers and inject synthetic add events.
-    # This runs in a subshell to avoid blocking the main loop.
-    # Small sleep to allow tail to attach to the file.
-    sleep 0.1
-    for uniq in $(list_present_controller_uniq); do
-        debug "SWITCHER" "Found already-connected controller at startup: $uniq"
-        emit_event "add" "$uniq"
-    done
+    # Detect already-connected controllers and emit synthetic add events, but only
+    # when the last known mode was not desk. This prevents a passively-connected
+    # USB controller (e.g. 8BitDo left plugged in) from triggering couch mode on
+    # every service restart (install, crash recovery, etc.).
+    #
+    # Gate logic:
+    #   - No LAST_MODE_FILE → fresh session/reboot → scan (safe default)
+    #   - LAST_MODE_FILE = "couch" → service restarted mid-session → scan to resume
+    #   - LAST_MODE_FILE = "desk" → user was in desk mode → skip scan
+    #
+    # udev-fired events (controller physically plugged/paired after startup) always
+    # bypass this gate and are handled normally.
+    _last_mode="$(cat "$LAST_MODE_FILE" 2>/dev/null || true)"
+    if [ "${_last_mode}" = "desk" ]; then
+        log "startup: last mode was desk — skipping controller scan (controller may be passively connected)"
+    else
+        sleep 0.1
+        for uniq in $(list_present_controller_uniq); do
+            debug "SWITCHER" "Found already-connected controller at startup: $uniq"
+            emit_event "add" "$uniq"
+        done
+    fi
 ) >/dev/null 2>&1 &
 
 while IFS= read -r line; do

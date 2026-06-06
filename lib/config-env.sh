@@ -72,6 +72,11 @@ MANUAL_LOCK="$JN_LOCKS/manual.lock"
 DESKTOP_STATE="$JN_LOCKS/prev-desktop.$(id -u)"
 ACTIVITY_STATE="$JN_LOCKS/prev-activity.$(id -u)"
 CEC_STATE="$JN_LOCKS/cec-used.$(id -u)"
+# Tracks the last intentional mode (couch/desk). Written on every activate/teardown.
+# Lives in /tmp so it clears on reboot. Used to gate the startup controller scan:
+# if the last known mode was desk, the scan is skipped so a passively-connected
+# USB controller (e.g. charging cable) does not trigger couch mode on service restart.
+LAST_MODE_FILE="$JN_LOCKS/last-mode.$(id -u)"
 
 # Paths - Scripts
 LAUNCHER="/usr/local/bin/launch-bigpicture.sh"
