@@ -22,7 +22,6 @@ case "${1:-status}" in
         echo "couch" > "$MANUAL_LOCK"
         chmod 666 "$MANUAL_LOCK" 2>/dev/null || true
         log "manual: switching to couch mode"
-        # Trigger couch mode activation by writing synthetic event
         printf '%s %s %s\n' "$(date -Is)" "manual_couch" "manual" >> "$LOG"
         echo "Manual couch mode enabled. Run 'couch-switch.sh desk' or 'couch-switch.sh auto' to change."
         ;;
@@ -30,9 +29,23 @@ case "${1:-status}" in
         echo "desk" > "$MANUAL_LOCK"
         chmod 666 "$MANUAL_LOCK" 2>/dev/null || true
         log "manual: switching to desk mode"
-        # Trigger desk mode by writing synthetic event
         printf '%s %s %s\n' "$(date -Is)" "manual_desk" "manual" >> "$LOG"
         echo "Manual desk mode enabled. Run 'couch-switch.sh couch' or 'couch-switch.sh auto' to change."
+        ;;
+    toggle)
+        if is_couch_mode; then
+            echo "desk" > "$MANUAL_LOCK"
+            chmod 666 "$MANUAL_LOCK" 2>/dev/null || true
+            log "manual: toggle -> desk mode"
+            printf '%s %s %s\n' "$(date -Is)" "manual_desk" "manual" >> "$LOG"
+            echo "Toggled to desk mode. Run 'couch-switch.sh auto' to restore automatic control."
+        else
+            echo "couch" > "$MANUAL_LOCK"
+            chmod 666 "$MANUAL_LOCK" 2>/dev/null || true
+            log "manual: toggle -> couch mode"
+            printf '%s %s %s\n' "$(date -Is)" "manual_couch" "manual" >> "$LOG"
+            echo "Toggled to couch mode. Run 'couch-switch.sh auto' to restore automatic control."
+        fi
         ;;
     auto)
         rm -f "$MANUAL_LOCK"
@@ -56,11 +69,12 @@ case "${1:-status}" in
         fi
         ;;
     *)
-        echo "Usage: couch-switch.sh [couch|desk|auto|status]"
+        echo "Usage: couch-switch.sh [couch|desk|toggle|auto|status]"
         echo ""
         echo "Commands:"
         echo "  couch   - Switch to couch mode and lock (ignores controller disconnect)"
         echo "  desk    - Switch to desk mode and lock (ignores controller connect)"
+        echo "  toggle  - Switch to the opposite of the current mode"
         echo "  auto    - Return to automatic controller-driven mode"
         echo "  status  - Show current mode and override status"
         exit 1

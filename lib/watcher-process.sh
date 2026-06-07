@@ -63,14 +63,15 @@ start_steam_watcher() {
     fi
 
     (
-        local seen_running=0 misses=0 seen_game=0
+        local seen_running=0 misses=0 seen_game=0 no_ctrl_since=0
         while [ -e "$LOCK" ]; do
             if is_steam_running; then
                 seen_running=1
                 misses=0
-                
+
                 if is_game_running; then
                     seen_game=1
+                    no_ctrl_since=0
                 else
                     if [ "$seen_game" -eq 1 ] && ! any_controller_present; then
                         log "steam: game exited and no controllers present -> starting grace teardown"
@@ -78,6 +79,21 @@ start_steam_watcher() {
                         exit 0
                     fi
                     seen_game=0
+
+                    # Auto-exit couch mode if steam is running but no controller for STEAM_NO_CONTROLLER_TIMEOUT seconds
+                    if any_controller_present; then
+                        no_ctrl_since=0
+                    else
+                        _now="$(date +%s)"
+                        if [ "$no_ctrl_since" -eq 0 ]; then
+                            no_ctrl_since="$_now"
+                            log "steam: no controller detected, ${STEAM_NO_CONTROLLER_TIMEOUT}s idle timeout started"
+                        elif [ "$(( _now - no_ctrl_since ))" -ge "$STEAM_NO_CONTROLLER_TIMEOUT" ]; then
+                            log "steam: no controller for ${STEAM_NO_CONTROLLER_TIMEOUT}s -> exiting couch mode"
+                            emit_event "steam_exit" "no_controller_timeout"
+                            exit 0
+                        fi
+                    fi
                 fi
             else
                 if [ "$seen_running" -eq 1 ]; then

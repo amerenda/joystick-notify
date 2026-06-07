@@ -166,26 +166,26 @@ fi
 # However, any events written after tail is attached to the file will be read.
 (
     # Detect already-connected controllers and emit synthetic add events, but only
-    # when the last known mode was not desk. This prevents a passively-connected
+    # when the last known mode was couch. This prevents a passively-connected
     # USB controller (e.g. 8BitDo left plugged in) from triggering couch mode on
-    # every service restart (install, crash recovery, etc.).
+    # fresh boot or after desk mode.
     #
     # Gate logic:
-    #   - No LAST_MODE_FILE → fresh session/reboot → scan (safe default)
+    #   - No LAST_MODE_FILE → fresh boot (file lives in /tmp, cleared on reboot) → skip scan, boot to desk
     #   - LAST_MODE_FILE = "couch" → service restarted mid-session → scan to resume
     #   - LAST_MODE_FILE = "desk" → user was in desk mode → skip scan
     #
     # udev-fired events (controller physically plugged/paired after startup) always
     # bypass this gate and are handled normally.
     _last_mode="$(cat "$LAST_MODE_FILE" 2>/dev/null || true)"
-    if [ "${_last_mode}" = "desk" ]; then
-        log "startup: last mode was desk — skipping controller scan (controller may be passively connected)"
-    else
+    if [ "${_last_mode}" = "couch" ]; then
         sleep 0.1
         for uniq in $(list_present_controller_uniq); do
             debug "SWITCHER" "Found already-connected controller at startup: $uniq"
             emit_event "add" "$uniq"
         done
+    else
+        log "startup: last mode was '${_last_mode:-fresh boot}' — skipping controller scan (booting to desk)"
     fi
 ) >/dev/null 2>&1 &
 
