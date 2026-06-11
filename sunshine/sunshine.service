@@ -1,0 +1,17 @@
+[Unit]
+Description=Sunshine game stream host for Moonlight
+After=graphical-session.target plasma-core.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=DISPLAY=:1
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=KWIN_WAYLAND_NO_PERMISSION_CHECKS=1
+ExecStart=/usr/bin/sunshine
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Sunshine
+Comment=Self-hosted game stream host for Moonlight
+Exec=/usr/bin/sunshine
+Icon=dev.lizardbyte.app.Sunshine
+Type=Application
+Categories=RemoteAccess;Network;
+Keywords=gamestream;stream;moonlight;remote play;
+StartupWMClass=dev.lizardbyte.app.Sunshine
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
+NoDisplay=false
