@@ -19,8 +19,10 @@ qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop 2 >/dev/null 2>&1 || tr
 
 # Background: poll for the Steam Big Picture window and move it to desktop 2.
 # BP can take 15-25s to appear; KDE restores it to its previous desktop (usually 1).
+# Use unique script names per iteration — KWin rejects duplicate names with -1.
 (
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    mover_pid=$BASHPID
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         sleep 3
         tmpscript=$(mktemp /tmp/kwin-jn-prep-XXXXX.js 2>/dev/null) || break
         cat > "$tmpscript" << 'KWIN_JS'
@@ -36,7 +38,8 @@ for (var i = 0; i < wins.length; i++) {
     }
 }
 KWIN_JS
-        sid=$(qdbus6 org.kde.KWin /Scripting loadScript "$tmpscript" "jn-steam-mover" 2>/dev/null) || { rm -f "$tmpscript"; continue; }
+        script_name="jn-sm-${mover_pid}-${i}"
+        sid=$(qdbus6 org.kde.KWin /Scripting loadScript "$tmpscript" "$script_name" 2>/dev/null) || { rm -f "$tmpscript"; continue; }
         qdbus6 org.kde.KWin "/Scripting/Script${sid}" run 2>/dev/null || true
         qdbus6 org.kde.KWin "/Scripting/Script${sid}" stop 2>/dev/null || true
         rm -f "$tmpscript" 2>/dev/null || true
