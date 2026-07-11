@@ -33,3 +33,13 @@ set_dnd() {
         org.freedesktop.Notifications.DoNotDisturbMode "$state" >/dev/null 2>&1 || true
     log "dnd: set to $state"
 }
+
+set_screen_lock() {
+    # Prevent the screen from locking mid-session (local couch mode); shared with
+    # Sunshine's remote-streaming prep/undo hooks. See sunshine/couch-mode-screen-unlock.sh.
+    local action="${1:?set_screen_lock requires start|stop}"
+    local script="/usr/local/bin/couch-mode-screen-unlock.sh"
+    [ -x "$script" ] || return 0
+    "$script" "$action" >/dev/null 2>&1 || true
+    log "screen-lock: $action"
+}
