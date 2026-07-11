@@ -83,6 +83,7 @@ couch_mode_activate() {
         log "begin: couch_mode_activate ($dev)"
         debug "SWITCHER" "Applying couch mode settings..."
         set_dnd true
+        set_screen_lock start
         save_and_switch_to_couch_activity_best_effort
         save_and_switch_to_couch_desktop_best_effort
         start_steam_watcher
@@ -143,6 +144,7 @@ couch_mode_teardown() {
     restore_previous_activity_best_effort
     cec_standby_best_effort
     set_dnd false
+    set_screen_lock stop
     rm -f "$CEC_STATE" >/dev/null 2>&1 || true
     rm -f "$LOCK" || true
     note "🛑 Couch-mode Ended" "${why:-ended} ${dev:-}"

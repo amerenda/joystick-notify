@@ -10,6 +10,9 @@
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 export XDG_RUNTIME_DIR=/run/user/1000
 
+# Don't let the screen lock mid-stream, and dismiss it if already locked.
+/usr/local/bin/couch-mode-screen-unlock.sh start || true
+
 # Save current desktop (default to 1 if unavailable)
 current=$(qdbus6 org.kde.KWin /KWin org.kde.KWin.currentDesktop 2>/dev/null || echo "")
 echo "${current:-1}" > /tmp/sunshine-prev-desktop

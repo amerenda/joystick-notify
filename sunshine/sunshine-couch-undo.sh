@@ -10,3 +10,6 @@ export XDG_RUNTIME_DIR=/run/user/1000
 prev=$(cat /tmp/sunshine-prev-desktop 2>/dev/null || echo "1")
 rm -f /tmp/sunshine-prev-desktop
 qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop "${prev:-1}" 2>/dev/null || true
+
+# Restore normal screen-lock behavior now that the stream has ended.
+/usr/local/bin/couch-mode-screen-unlock.sh stop || true
