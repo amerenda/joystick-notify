@@ -1,0 +1,23 @@
+# /etc/systemd/system/plasmalogin-desk-primary.service
+#
+# Forces the desk monitor (HDMI-A-2) primary and disables the couch/TV
+# output (HDMI-A-1) inside the plasmalogin greeter's own session, before
+# anyone logs in. See scripts/force-desk-primary-greeter.sh for why this is
+# needed in addition to the user-scoped force-desk-primary.service.
+#
+# PartOf=plasmalogin.service means this also re-fires whenever plasmalogin
+# restarts (e.g. returning to the greeter after logout), not just at boot.
+
+[Unit]
+Description=Force desk monitor primary for the plasmalogin greeter (pre-login)
+Documentation=https://github.com/amerenda/joystick-notify
+After=plasmalogin.service
+PartOf=plasmalogin.service
+
+[Service]
+Type=oneshot
+User=plasmalogin
+ExecStart=/usr/local/bin/force-desk-primary-greeter.sh
+
+[Install]
+WantedBy=graphical.target

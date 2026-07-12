@@ -84,6 +84,13 @@ Enforces the desk monitor as the primary display and **disables the TV** by defa
 - Checks for `/tmp/joystick-notify/locks/owner.lock`; if it exists (Couch Mode), it exits without doing anything.
 - If no lock exists, it ensures `HDMI-A-2` is primary and `HDMI-A-1` is disabled.
 - This prevents the TV from stealing focus or being used as a secondary monitor when you just want to use your desk.
+- Only reaches the *logged-in* Plasma session (`systemd --user`, `After=graphical-session.target`) - it cannot run before login.
+
+### `scripts/force-desk-primary-greeter.sh`
+Same enforcement, but for the **plasmalogin login screen itself**, before anyone logs in.
+- Runs as a `plasmalogin-desk-primary.service` system unit (`User=plasmalogin`), started `After=plasmalogin.service`.
+- Waits for the greeter's own session bus, then runs the same `kscreen-doctor` disable-TV/enable-desk command against it.
+- Exists because both HDMI outputs otherwise stay extended at the login screen (neither `force-desk-primary.sh` nor the udev hotplug trigger reach the greeter's session). On hardware where the GPU driver mishandles a dual-monitor boot-time modeset, this can show up as visible corruption/ghosting on the login screen until the first repaint.
 
 ### `scripts/game-wrapper.sh`
 A wrapper script that conditionally uses `gamescope` when the TV is active.

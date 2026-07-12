@@ -47,6 +47,7 @@ sudo install -Dm0755 "$ROOT/scripts/joystick-event.sh" /usr/local/bin/joystick-e
 sudo install -Dm0755 "$ROOT/scripts/launch-bigpicture.sh" /usr/local/bin/launch-bigpicture.sh
 sudo install -Dm0755 "$ROOT/scripts/game-wrapper.sh" /usr/local/bin/game-wrapper.sh
 sudo install -Dm0755 "$ROOT/scripts/force-desk-primary.sh" /usr/local/bin/force-desk-primary.sh
+sudo install -Dm0755 "$ROOT/scripts/force-desk-primary-greeter.sh" /usr/local/bin/force-desk-primary-greeter.sh
 sudo install -Dm0755 "$ROOT/scripts/couch-switch.sh" /usr/local/bin/couch-switch.sh
 sudo install -Dm0755 "$ROOT/scripts/check-gpu-connectors.sh" /usr/local/bin/check-gpu-connectors.sh
 sudo install -Dm0755 "$ROOT/system-tray/joystick-tray.py" /usr/local/bin/joystick-notify-tray
@@ -78,6 +79,13 @@ sed "s/__USER__/${USER:-$(id -un)}/g" "$ROOT/udev/98-monitor-hotplug.rules" \
     | sudo tee /etc/udev/rules.d/98-monitor-hotplug.rules > /dev/null
 sudo chmod 0644 /etc/udev/rules.d/98-monitor-hotplug.rules
 sudo udevadm control --reload-rules
+
+echo "[joystick-notify] Installing plasmalogin greeter system unit (pre-login desk-primary enforcement) ..."
+sudo install -Dm0644 "$ROOT/systemd/plasmalogin-desk-primary.service" /etc/systemd/system/plasmalogin-desk-primary.service
+sudo systemctl daemon-reload
+sudo systemctl enable plasmalogin-desk-primary.service
+echo "[joystick-notify] NOTE: plasmalogin-desk-primary.service takes effect on the next greeter start (login screen)."
+echo "                  Not starting it now - there is no active greeter session to target while you're logged in."
 
 echo "[joystick-notify] Installing systemd user unit ..."
 install -Dm0644 "$ROOT/systemd/joystick-notify.service" "$HOME/.config/systemd/user/joystick-notify.service"
