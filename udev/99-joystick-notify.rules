@@ -100,7 +100,13 @@ ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_CLASS}=="wireless", ENV{ID_USB_SUBCL
 
 # --- 8BitDo Ultimate 2 Bluetooth - keep connection alive
 # Match by Bluetooth HID vendor:product (2DC8:6012) and disable power management
-ACTION=="add", SUBSYSTEM=="hid", KERNELS=="*2DC8:6012*", RUN+="/bin/sh -c 'echo on > /sys$DEVPATH/../../../power/control 2>/dev/null || true'"
+#
+# NOTE: must be $devpath (lowercase) - udev's RUN value substitution parser
+# only recognizes its own lowercase %-/$-style keywords (e.g. $devpath, same
+# as %p). $DEVPATH (uppercase) is not a valid substitution type, so udev
+# rejected this whole RUN clause at rule-load time ("invalid substitution
+# type", logged by systemd-udevd) and it silently never ran.
+ACTION=="add", SUBSYSTEM=="hid", KERNELS=="*2DC8:6012*", RUN+="/bin/sh -c 'echo on > /sys$devpath/../../../power/control 2>/dev/null || true'"
 
 # --- 8BitDo Ultimate 2 Wireless over Bluetooth (VID/PID 2dc8:6012)
 # Allow Steam/SDL HIDAPI to open hidraw.
