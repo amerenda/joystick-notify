@@ -46,6 +46,16 @@ FORCE_DESK_PRIMARY="${FORCE_DESK_PRIMARY:-false}"
 DESK_MODE="${DESK_MODE:-2560x1440@144}"
 COUCH_MODE="${COUCH_MODE:-3840x2160@60}"
 
+# Underscan compensation (percent, 0-N) for the couch/TV output. Most TVs
+# apply their own overscan (crop + zoom) on HDMI input unless the input is
+# explicitly set to a "PC"/no-overscan mode in the TV's own settings - fix
+# that on the TV first if possible, since it keeps full 1:1 pixel mapping.
+# This is a GPU-side fallback: it shrinks the rendered image by N% so the
+# TV's crop lands back on the frame edge, at the cost of a slightly softer
+# image (the border pixels are never shown). Leave at 0 (no-op) unless
+# you've confirmed the TV is still zooming with no PC/overscan-free mode.
+COUCH_OVERSCAN="${COUCH_OVERSCAN:-0}"
+
 # Audio
 HEADSET_SINK="${HEADSET_SINK:-alsa_output.usb-SteelSeries_Arctis_Nova_7X-00.iec958-stereo}"
 COUCH_ALSA_CARD="${COUCH_ALSA_CARD:-2}"

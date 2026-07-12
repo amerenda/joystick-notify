@@ -226,6 +226,11 @@ Virtual desktop:
 - `COUCH_DESKTOP_NAME=Couch`
 - `COUCH_DESKTOP_NUM=` (optional override; if set, name lookup is skipped)
 
+Display:
+- `DESK_PORT=HDMI-A-2`, `COUCH_PORT=HDMI-A-1`
+- `DESK_MODE=2560x1440@144`, `COUCH_MODE=3840x2160@60`
+- `COUCH_OVERSCAN=0`: underscan compensation percent for the TV output. If the TV crops/zooms the picture and there's no "PC"/"Screen Fit"/no-overscan mode in the TV's own settings, raise this (try 2-5 first) to shrink the rendered image so the TV's crop lands back on the frame edge. Fixing it on the TV is preferred - this GPU-side workaround costs a bit of sharpness since the border pixels are never shown.
+
 CEC:
 - `CEC_ENABLED=true`
 - `CEC_HDMI_PORT=3` (fallback for cec-client when cec-ctl is not used)
