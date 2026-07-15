@@ -124,6 +124,32 @@ cec_wake_and_select_input_best_effort() {
     log "cec: skipped (missing cec-ctl/cec-client)"
 }
 
+cec_allm_best_effort() {
+    local mode="${1:-on}"  # on | off
+    [ "$CEC_ENABLED" = "true" ] || [ "$CEC_ENABLED" = "1" ] || return 0
+    [ "${CEC_ALLM_ENABLED:-true}" = "true" ] || return 0
+    have cec-ctl && compgen -G "/dev/cec*" >/dev/null || { log "cec: ALLM skipped (no cec-ctl)"; return 0; }
+
+    local adapter_args=()
+    [ -n "${CEC_ADAPTER:-}" ] && adapter_args+=( -d "$CEC_ADAPTER" )
+    local addr
+    if [ -n "${CEC_ACTIVE_SOURCE_PHYS_ADDR:-}" ]; then
+        addr="$CEC_ACTIVE_SOURCE_PHYS_ADDR"
+    else
+        addr="$(get_cec_phys_addr 2>/dev/null)" || true
+    fi
+    if [ -z "${addr:-}" ]; then
+        log "cec: ALLM skipped (no physical address)"
+        return 0
+    fi
+
+    cec-ctl "${adapter_args[@]}" \
+        --report-current-latency \
+        "phys-addr=${addr},video-latency=1,low-latency-mode=${mode},audio-out-compensated=na,audio-out-delay=0" \
+        >/dev/null 2>&1 || true
+    log "cec: ALLM ${mode} (phys-addr=${addr})"
+}
+
 cec_standby_best_effort() {
     [ "$CEC_ENABLED" = "true" ] || [ "$CEC_ENABLED" = "1" ] || return 0
     [ "$CEC_POWER_OFF_ON_TEARDOWN" = "true" ] || [ "$CEC_POWER_OFF_ON_TEARDOWN" = "1" ] || return 0
