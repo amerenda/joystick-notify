@@ -89,7 +89,7 @@ couch_mode_activate() {
         start_steam_watcher
 
         if launcher_exists; then
-            ( cec_wake_and_select_input_best_effort ) >/dev/null 2>&1 &
+            ( cec_wake_and_select_input_best_effort; cec_allm_best_effort "on" ) >/dev/null 2>&1 &
             if ! couch_mode_active; then
                 log "couch_mode_activate: FAILED to establish display/audio on TV, tearing down"
                 couch_mode_teardown "display_failed" "$dev"
@@ -142,6 +142,7 @@ couch_mode_teardown() {
     desk_mode_active
     restore_previous_desktop_best_effort
     restore_previous_activity_best_effort
+    cec_allm_best_effort "off"
     cec_standby_best_effort
     set_dnd false
     set_screen_lock stop

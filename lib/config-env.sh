@@ -30,6 +30,10 @@ CEC_POWER_OFF_ON_TEARDOWN="${CEC_POWER_OFF_ON_TEARDOWN:-true}"
 # Each retry fires CEC_ACTIVE_SOURCE_RETRY_DELAY seconds after the previous assertion.
 CEC_ACTIVE_SOURCE_RETRIES="${CEC_ACTIVE_SOURCE_RETRIES:-2}"
 CEC_ACTIVE_SOURCE_RETRY_DELAY="${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
+# Send ALLM (Auto Low Latency Mode / game mode) signal via CEC when entering/leaving couch mode.
+# Requires the TV to have Auto Game Mode enabled (Samsung: General → External Device Manager → HDMI Game Mode).
+# Works with a receiver in the chain as long as the receiver passes CEC through.
+CEC_ALLM_ENABLED="${CEC_ALLM_ENABLED:-true}"
 
 # KDE Plasma
 COUCH_DESKTOP_NAME="${COUCH_DESKTOP_NAME:-Couch}"
