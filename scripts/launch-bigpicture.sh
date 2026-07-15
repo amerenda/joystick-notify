@@ -121,6 +121,10 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
 export SDL_VIDEODRIVER=wayland
 export QT_QPA_PLATFORM=wayland
 export STEAM_USE_WAYLAND=1
+# KDE reports 1.7x scale on the 4K TV, which Steam inherits and uses for overlay rendering,
+# making the in-game overlay appear ~70% larger than intended for TV viewing distance.
+# Force 1x so Steam uses its own TV-appropriate sizing rather than the desktop DPI.
+export STEAM_FORCE_DESKTOPUI_SCALING=1
 export STEAM_COMPAT_COMMAND_PREFIX="/usr/local/bin/game-wrapper.sh"
 
 # Always log the prefix setting to verify it's happening
