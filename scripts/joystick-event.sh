@@ -18,6 +18,12 @@ if [ -f "$LIB_DIR/config-env.sh" ]; then
 fi
 DEBUG_BLUETOOTH="${DEBUG_BLUETOOTH:-false}"
 
+# Restore flock file path: config-env.sh overrides LOCK to owner.lock, but this
+# script must flock events.lock (the write-serialization lock for the event log).
+# EVENTS_LOCK is set by config-env.sh to the correct value; fall back to the
+# inline path if config-env.sh was not found.
+LOCK="${EVENTS_LOCK:-$JN_LOCKS/events.lock}"
+
 # udev normally sets ACTION, but we also override it in the udev rule to map bind/unbind -> add/remove.
 ACT="${ACTION:-add}"
 

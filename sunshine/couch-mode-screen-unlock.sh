@@ -27,12 +27,17 @@ case "$ACTION" in
   start)
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock false
 
-    # Best-effort: dismiss an already-active lock screen. There is no supported,
-    # password-free "unlock" API in modern KDE (removed for security reasons) —
-    # this just terminates the greeter UI process if the screen happens to
-    # already be locked when a session starts. If the greeter isn't running,
-    # this is a no-op.
-    pkill -x kscreenlocker_greet 2>/dev/null || true
+    # Best-effort: dismiss an already-active lock screen.
+    # 1. loginctl unlock-session — the correct way to unlock a KDE session; works
+    #    as the session owner without root. Finds the seat (graphical) session.
+    # 2. pkill -f fallback — kills the greeter process directly.
+    #    Must use -f (full command path), not -x (exact comm name), because Linux
+    #    truncates /proc/PID/comm to 15 chars: kscreenlocker_greet → kscreenlocker_g,
+    #    so -x silently matches nothing.
+    _seat_session="$(loginctl 2>/dev/null | awk -v uid="$(id -u)" \
+        'NR>1 && $2==uid && $4!="" && $4!="-" {print $1; exit}' || true)"
+    [ -n "${_seat_session:-}" ] && loginctl unlock-session "$_seat_session" 2>/dev/null || true
+    pkill -f kscreenlocker_greet 2>/dev/null || true
     ;;
   stop)
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock true
