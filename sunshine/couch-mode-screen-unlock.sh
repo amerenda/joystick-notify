@@ -41,6 +41,14 @@ case "$ACTION" in
     ;;
   stop)
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock true
+    # Signal the running kscreenlocker daemon to reload its config.  Without
+    # this, the daemon stays in its disabled state even though we just wrote
+    # Autolock=true, and DPMS never re-arms.
+    qdbus6 org.kde.screensaver /ScreenSaver org.kde.screensaver.configure 2>/dev/null || true
+    # Reset KWin's idle countdown so DPMS starts from "now", not from the last
+    # input event (which may have been minutes ago while in couch mode).
+    qdbus6 org.freedesktop.ScreenSaver /ScreenSaver \
+        org.freedesktop.ScreenSaver.SimulateUserActivity 2>/dev/null || true
     ;;
   *)
     echo "Usage: $0 start|stop" >&2
