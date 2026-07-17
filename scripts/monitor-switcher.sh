@@ -68,11 +68,14 @@ couch_mode_activate() {
             log "lock: found stale lock from previous session (owner=$current_owner), doing full activation"
             rm -f "$LOCK" 2>/dev/null || true
         else
-            # Already in couch mode with valid owner (activated this run). Update owner ID but skip display/CEC setup.
+            # Already in couch mode with valid owner (activated this run). Update owner ID and
+            # re-assert CEC wake in case the TV went to standby independently (e.g. overnight
+            # the TV sleeps on its own while the lock is still held because controllers stayed present).
             echo -n "$dev" > "$LOCK"
             log "lock: updated owner to $dev (resuming existing session)"
             note "🎮 Controller Reconnected" "$dev (new owner)"
             start_steam_watcher
+            ( cec_wake_and_select_input_best_effort; cec_allm_best_effort "on" ) >/dev/null 2>&1 &
             return 0
         fi
     fi
