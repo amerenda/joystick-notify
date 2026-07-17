@@ -228,11 +228,10 @@ while IFS= read -r line; do
             ;;
         grace_timeout)
             [ -e "$LOCK" ] || { log "grace: timeout ignored (no lock)"; cancel_pending_timer; continue; }
-            if any_controller_present; then
-                log "grace: timeout ignored (controllers present)"
-                cancel_pending_timer
-                continue
-            fi
+            # Only the OWNER reconnecting during the grace period should cancel teardown.
+            # Other controllers being present (e.g. a second controller whose USB dongle stays
+            # plugged in) is not a reason to stay in couch mode — if the owner reconnected,
+            # the add event would have already cancelled this timer via cancel_pending_timer.
             owner_now="$(lock_owner)"
             if [ -n "${owner_now:-}" ] && id_present "$owner_now"; then
                 log "grace: timeout ignored (owner present: $owner_now)"
