@@ -73,15 +73,19 @@ start_steam_watcher() {
                     seen_game=1
                     no_ctrl_since=0
                 else
-                    if [ "$seen_game" -eq 1 ] && ! any_controller_present; then
-                        log "steam: game exited and no controllers present -> starting grace teardown"
+                    _owner="$(lock_owner 2>/dev/null || true)"
+                    if [ "$seen_game" -eq 1 ] && { [ -z "$_owner" ] || ! id_present "$_owner"; }; then
+                        log "steam: game exited and owner controller gone -> starting grace teardown"
                         emit_event "grace_timeout" "game_exit_timeout"
                         exit 0
                     fi
                     seen_game=0
 
-                    # Auto-exit couch mode if steam is running but no controller for STEAM_NO_CONTROLLER_TIMEOUT seconds
-                    if any_controller_present; then
+                    # Auto-exit couch mode if the owner controller has been gone for
+                    # STEAM_NO_CONTROLLER_TIMEOUT seconds. Check the owner specifically
+                    # (not any_controller_present) so a permanently-attached USB dongle
+                    # for a second controller doesn't keep this timer from ever firing.
+                    if [ -n "$_owner" ] && id_present "$_owner"; then
                         no_ctrl_since=0
                     else
                         _now="$(date +%s)"

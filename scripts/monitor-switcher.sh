@@ -178,18 +178,33 @@ fi
     #
     # Gate logic:
     #   - No LAST_MODE_FILE → fresh boot (file lives in /tmp, cleared on reboot) → skip scan, boot to desk
-    #   - LAST_MODE_FILE = "couch" → service restarted mid-session → scan to resume
+    #   - LAST_MODE_FILE = "couch" → service restarted mid-session → scan to resume (if recent)
     #   - LAST_MODE_FILE = "desk" → user was in desk mode → skip scan
+    #
+    # Additionally gate on lock file age: if the lock hasn't been touched in >10 minutes the
+    # session was idle before the restart (e.g. overnight, deliberate restart). A USB dongle
+    # that stayed plugged in should not re-activate couch mode in that case. A genuine crash
+    # recovery will have a fresh lock (user was actively playing) and passes the age check.
     #
     # udev-fired events (controller physically plugged/paired after startup) always
     # bypass this gate and are handled normally.
     _last_mode="$(cat "$LAST_MODE_FILE" 2>/dev/null || true)"
     if [ "${_last_mode}" = "couch" ]; then
-        sleep 0.1
-        for uniq in $(list_present_controller_uniq); do
-            debug "SWITCHER" "Found already-connected controller at startup: $uniq"
-            emit_event "add" "$uniq"
-        done
+        _lock_age=99999
+        if [ -f "$LOCK" ]; then
+            _lock_mtime="$(stat -c %Y "$LOCK" 2>/dev/null || echo 0)"
+            _lock_age="$(( $(date +%s) - _lock_mtime ))"
+        fi
+        if [ "$_lock_age" -le 600 ]; then
+            sleep 0.1
+            for uniq in $(list_present_controller_uniq); do
+                debug "SWITCHER" "Found already-connected controller at startup: $uniq"
+                emit_event "add" "$uniq"
+            done
+        else
+            log "startup: lock is ${_lock_age}s old — skipping controller scan (session was idle before restart)"
+            rm -f "$LOCK" 2>/dev/null || true
+        fi
     else
         log "startup: last mode was '${_last_mode:-fresh boot}' — skipping controller scan (booting to desk)"
     fi

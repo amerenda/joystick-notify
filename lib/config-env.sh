@@ -13,8 +13,8 @@ DEBUG_WRAPPER="${DEBUG_WRAPPER:-false}"
 
 DISCONNECT_GRACE="${DISCONNECT_GRACE:-30}"
 STEAM_POLL="${STEAM_POLL:-2}"
-# Seconds steam must be running with no controller before auto-exiting couch mode (default 15min)
-STEAM_NO_CONTROLLER_TIMEOUT="${STEAM_NO_CONTROLLER_TIMEOUT:-900}"
+# Seconds the owner controller must be absent (Steam running, no game) before auto-exiting couch mode
+STEAM_NO_CONTROLLER_TIMEOUT="${STEAM_NO_CONTROLLER_TIMEOUT:-120}"
 
 # HDMI-CEC
 CEC_ENABLED="${CEC_ENABLED:-true}"
