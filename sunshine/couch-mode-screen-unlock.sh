@@ -26,6 +26,10 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUN
 case "$ACTION" in
   start)
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock false
+    # Signal the running ksld daemon to reload its config immediately.
+    # Without this, ksld keeps Autolock=true in memory and re-locks the screen
+    # seconds after pkill kills the greeter process.
+    qdbus6 org.kde.screensaver /ScreenSaver org.kde.screensaver.configure 2>/dev/null || true
 
     # Best-effort: dismiss an already-active lock screen.
     # 1. loginctl unlock-session — the correct way to unlock a KDE session; works
