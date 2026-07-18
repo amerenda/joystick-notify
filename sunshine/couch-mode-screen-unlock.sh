@@ -26,21 +26,25 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUN
 case "$ACTION" in
   start)
     kwriteconfig6 --file kscreenlockerrc --group Daemon --key Autolock false
-    # Signal the running ksld daemon to reload its config immediately.
-    # Without this, ksld keeps Autolock=true in memory and re-locks the screen
-    # seconds after pkill kills the greeter process.
+    # Signal ksld to reload its config so Autolock=false takes effect immediately.
     qdbus6 org.kde.screensaver /ScreenSaver org.kde.screensaver.configure 2>/dev/null || true
 
-    # Best-effort: dismiss an already-active lock screen.
-    # 1. loginctl unlock-session — the correct way to unlock a KDE session; works
-    #    as the session owner without root. Finds the seat (graphical) session.
-    # 2. pkill -f fallback — kills the greeter process directly.
-    #    Must use -f (full command path), not -x (exact comm name), because Linux
-    #    truncates /proc/PID/comm to 15 chars: kscreenlocker_greet → kscreenlocker_g,
-    #    so -x silently matches nothing.
+    # Dismiss an already-active lock screen.  On KDE Wayland, ksld holds a
+    # compositor-level lock that ONLY ksld itself can release — killing the greeter
+    # directly without first signaling ksld causes it to respawn the greeter as a
+    # security measure (unexpected child death = re-lock).
+    #
+    # Two signal paths, both ask ksld to release the lock:
+    #   1. SetActive(false) on the session bus → calls requestUnlock() directly on ksld
+    #   2. loginctl unlock-session → logind sends Unlock() to ksld via the system bus
+    # After 500ms ksld has processed the signals and cleanly killed the greeter.
+    # pkill is a last resort only for stuck/zombie greeters that ksld missed.
+    qdbus6 org.freedesktop.ScreenSaver /ScreenSaver \
+        org.freedesktop.ScreenSaver.SetActive false 2>/dev/null || true
     _seat_session="$(loginctl 2>/dev/null | awk -v uid="$(id -u)" \
         'NR>1 && $2==uid && $4!="" && $4!="-" {print $1; exit}' || true)"
     [ -n "${_seat_session:-}" ] && loginctl unlock-session "$_seat_session" 2>/dev/null || true
+    sleep 0.5
     pkill -f kscreenlocker_greet 2>/dev/null || true
     ;;
   stop)
