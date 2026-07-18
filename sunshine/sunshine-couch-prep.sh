@@ -10,8 +10,26 @@
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 export XDG_RUNTIME_DIR=/run/user/1000
 
+_PREP_LOG=/tmp/sunshine-couch-debug.log
+printf '\n[%s] sunshine-couch-prep.sh: START (session connect)\n' "$(date '+%T')" >> "$_PREP_LOG" 2>/dev/null || true
+
+# Kill any leftover inhibitor from a previous session (crashed undo, etc.)
+INHIBIT_PID_FILE=/tmp/sunshine-screen-inhibit-pid-$(id -u)
+if [ -f "$INHIBIT_PID_FILE" ]; then
+    _old=$(cat "$INHIBIT_PID_FILE" 2>/dev/null || true)
+    kill "$_old" 2>/dev/null || true
+    rm -f "$INHIBIT_PID_FILE"
+fi
+
 # Don't let the screen lock mid-stream, and dismiss it if already locked.
-/usr/local/bin/couch-mode-screen-unlock.sh start || true
+/usr/local/bin/couch-mode-screen-unlock.sh start >> "$_PREP_LOG" 2>&1 || true
+
+# Hold a ScreenSaver.Inhibit() token for the entire session duration.
+# This prevents ksld from auto-locking even if the idle timer fires while
+# there is no LOCAL input (all input comes from the Moonlight client).
+/usr/local/bin/screen-lock-inhibit-daemon.sh "Sunshine" "Active Moonlight session" &
+echo $! > "$INHIBIT_PID_FILE"
+printf '[%s] sunshine-couch-prep.sh: inhibitor started (pid=%s)\n' "$(date '+%T')" "$!" >> "$_PREP_LOG" 2>/dev/null || true
 
 # Save current desktop (default to 1 if unavailable)
 current=$(qdbus6 org.kde.KWin /KWin org.kde.KWin.currentDesktop 2>/dev/null || echo "")

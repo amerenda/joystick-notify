@@ -162,6 +162,10 @@ log "watcher started, tailing $LOG"
 check_stale_lock
 if [ ! -f "$LOCK" ]; then
     desk_mode_active
+else
+    # Service started while couch mode was already active — unlock screen immediately
+    # so a service restart during an ongoing session doesn't leave the user locked out.
+    set_screen_lock start
 fi
 
 # Ensure watcher is running if we boot into an active session
