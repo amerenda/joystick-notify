@@ -14,7 +14,7 @@
 # Install: sudo install -Dm0755 screen-lock-inhibit-daemon.sh \
 #            /usr/local/bin/screen-lock-inhibit-daemon.sh
 
-set -uo pipefail
+set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
@@ -32,7 +32,7 @@ cleanup() {
     fi
     exit 0
 }
-trap cleanup TERM INT
+trap cleanup TERM INT HUP
 
 # Stay alive until killed.  The inhibit is active as long as this process holds
 # the open D-Bus connection that owns the cookie.
