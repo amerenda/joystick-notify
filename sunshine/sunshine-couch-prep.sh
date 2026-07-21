@@ -31,6 +31,19 @@ fi
 echo $! > "$INHIBIT_PID_FILE"
 printf '[%s] sunshine-couch-prep.sh: inhibitor started (pid=%s)\n' "$(date '+%T')" "$!" >> "$_PREP_LOG" 2>/dev/null || true
 
+# Hide the local cursor for the duration of the stream (KWin's built-in effect) —
+# otherwise the physical mouse pointer is visible in the captured video for every
+# app, not just Steam Big Picture (which already does this itself via
+# launch-bigpicture.sh). Save prior settings so undo can restore them exactly.
+HIDECURSOR_STATE_FILE=/tmp/sunshine-couch-hidecursor-state-$(id -u)
+if command -v kreadconfig6 >/dev/null 2>&1 && command -v kwriteconfig6 >/dev/null 2>&1 && command -v qdbus6 >/dev/null 2>&1; then
+    prev_enabled=$(kreadconfig6 --file kwinrc --group Plugins --key hidecursorEnabled 2>/dev/null || true)
+    echo "PREV_ENABLED=${prev_enabled:-}" > "$HIDECURSOR_STATE_FILE" 2>/dev/null || true
+    kwriteconfig6 --file kwinrc --group Plugins --key hidecursorEnabled true >/dev/null 2>&1 || true
+    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.loadEffect hidecursor >/dev/null 2>&1 || true
+    qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
+fi
+
 # Save current desktop (default to 1 if unavailable)
 current=$(qdbus6 org.kde.KWin /KWin org.kde.KWin.currentDesktop 2>/dev/null || echo "")
 echo "${current:-1}" > /tmp/sunshine-prev-desktop
