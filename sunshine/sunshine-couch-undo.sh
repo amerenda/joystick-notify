@@ -22,6 +22,24 @@ prev=$(cat /tmp/sunshine-prev-desktop 2>/dev/null || echo "1")
 rm -f /tmp/sunshine-prev-desktop
 qdbus6 org.kde.KWin /KWin org.kde.KWin.setCurrentDesktop "${prev:-1}" 2>/dev/null || true
 
+# Restore cursor visibility to whatever it was before the stream started.
+HIDECURSOR_STATE_FILE=/tmp/sunshine-couch-hidecursor-state-$(id -u)
+if command -v kwriteconfig6 >/dev/null 2>&1 && command -v qdbus6 >/dev/null 2>&1; then
+    PREV_ENABLED=""
+    if [ -r "$HIDECURSOR_STATE_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$HIDECURSOR_STATE_FILE" 2>/dev/null || true
+    fi
+    if [ -n "${PREV_ENABLED:-}" ]; then
+        kwriteconfig6 --file kwinrc --group Plugins --key hidecursorEnabled "$PREV_ENABLED" >/dev/null 2>&1 || true
+    else
+        kwriteconfig6 --file kwinrc --group Plugins --key hidecursorEnabled false >/dev/null 2>&1 || true
+    fi
+    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.unloadEffect hidecursor >/dev/null 2>&1 || true
+    qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure >/dev/null 2>&1 || true
+    rm -f "$HIDECURSOR_STATE_FILE"
+fi
+
 # Restore normal screen-lock behavior now that the stream has ended.
 /usr/local/bin/couch-mode-screen-unlock.sh stop >> "$_PREP_LOG" 2>&1 || true
 printf '[%s] sunshine-couch-undo.sh: DONE\n' "$(date '+%T')" >> "$_PREP_LOG" 2>/dev/null || true
