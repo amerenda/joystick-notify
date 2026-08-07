@@ -87,6 +87,7 @@ couch_mode_active() {
         "output.${COUCH_PORT}.priority.1" \
         "output.${COUCH_PORT}.mode.${COUCH_MODE}" \
         "output.${COUCH_PORT}.position.0,0" \
+        "output.${COUCH_PORT}.overscan.${COUCH_OVERSCAN}" \
         "output.${DESK_PORT}.disable" 2>/dev/null; then
         log "display: FAILED - kscreen-doctor failed to switch display to $COUCH_PORT. Returning to desk mode."
         return 1
