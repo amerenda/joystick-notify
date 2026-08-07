@@ -1,22 +1,43 @@
 #!/usr/bin/env bash
 # cec-control.sh - HDMI-CEC commands for TV power and input switching
 
-# Discover our CEC adapter's physical address from topology (e.g. 2.0.0.0).
+# Discover our CEC adapter's own physical address (e.g. 4.0.0.0).
 # Prints the address to stdout and returns 0 if found; prints nothing and returns 1 otherwise.
-# Uses cec-ctl --playback -s -S and parses the "Playback Device" line.
+#
+# Uses cec-ctl -S (Driver Info + topology) and takes the *first* line matching
+# "Physical Address<spaces>: X.X.X.X", which is always the adapter's own -
+# cec-ctl prints its own Driver Info block (which includes this line) before
+# it lists any other device on the bus.
+#
+# Two past bugs to not reintroduce:
+# - Do NOT pass -s (--skip-info): that suppresses the Driver Info block
+#   entirely, which is the only place our own address is unambiguous. Without
+#   it, the old code fell back to grep-matching the word "Playback" anywhere
+#   in the topology dump - with more than one playback-class device on the
+#   bus (e.g. this PC + a game console), that matched whichever one cec-ctl
+#   happened to print first, not necessarily us, and silently sent every CEC
+#   command at the wrong target device.
+# - Do NOT drop the ": " requirement from the grep pattern: the Driver Info
+#   block also lists "Physical Address" bare, with no value, as one of the
+#   adapter's advertised *capability names* - matching on the word alone
+#   grabs that line instead and yields no address at all.
+# - Do NOT pass --playback: the adapter's playback role is already claimed
+#   persistently by cec0-configure@.service (see ansible/systemd units) -
+#   re-passing --playback here reclaims a logical address on every call for
+#   no reason.
 get_cec_phys_addr() {
     local dev out addr
     if [ -n "${CEC_ADAPTER:-}" ]; then
         dev="$CEC_ADAPTER"
-        out="$(cec-ctl -d "$dev" --playback -s -S 2>/dev/null)" || return 1
-        addr="$(echo "$out" | awk '/Playback/ { gsub(/:$/, "", $1); if ($1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $1; exit 0 } }')"
+        out="$(cec-ctl -d "$dev" -S 2>/dev/null)" || return 1
+        addr="$(echo "$out" | grep -m1 -E 'Physical Address\s*:' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')"
         [ -n "$addr" ] && echo "$addr" && return 0
         return 1
     fi
     for dev in /dev/cec*; do
         [ -e "$dev" ] || continue
-        out="$(cec-ctl -d "$dev" --playback -s -S 2>/dev/null)" || continue
-        addr="$(echo "$out" | awk '/Playback/ { gsub(/:$/, "", $1); if ($1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) { print $1; exit 0 } }')"
+        out="$(cec-ctl -d "$dev" -S 2>/dev/null)" || continue
+        addr="$(echo "$out" | grep -m1 -E 'Physical Address\s*:' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')"
         if [ -n "$addr" ]; then
             echo "$addr"
             return 0
