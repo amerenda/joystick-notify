@@ -128,6 +128,7 @@ Notable behaviors:
   - Ignoring legacy `js*` nodes for Xbox Wireless Controller (keeps evdev usable).
   - Loading `xpad` and binding IDs for an 8BitDo receiver.
   - Triggering USB joystick events for a specific 8BitDo dongle via `event*`.
+  - Triggering USB joystick events for a Valve Steam Controller (wired `28de:1102` or wireless dongle `28de:1142`) via `event*`, since it has no Bluetooth `HID_UNIQ` to match on.
 
 ### `udev/71-8bitdo-controllers.rules`
 Misc device-specific tweaks (permissions / power settings) for certain controllers.

@@ -63,6 +63,27 @@ ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_BUS}=="usb", ENV{ID_
 # disconnect-ish
 ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="2dc8", ATTRS{idProduct}=="3106", RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %k"
 
+# -------------------------------------------------------------------
+# 4b) Joystick-notify: Valve Steam Controller (USB, vendor 28de)
+#
+# The Steam Controller has no HID_UNIQ colon-MAC (it's plain USB, wired or via
+# its 2.4GHz dongle), so it never matches the Bluetooth-oriented HID_NAME rules
+# in section 1. Trigger explicitly on the evdev node instead, same as the
+# 8BitDo dongle above. Hidraw permissions for vendor 28de are already granted
+# system-wide by Steam's own /usr/lib/udev/rules.d/60-steam-input.rules.
+#
+# 28de:1102 = Wired Controller (wired Steam Controller)
+# 28de:1142 = Wireless Steam Controller (2.4GHz dongle)
+# -------------------------------------------------------------------
+
+# connect-ish
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_BUS}=="usb", ENV{ID_INPUT_JOYSTICK}=="1", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1102", RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %k"
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_BUS}=="usb", ENV{ID_INPUT_JOYSTICK}=="1", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1142", RUN+="/usr/bin/env ACTION=add /usr/local/bin/joystick-event.sh %k"
+
+# disconnect-ish
+ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1102", RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %k"
+ACTION=="remove", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1142", RUN+="/usr/bin/env ACTION=remove /usr/local/bin/joystick-event.sh %k"
+
 
 # -------------------------------------------------------------------
 # 5) Power + permissions + driver binding rules (Bluetooth adapter + 8BitDo)
