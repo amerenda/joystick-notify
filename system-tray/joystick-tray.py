@@ -46,10 +46,19 @@ def open_logs():
         sys.stderr.write(cp.stderr)
 
 
+# Presence of this file means lib/cec-control.sh gave up self-healing
+# /dev/cec0 (see CEC_BROKEN_FLAG in lib/config-env.sh) - must match.
+CEC_BROKEN_FLAG = f"/tmp/joystick-notify/locks/cec-broken.{os.getuid()}"
+
+
+def cec_broken() -> bool:
+    return os.path.exists(CEC_BROKEN_FLAG)
+
+
 def main() -> int:
     try:
         from PyQt6.QtCore import Qt, QTimer
-        from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+        from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
         from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
     except Exception as e:
         sys.stderr.write(
@@ -90,6 +99,28 @@ def main() -> int:
     if icon_paused.isNull():
         icon_paused = dot_icon((180, 180, 180))
 
+    def with_cec_broken_badge(icon: QIcon) -> QIcon:
+        # Small red-X badge in the corner, layered on top of the normal
+        # active/paused icon, so CEC failure is visible without hiding the
+        # base service status.
+        base = icon.pixmap(64, 64)
+        pm = QPixmap(64, 64)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.drawPixmap(0, 0, base)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(210, 30, 30))
+        p.drawEllipse(32, 32, 30, 30)
+        pen = QPen(QColor(255, 255, 255))
+        pen.setWidth(3)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(39, 39, 55, 55)
+        p.drawLine(55, 39, 39, 55)
+        p.end()
+        return QIcon(pm)
+
     tray = QSystemTrayIcon(icon_paused)
     tray.setVisible(True)
 
@@ -118,17 +149,22 @@ def main() -> int:
 
     def refresh():
         active = is_active()
+        broken = cec_broken()
+        base_icon = icon_active if active else icon_paused
+        tray.setIcon(with_cec_broken_badge(base_icon) if broken else base_icon)
+
+        label = "Active" if active else "Paused"
+        tip = f"joystick-notify: {label}"
+        if broken:
+            tip += "\n⚠ CEC not working (TV won't auto power-on/switch input)"
+        tray.setToolTip(tip)
+        status_action.setText(f"Status: {label}" + (" ⚠ CEC broken" if broken else ""))
+
         if active:
-            tray.setIcon(icon_active)
-            tray.setToolTip("joystick-notify: Active")
-            status_action.setText("Status: Active")
             start_action.setEnabled(False)
             stop_action.setEnabled(True)
             restart_action.setEnabled(True)
         else:
-            tray.setIcon(icon_paused)
-            tray.setToolTip("joystick-notify: Paused")
-            status_action.setText("Status: Paused")
             start_action.setEnabled(True)
             stop_action.setEnabled(False)
             restart_action.setEnabled(False)

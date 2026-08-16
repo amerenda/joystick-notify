@@ -1,0 +1,5 @@
+# /etc/udev/rules.d/98-cec-fixup.rules
+#
+# Re-run the CEC probe workaround (see cec-fixup.service) whenever the
+# Pulse-Eight CEC USB adapter is hotplugged, not just at boot.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2548", ATTR{idProduct}=="1002", RUN+="/usr/bin/systemctl start --no-block cec-fixup.service"

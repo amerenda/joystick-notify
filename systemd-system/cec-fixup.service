@@ -1,0 +1,11 @@
+[Unit]
+Description=Work around pulse8-cec probe race (unbind/rebind CEC adapter if /dev/cec0 missing)
+After=local-fs.target systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cec-fixup.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

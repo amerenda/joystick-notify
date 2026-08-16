@@ -1,0 +1,7 @@
+[Unit]
+Description=Check /dev/cec0 health and reattach pulse8-cec if it silently died
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cec-watchdog.sh

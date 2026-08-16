@@ -1,0 +1,9 @@
+# Configure the CEC adapter (physical address from EDID + logical address as
+# a playback device) as soon as the kernel creates /dev/cec0. Without this,
+# the adapter has no logical/physical address and joystick-notify's CEC wake
+# / active-source / set-stream-path calls (lib/cec-control.sh) have nothing
+# valid to send from. See https://wiki.archlinux.org/title/HDMI-CEC
+#
+# card1-HDMI-A-1 is the couch/TV output (COUCH_PORT in joystick-notify's
+# config-env.sh) - update if the connector name or GPU card index changes.
+SUBSYSTEM=="cec", KERNEL=="cec0", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}="cec0-configure@card1-HDMI-A-1.service"

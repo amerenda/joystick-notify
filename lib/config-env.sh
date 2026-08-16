@@ -23,8 +23,30 @@ CEC_COUCH_PORT="${CEC_COUCH_PORT:-$CEC_HDMI_PORT}"
 CEC_ADAPTER="${CEC_ADAPTER:-}"
 # Seconds to wait after Image View On before sending Active Source (e.g. 1-2 for receiver chains)
 CEC_WAKE_DELAY="${CEC_WAKE_DELAY:-0}"
-# Override physical address for Set Stream Path / Active Source (e.g. 2.0.0.0 = receiver HDMI 2). When set, used instead of discovered address so the receiver switches to the correct input even if the CEC dongle is on a different port.
-CEC_ACTIVE_SOURCE_PHYS_ADDR="${CEC_ACTIVE_SOURCE_PHYS_ADDR:-}"
+# Override physical address for Set Stream Path / Active Source.
+#
+# This machine's real signal path is PC -> JBL receiver -> TV (the PC's HDMI
+# cable is plugged into the receiver's HDMI2 input, not directly into the
+# TV). The CEC adapter auto-discovers its OWN address from the live EDID on
+# COUCH_PORT (see get_cec_phys_addr in lib/cec-control.sh), which correctly
+# reports the adapter's direct branch to the TV (4.0.0.0) - but that's not
+# where the video actually needs routing FROM the receiver's perspective.
+# Confirmed by hand 2026-08-16: sending Set Stream Path/Active Source with
+# phys-addr=3.2.0.0 (branch 3 = Audio System/receiver, sub-branch 2 =
+# receiver's HDMI2) correctly switches the receiver to the PC's input; the
+# Shield occupies the receiver's HDMI1 (3.1.0.0) for comparison.
+#
+# If the physical cabling ever changes (PC moved to a different receiver
+# port, or connected directly to the TV instead), rediscover with:
+#   cec-ctl -d /dev/cec0 -S   # look at "Topology:" for this device's own
+#                             # Playback Device entry, and cross-check
+#                             # against any receiver-connected devices
+#                             # (their phys-addr's first octet = the TV port
+#                             # the receiver itself is on; second octet =
+#                             # the receiver's own HDMI input number).
+# Leave unset only if the PC is connected directly to the TV with no
+# receiver/AVR in the path (then the auto-discovered address is correct).
+CEC_ACTIVE_SOURCE_PHYS_ADDR="${CEC_ACTIVE_SOURCE_PHYS_ADDR:-3.2.0.0}"
 CEC_POWER_OFF_ON_TEARDOWN="${CEC_POWER_OFF_ON_TEARDOWN:-true}"
 # Re-assert Active Source N times after initial wake to beat competing CEC devices (e.g. Shield).
 # Each retry fires CEC_ACTIVE_SOURCE_RETRY_DELAY seconds after the previous assertion.
@@ -34,6 +56,11 @@ CEC_ACTIVE_SOURCE_RETRY_DELAY="${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
 # Requires the TV to have Auto Game Mode enabled (Samsung: General → External Device Manager → HDMI Game Mode).
 # Works with a receiver in the chain as long as the receiver passes CEC through.
 CEC_ALLM_ENABLED="${CEC_ALLM_ENABLED:-true}"
+# Minimum seconds between synchronous self-heal attempts (cec_ensure_adapter_best_effort
+# in lib/cec-control.sh) when /dev/cec0 is missing. Keeps repeated controller
+# reconnects (or a human actively debugging the adapter) from repeatedly
+# triggering reattach/USB-bus-reset. Matches cec-watchdog.timer's own cadence.
+CEC_SELFHEAL_COOLDOWN="${CEC_SELFHEAL_COOLDOWN:-120}"
 
 # KDE Plasma
 COUCH_DESKTOP_NAME="${COUCH_DESKTOP_NAME:-Couch}"
@@ -78,6 +105,12 @@ MANUAL_LOCK="$JN_LOCKS/manual.lock"
 DESKTOP_STATE="$JN_LOCKS/prev-desktop.$(id -u)"
 ACTIVITY_STATE="$JN_LOCKS/prev-activity.$(id -u)"
 CEC_STATE="$JN_LOCKS/cec-used.$(id -u)"
+# Timestamp of the last self-heal attempt (see CEC_SELFHEAL_COOLDOWN above).
+CEC_SELFHEAL_STATE="$JN_LOCKS/cec-selfheal-last.$(id -u)"
+# Presence = CEC adapter is broken (self-heal gave up). Read by the tray icon
+# (system-tray/joystick-tray.py) to show a red-X badge; cleared automatically
+# once /dev/cec0 comes back.
+CEC_BROKEN_FLAG="$JN_LOCKS/cec-broken.$(id -u)"
 # Tracks the last intentional mode (couch/desk). Written on every activate/teardown.
 # Lives in /tmp so it clears on reboot. Used to gate the startup controller scan:
 # if the last known mode was desk, the scan is skipped so a passively-connected

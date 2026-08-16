@@ -128,7 +128,7 @@ Notable behaviors:
   - Ignoring legacy `js*` nodes for Xbox Wireless Controller (keeps evdev usable).
   - Loading `xpad` and binding IDs for an 8BitDo receiver.
   - Triggering USB joystick events for a specific 8BitDo dongle via `event*`.
-  - Triggering USB joystick events for a Valve Steam Controller (wired `28de:1102` or wireless dongle `28de:1142`) via `event*`, since it has no Bluetooth `HID_UNIQ` to match on.
+  - Triggering HID events for any Valve Steam Controller (wired, wireless dongle/"Puck", or Bluetooth), matched by vendor ID (`HID_ID` containing `28DE`) and `HID_NAME` rather than a specific product ID, so it isn't tied to one hardware revision and doesn't need updates when Valve ships new controller hardware.
 
 ### `udev/71-8bitdo-controllers.rules`
 Misc device-specific tweaks (permissions / power settings) for certain controllers.
@@ -209,6 +209,43 @@ GPU / Display Driver (critical for TV output):
 CEC (recommended):
 - `cec-ctl` (v4l-utils) and/or `cec-client` (libcec). Prefer `cec-ctl` for automatic input switching (no port config).
 - Ensure your user can access the CEC adapter (e.g. `/dev/cec0` for cec-ctl, or `/dev/ttyACM0` for some USB CEC dongles with cec-client; `uucp` group may be required).
+
+### CEC adapter chain (Pulse-Eight / `/dev/cec0`) — self-healing
+
+`install.sh` installs a set of root-level systemd units (`systemd-system/`) and
+udev rules (`udev/`) that keep a Pulse-Eight USB-CEC adapter attached and
+`/dev/cec0` alive without a reboot:
+
+- `pulse8-cec-autoattach.rules` runs `pulse8-cec-attach@<tty>.service`
+  (`inputattach --daemon --pulse8-cec`) whenever the adapter's ttyACM device
+  appears, attaching the kernel `pulse8_cec` line discipline.
+- `cec-configure-autostart.rules` runs `cec0-configure@<connector>.service`
+  as soon as `/dev/cec0` exists, deriving the adapter's physical address from
+  the couch output's live EDID (`--phys-addr-from-edid-poll`) so it's always
+  correct even across TV/receiver power cycles — this is why
+  `CEC_ACTIVE_SOURCE_PHYS_ADDR` should normally be left unset; only set it as
+  a manual override if EDID discovery is wrong for your setup (a stale
+  hand-set override that no longer matched the real topology is what broke
+  CEC wake here on 2026-08-16 — auto-discovery found `4.0.0.0`, not the
+  hardcoded value).
+- **`inputattach --daemon` is not fully reliable**: it has been observed to
+  exit cleanly minutes after a clean attach, silently dropping `/dev/cec0`
+  with no kernel log trace and no USB re-enumeration event (so the autoattach
+  rule above never re-fires). Two layers guard against this:
+  1. `pulse8-cec-attach@.service` has `Restart=always` — if the daemon process
+     dies, systemd reattaches it immediately.
+  2. `cec-watchdog.timer` runs `scripts/cec-watchdog.sh` every 2 minutes; if
+     `/dev/cec0` is missing it restarts the attach unit(s) and, if that alone
+     doesn't bring `cec0` back, falls back to `cec-fixup.service`'s USB bus
+     reset (`scripts/cec-fixup.sh`, for when the adapter's firmware itself
+     wedges — a real `USBDEVFS_RESET`, not just a driver rebind).
+  3. `lib/cec-control.sh`'s `cec_ensure_adapter_best_effort` calls the same
+     watchdog script **synchronously** at the start of every wake/ALLM/standby
+     call, so a couch-mode activation self-heals immediately instead of
+     possibly missing its wake window waiting for the periodic timer.
+- `cec-fixup.service` also re-runs on every USB hotplug of the adapter
+  (`98-cec-fixup.rules`), covering the case where the adapter is physically
+  unplugged/replugged.
 
 Tray icon (optional):
 - `python3`

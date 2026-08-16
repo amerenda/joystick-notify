@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic /dev/cec0 health check
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=120
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
