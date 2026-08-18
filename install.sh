@@ -51,7 +51,14 @@ sudo install -Dm0755 "$ROOT/scripts/couch-switch.sh" /usr/local/bin/couch-switch
 sudo install -Dm0755 "$ROOT/scripts/check-gpu-connectors.sh" /usr/local/bin/check-gpu-connectors.sh
 sudo install -Dm0755 "$ROOT/scripts/cec-fixup.sh" /usr/local/bin/cec-fixup.sh
 sudo install -Dm0755 "$ROOT/scripts/cec-watchdog.sh" /usr/local/bin/cec-watchdog.sh
+sudo install -Dm0755 "$ROOT/scripts/controller-liveness-watch.py" /usr/local/bin/controller-liveness-watch.py
 sudo install -Dm0755 "$ROOT/system-tray/joystick-tray.py" /usr/local/bin/joystick-notify-tray
+
+echo "[joystick-notify] Building usbreset (real USB bus reset helper, used by cec-fixup.sh) ..."
+need_cmd gcc
+gcc -O2 -o /tmp/usbreset "$ROOT/scripts/usbreset.c"
+sudo install -Dm0755 /tmp/usbreset /usr/local/bin/usbreset
+rm -f /tmp/usbreset
 
 echo "[joystick-notify] Checking for cec-client (fallback CEC path, lib/cec-control.sh) ..."
 if ! command -v cec-client >/dev/null 2>&1; then
@@ -119,6 +126,7 @@ install -Dm0644 "$ROOT/systemd/joystick-notify-steam-shutdown.service" "$HOME/.c
 install -Dm0644 "$ROOT/systemd/joystick-notify-steam-shutdown.path" "$HOME/.config/systemd/user/joystick-notify-steam-shutdown.path"
 install -Dm0644 "$ROOT/systemd/joystick-notify-tray.service" "$HOME/.config/systemd/user/joystick-notify-tray.service"
 install -Dm0644 "$ROOT/systemd/force-desk-primary.service" "$HOME/.config/systemd/user/force-desk-primary.service"
+install -Dm0644 "$ROOT/systemd/controller-liveness-watch.service" "$HOME/.config/systemd/user/controller-liveness-watch.service"
 
 echo "[joystick-notify] Installing desktop entry (tray app id)..."
 install -Dm0644 "$ROOT/system-tray/joystick-notify-tray.desktop" "$HOME/.local/share/applications/joystick-notify-tray.desktop"
@@ -134,6 +142,7 @@ if [ "$ENABLE" -eq 1 ]; then
   echo "[joystick-notify] Enabling + starting systemd user service ..."
   systemctl --user enable --now joystick-notify.service
   systemctl --user enable --now joystick-notify-steam-shutdown.path
+  systemctl --user enable --now controller-liveness-watch.service
   if python3 -c 'import PyQt6' >/dev/null 2>&1; then
     systemctl --user enable --now joystick-notify-tray.service
   else
@@ -141,6 +150,7 @@ if [ "$ENABLE" -eq 1 ]; then
   fi
   echo "[joystick-notify] Restarting systemd user service to pick up updates ..."
   systemctl --user restart joystick-notify.service
+  systemctl --user restart controller-liveness-watch.service
 else
   if systemctl --user is-active --quiet joystick-notify.service; then
     echo "[joystick-notify] Service is running; restarting to pick up updates ..."
@@ -150,6 +160,10 @@ else
     echo "[joystick-notify] Steam shutdown watcher is running; restarting to pick up updates ..."
     systemctl --user restart joystick-notify-steam-shutdown.path
   fi
+  if systemctl --user is-active --quiet controller-liveness-watch.service; then
+    echo "[joystick-notify] Controller liveness watcher is running; restarting to pick up updates ..."
+    systemctl --user restart controller-liveness-watch.service
+  fi
   if systemctl --user is-active --quiet joystick-notify-tray.service; then
     echo "[joystick-notify] Tray icon service is running; restarting to pick up updates ..."
     systemctl --user restart joystick-notify-tray.service
@@ -157,6 +171,7 @@ else
   echo "[joystick-notify] Installed. To enable later:"
   echo "  systemctl --user enable --now joystick-notify.service"
   echo "  systemctl --user enable --now joystick-notify-steam-shutdown.path"
+  echo "  systemctl --user enable --now controller-liveness-watch.service"
   echo "  systemctl --user enable --now joystick-notify-tray.service"
 fi
 
