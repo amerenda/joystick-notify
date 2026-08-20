@@ -1,5 +1,18 @@
-from joystick_notify.devices.detect import is_candidate_hid, profile_for, stable_device_id
+import os
+from pathlib import Path
+
+from joystick_notify.debounce import RawEvent, RawKind
+from joystick_notify.devices.detect import (
+    HidrawLivenessWatcher,
+    UdevWatcher,
+    is_candidate_hid,
+    parse_hid_id,
+    profile_for,
+    stable_device_id,
+    vendor_product,
+)
 from joystick_notify.devices.profiles import GENERIC_PROFILE, match_profile
+from joystick_notify.health import Health
 
 
 def test_stable_device_id_prefers_hid_uniq():
@@ -54,3 +67,158 @@ def test_match_profile_steam_controller_requires_name_pattern():
     # not false-positive without the name pattern too.
     assert match_profile(vendor_id="28de", hid_name="Some Other Valve Device").id == "generic"
     assert match_profile(vendor_id="28de", hid_name="Steam Controller").id == "steam_controller"
+
+
+# --- Regression tests for the 2026-08-20 live-testing findings ---
+# Real testing against an actual 8BitDo Ultimate 2 (2.4G dongle) and a real
+# Steam Controller Puck receiver on archlinux found that every device
+# detected via the hidraw-liveness fallback was silently classified as
+# "generic" instead of its real profile, because that path only has
+# HID_ID (raw sysfs uevent), never the udev-computed ID_VENDOR_ID/
+# ID_MODEL_ID that profile_for() was reading. This is exactly backwards:
+# hidraw-liveness is the path used for the bounciest hardware (Puck,
+# 8BitDo dongle) that most needs correct per-class debounce timing.
+
+
+def test_parse_hid_id_extracts_vendor_and_product():
+    assert parse_hid_id("0003:00002DC8:00006012") == ("2dc8", "6012")
+
+
+def test_parse_hid_id_malformed_returns_none():
+    assert parse_hid_id("not-a-hid-id") is None
+    assert parse_hid_id("") is None
+
+
+def test_vendor_product_prefers_live_udev_properties():
+    props = {"ID_VENDOR_ID": "2dc8", "ID_MODEL_ID": "310b", "HID_ID": "0003:00002DC8:00006012"}
+    assert vendor_product(props) == ("2dc8", "310b")
+
+
+def test_vendor_product_falls_back_to_raw_hid_id():
+    # Exactly the shape of a raw /sys/bus/hid/devices/*/uevent read (the
+    # hidraw-liveness path) — no ID_VENDOR_ID/ID_MODEL_ID at all.
+    props = {"HID_ID": "0003:00002DC8:00006012", "HID_NAME": "8BitDo Ultimate 2 Wireless Controller for PC"}
+    assert vendor_product(props) == ("2dc8", "6012")
+
+
+def test_profile_for_classifies_correctly_from_raw_sysfs_uevent_shape():
+    # This is the actual bug reproduction: real 8BitDo Ultimate 2 uevent
+    # content has no ID_VENDOR_ID/ID_MODEL_ID keys.
+    raw_uevent_props = {
+        "DRIVER": "hid-generic",
+        "HID_ID": "0003:00002DC8:00006012",
+        "HID_NAME": "8BitDo 8BitDo Ultimate 2 Wireless Controller for PC",
+        "HID_PHYS": "usb-0000:07:00.0-2/input0",
+        "HID_UNIQ": "950F5726DC",
+    }
+    profile = profile_for(raw_uevent_props)
+    assert profile.id == "8bitdo"
+    assert profile.device_class == "bitdo_dongle"
+
+
+def test_is_candidate_hid_valve_vendor_via_hid_id_without_name_pattern():
+    # v1's original heuristic (controller-liveness-watch.py) treated Valve
+    # vendor ID alone as sufficient; only the name-pattern check was
+    # previously ported here, dropping this net.
+    assert is_candidate_hid({"HID_ID": "0003:000028DE:00001102", "HID_NAME": "Something Unusual"}) is True
+
+
+class _FakeLoop:
+    def __init__(self):
+        self.calls = []
+
+    def call_soon_threadsafe(self, fn, *args):
+        self.calls.append((fn, args))
+
+
+class _FakeDevice:
+    def __init__(self, properties):
+        self.properties = properties
+
+
+def test_udev_watcher_hands_off_via_call_soon_threadsafe_not_direct_call(tmp_path):
+    # Direct regression test for the live crash: pyudev.MonitorObserver
+    # calls _on_udev_event from its own thread, which has no asyncio event
+    # loop. Calling feed() (-> asyncio.ensure_future) directly from there
+    # raised "RuntimeError: no current event loop in thread 'Thread-1'"
+    # the first time a real udev event arrived during testing 2026-08-20.
+    fed = []
+
+    def feed(event):
+        fed.append(event)
+
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(feed, health)
+    fake_loop = _FakeLoop()
+    watcher._loop = fake_loop
+
+    device = _FakeDevice(
+        {
+            "ID_INPUT_JOYSTICK": "1",
+            "HID_UNIQ": "aa:bb:cc:dd:ee:ff",
+            "ACTION": "add",
+            "HID_NAME": "8BitDo Controller",
+            "ID_VENDOR_ID": "2dc8",
+        }
+    )
+    watcher._on_udev_event(device)
+
+    # Must NOT have called feed synchronously from this (simulated pyudev) thread.
+    assert fed == []
+    assert len(fake_loop.calls) == 1
+    fn, args = fake_loop.calls[0]
+    assert fn is feed
+
+    # Simulate the event loop actually running the scheduled callback.
+    fn(*args)
+    assert len(fed) == 1
+    assert fed[0].device_id == "aa:bb:cc:dd:ee:ff"
+    assert fed[0].kind == RawKind.ADD
+    assert fed[0].device_class == "bitdo_dongle"
+
+
+def test_udev_watcher_no_op_when_loop_not_set(tmp_path):
+    fed = []
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(lambda e: fed.append(e), health)
+    # start() was never called (e.g. pyudev import failed) — _loop is None.
+    device = _FakeDevice({"ID_INPUT_JOYSTICK": "1", "HID_UNIQ": "aa:bb", "ACTION": "add"})
+    watcher._on_udev_event(device)  # must not raise
+    assert fed == []
+
+
+def test_hidraw_liveness_watcher_add_tracks_device_class():
+    fed = []
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
+    read_fd, write_fd = os.pipe()
+    try:
+        watcher._fds[read_fd] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
+        os.write(write_fd, b"\x01")
+        watcher._on_readable(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert fed and fed[0].device_class == "bitdo_dongle"
+    assert watcher._device_class_by_id["950F5726DC"] == "bitdo_dongle"
+
+
+def test_hidraw_liveness_watcher_remove_event_carries_correct_device_class():
+    # The ADD path tracked device_class via self._fds, but the REMOVE path
+    # (fired from the timeout loop, which only has device_id) previously
+    # had no way to look it up and silently fell back to RawEvent's
+    # "generic" default.
+    fed = []
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
+    watcher._last_seen["950F5726DC"] = 0.0
+    watcher._reported_live.add("950F5726DC")
+    watcher._device_class_by_id["950F5726DC"] = "bitdo_dongle"
+
+    # Same lookup-and-pop the timeout loop in _run() performs on removal.
+    device_class = watcher._device_class_by_id.pop("950F5726DC", "generic")
+    watcher._feed(
+        RawEvent(device_id="950F5726DC", kind=RawKind.REMOVE, device_class=device_class, source="hidraw_liveness")
+    )
+
+    assert len(fed) == 1
+    assert fed[0].device_class == "bitdo_dongle"

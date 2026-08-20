@@ -69,12 +69,57 @@ def stable_device_id(properties: dict) -> str | None:
     return None
 
 
+def parse_hid_id(hid_id: str) -> tuple[str, str] | None:
+    """Parses the raw sysfs `HID_ID` field (format `bus:vendor:product`,
+    each hex, e.g. `0003:00002DC8:00006012`) into lowercase 4-hex-digit
+    vendor/product strings matching profiles.py's expected format. This is
+    the *only* vendor/product signal present in a raw `/sys/bus/hid/devices/
+    */uevent` file — `ID_VENDOR_ID`/`ID_MODEL_ID` are udev-database-computed
+    properties that only exist on a live pyudev Monitor event, never in the
+    static sysfs uevent file. Confirmed via live testing 2026-08-20: this
+    gap silently classified every hidraw-liveness-detected controller as
+    "generic", which is exactly backwards — hidraw-liveness is precisely
+    the path used for the bounciest hardware (Steam Puck, 8BitDo dongle)
+    that most needs correct per-class debounce timing.
+    """
+    parts = hid_id.split(":")
+    if len(parts) != 3:
+        return None
+    _bus, vendor_hex, product_hex = parts
+    try:
+        vendor = f"{int(vendor_hex, 16) & 0xFFFF:04x}"
+        product = f"{int(product_hex, 16) & 0xFFFF:04x}"
+    except ValueError:
+        return None
+    return vendor, product
+
+
+def vendor_product(properties: dict) -> tuple[str, str]:
+    """Vendor/product lookup that works for both live pyudev Monitor
+    properties (ID_VENDOR_ID/ID_MODEL_ID) and raw sysfs uevent dicts
+    (HID_ID only) — see parse_hid_id() docstring."""
+    vendor_id = (properties.get("ID_VENDOR_ID") or "").lower()
+    product_id = (properties.get("ID_MODEL_ID") or "").lower()
+    if vendor_id and product_id:
+        return vendor_id, product_id
+    parsed = parse_hid_id(properties.get("HID_ID", ""))
+    if parsed:
+        return parsed
+    return vendor_id, product_id
+
+
 def is_candidate_hid(properties: dict) -> bool:
-    """ID_INPUT_JOYSTICK is the primary, protocol-agnostic signal. HID
-    name-pattern matching is v1's original heuristic, kept as a secondary
-    net for HID-subsystem parent-device events that don't themselves carry
-    ID_INPUT_JOYSTICK (that tag lives on the child evdev node)."""
+    """ID_INPUT_JOYSTICK is the primary, protocol-agnostic signal (only
+    present on live pyudev events, never in a raw sysfs uevent read). HID
+    name-pattern matching and the Valve vendor-ID check are v1's original
+    heuristics (controller-liveness-watch.py's is_candidate()), kept as a
+    secondary net for HID-subsystem events that don't carry
+    ID_INPUT_JOYSTICK at all — which is every event read from a raw sysfs
+    uevent file, i.e. the entire hidraw-liveness detection path."""
     if properties.get("ID_INPUT_JOYSTICK") == "1":
+        return True
+    vendor_id, _ = vendor_product(properties)
+    if vendor_id == "28de":  # Valve
         return True
     name = properties.get("HID_NAME", "")
     if not name:
@@ -122,8 +167,7 @@ def device_present(device_id: str, hid_root: str = HID_ROOT, usb_root: str = "/s
 
 
 def profile_for(properties: dict):
-    vendor_id = (properties.get("ID_VENDOR_ID") or "").lower()
-    product_id = (properties.get("ID_MODEL_ID") or "").lower()
+    vendor_id, product_id = vendor_product(properties)
     hid_name = properties.get("HID_NAME", "")
     return match_profile(vendor_id=vendor_id, product_id=product_id, hid_name=hid_name)
 
@@ -142,6 +186,14 @@ class UdevWatcher:
     hardware/udev dependent — exercised on real hardware, not in the unit
     test suite (see tests/test_debounce.py and test_state_machine.py for
     the parts of this pipeline that ARE unit-testable without hardware).
+
+    pyudev.MonitorObserver delivers every event on its own background
+    thread, never the asyncio event loop's thread — confirmed the hard way
+    2026-08-20: calling `feed()` (which does `asyncio.ensure_future`)
+    directly from that callback crashed with "no current event loop in
+    thread 'Thread-1'" the first time a real udev event arrived during
+    live testing. `_on_udev_event` must only ever hand off to the loop via
+    `call_soon_threadsafe` — never call `self._feed` directly.
     """
 
     def __init__(self, feed: Callable[[RawEvent], None], health: Health) -> None:
@@ -149,6 +201,7 @@ class UdevWatcher:
         self._health = health
         self._observer = None
         self._context = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def start(self) -> None:
         try:
@@ -158,6 +211,7 @@ class UdevWatcher:
             return
 
         try:
+            self._loop = asyncio.get_event_loop()
             self._context = pyudev.Context()
             monitor = pyudev.Monitor.from_netlink(self._context)
             monitor.filter_by(subsystem="input")
@@ -173,6 +227,9 @@ class UdevWatcher:
             logger.exception("devices: udev observer failed to start")
 
     def _on_udev_event(self, device) -> None:
+        # Runs on pyudev's MonitorObserver thread — see class docstring.
+        # Keep this callback free of anything that touches the event loop
+        # except the single call_soon_threadsafe handoff at the end.
         properties = dict(device.properties)
         if not is_candidate_hid(properties):
             return
@@ -187,7 +244,9 @@ class UdevWatcher:
             kind = RawKind.REMOVE
         else:
             return
-        self._feed(RawEvent(device_id=device_id, kind=kind, device_class=profile.device_class, source="udev"))
+        event = RawEvent(device_id=device_id, kind=kind, device_class=profile.device_class, source="udev")
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self._feed, event)
 
     def stop(self) -> None:
         if self._observer is not None:
@@ -217,6 +276,11 @@ class HidrawLivenessWatcher:
         self._fds: dict[int, tuple[str, str, str]] = {}  # fd -> (path, device_id, device_class)
         self._last_seen: dict[str, float] = {}
         self._reported_live: set[str] = set()
+        # device_id -> device_class for devices currently reported live, so
+        # the REMOVE event (fired from the timeout loop below, which only
+        # has device_id) still carries the right class instead of silently
+        # falling back to RawEvent's "generic" default.
+        self._device_class_by_id: dict[str, str] = {}
 
     @staticmethod
     def _read_uevent(path: str) -> dict:
@@ -263,7 +327,8 @@ class HidrawLivenessWatcher:
                 for device_id in list(self._reported_live):
                     if now - self._last_seen.get(device_id, 0.0) > self._remove_timeout_s:
                         self._reported_live.discard(device_id)
-                        self._feed(RawEvent(device_id=device_id, kind=RawKind.REMOVE, source="hidraw_liveness"))
+                        device_class = self._device_class_by_id.pop(device_id, "generic")
+                        self._feed(RawEvent(device_id=device_id, kind=RawKind.REMOVE, device_class=device_class, source="hidraw_liveness"))
         except asyncio.CancelledError:
             pass
         finally:
@@ -309,6 +374,7 @@ class HidrawLivenessWatcher:
         self._last_seen[device_id] = time.monotonic()
         if device_id not in self._reported_live:
             self._reported_live.add(device_id)
+            self._device_class_by_id[device_id] = device_class
             self._feed(RawEvent(device_id=device_id, kind=RawKind.ADD, device_class=device_class, source="hidraw_liveness"))
 
     async def stop(self) -> None:
