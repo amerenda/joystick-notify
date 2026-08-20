@@ -1,0 +1,16 @@
+{% if snapshot is none %}
+  <p class="muted">No health snapshot yet — the daemon hasn't started, or hasn't written its first heartbeat.</p>
+{% elif not snapshot.daemon_alive %}
+  <p class="error">Daemon not running (no heartbeat in the last few seconds). The status below, if any, is stale.</p>
+{% else %}
+  {% if snapshot.components %}
+    {% for name, c in snapshot.components.items() %}
+    <div class="component-row">
+      <span><span class="dot {{ c.status.value }}" style="margin-right:8px;"></span>{{ name }}</span>
+      <span class="muted">{{ c.reason }}{% if c.detail %} — {{ c.detail }}{% endif %}</span>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">No components reported yet.</p>
+  {% endif %}
+{% endif %}

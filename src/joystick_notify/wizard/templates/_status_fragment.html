@@ -1,0 +1,8 @@
+{% if snapshot is none %}
+  <span class="badge"><span class="dot unreachable"></span> no daemon snapshot yet</span>
+{% elif not snapshot.daemon_alive %}
+  <span class="badge"><span class="dot unreachable"></span> daemon not running</span>
+{% else %}
+  {% set overall = snapshot.overall.value %}
+  <span class="badge"><span class="dot {{ overall }}"></span> {{ overall }}</span>
+{% endif %}

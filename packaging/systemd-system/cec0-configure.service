@@ -1,0 +1,10 @@
+[Unit]
+Description=Configure CEC adapter cec0 (physical address from couch output EDID, playback logical address)
+BindsTo=dev-cec0.device
+
+[Service]
+Type=exec
+# Reads config.toml at runtime for the couch output port instead of a
+# connector name baked into the unit/udev rule — see
+# src/joystick_notify/cec0_configure.py.
+ExecStart=/usr/bin/jn-cec0-configure

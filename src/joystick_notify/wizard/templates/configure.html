@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Configure — joystick-notify{% endblock %}
+{% block content %}
+
+<form method="post" action="/configure">
+
+  <div class="card">
+    <h2>Displays</h2>
+    <p class="muted">Detected outputs (via <code>kscreen-doctor -j</code>). Pick which is your desk monitor and which is the couch/TV.</p>
+    {% if not outputs %}
+      <p class="error">No outputs detected — is kscreen-doctor installed and a display session active?</p>
+    {% endif %}
+    <label for="desk_port">Desk output</label>
+    <select id="desk_port" name="desk_port">
+      <option value="">— select —</option>
+      {% for o in outputs %}
+      <option value="{{ o.name }}" {% if o.name == config.display.desk_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }})</option>
+      {% endfor %}
+    </select>
+    <label for="desk_mode">Desk mode</label>
+    <input type="text" id="desk_mode" name="desk_mode" value="{{ config.display.desk_mode }}" placeholder="e.g. 2560x1440@144">
+
+    <label for="couch_port">Couch output</label>
+    <select id="couch_port" name="couch_port">
+      <option value="">— select —</option>
+      {% for o in outputs %}
+      <option value="{{ o.name }}" {% if o.name == config.display.couch_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }})</option>
+      {% endfor %}
+    </select>
+    <label for="couch_mode">Couch mode</label>
+    <input type="text" id="couch_mode" name="couch_mode" value="{{ config.display.couch_mode }}" placeholder="e.g. 3840x2160@60">
+  </div>
+
+  <div class="card">
+    <h2>Audio</h2>
+    <p class="muted">Detected sinks (via <code>pactl</code>).</p>
+    <label for="desk_sink">Desk sink</label>
+    <select id="desk_sink" name="desk_sink">
+      <option value="">— select —</option>
+      {% for s in sinks %}
+      <option value="{{ s.name }}" {% if s.name == config.audio.desk_sink %}selected{% endif %}>{{ s.description or s.name }}</option>
+      {% endfor %}
+    </select>
+    <label for="couch_sink">Couch sink</label>
+    <select id="couch_sink" name="couch_sink">
+      <option value="">— select —</option>
+      {% for s in sinks %}
+      <option value="{{ s.name }}" {% if s.name == config.audio.couch_sink %}selected{% endif %}>{{ s.description or s.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="card" x-data="{ cecEnabled: {{ 'true' if config.cec.enabled else 'false' }} }">
+    <h2>CEC (optional)</h2>
+    <p class="muted">Auto power-on / input-switch for your TV. Display switching and
+    controller-triggered launch work fully without this — skip it if you have no CEC hardware.</p>
+    <label><input type="checkbox" name="cec_enabled" x-model="cecEnabled" {% if config.cec.enabled %}checked{% endif %}> Enable CEC</label>
+
+    <template x-if="cecEnabled">
+      <div>
+        {% if not cec_adapters %}
+          <p class="error">No /dev/cec* adapter found. Plug in a CEC dongle or enable your GPU's native CEC, then reload this page.</p>
+        {% else %}
+        <label for="cec_adapter">Adapter</label>
+        <select id="cec_adapter" name="cec_adapter">
+          {% for a in cec_adapters %}
+          <option value="{{ a }}" {% if a == config.cec.adapter %}selected{% endif %}>{{ a }}</option>
+          {% endfor %}
+        </select>
+        <label for="cec_active_source_phys_addr">
+          Physical address override (leave blank to auto-use the adapter's own address — correct for most setups)
+        </label>
+        <input type="text" id="cec_active_source_phys_addr" name="cec_active_source_phys_addr"
+               value="{{ config.cec.active_source_phys_addr }}" placeholder="e.g. 3.2.0.0 — only if CEC is on a different HDMI path than the video">
+        <button type="button" class="secondary" onclick="testCec()">Test wake + switch input</button>
+        <span id="cec-test-result" class="muted"></span>
+        <script>
+          async function testCec() {
+            const adapter = document.getElementById('cec_adapter').value;
+            const phys = document.getElementById('cec_active_source_phys_addr').value;
+            const result = document.getElementById('cec-test-result');
+            result.textContent = 'sending...';
+            const resp = await fetch('/api/cec/test', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+              body: new URLSearchParams({adapter, phys_addr: phys}),
+            });
+            const data = await resp.json();
+            result.textContent = data.ok ? 'sent — did your TV switch to this PC?' : ('error: ' + (data.error || 'unknown'));
+          }
+        </script>
+        {% endif %}
+      </div>
+    </template>
+  </div>
+
+  <div class="card">
+    <h2>Launch on connect</h2>
+    <p class="muted">Detected launchers: {% for name, found in launchers.items() %}{{ name }}{{ "✓" if found else "✗" }}{{ ", " if not loop.last }}{% endfor %}</p>
+    <label for="launch_preset">Preset or custom command</label>
+    <select id="launch_preset" name="launch_preset">
+      <option value="">— none —</option>
+      {% for preset in launch_presets %}
+      <option value="{{ preset }}" {% if preset == config.on_connect.run %}selected{% endif %}>{{ preset }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <button type="submit">Save configuration</button>
+</form>
+
+{% endblock %}

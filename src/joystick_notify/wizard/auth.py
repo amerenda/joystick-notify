@@ -1,0 +1,117 @@
+"""First-run password setup, scrypt hash storage, and HTTP Basic Auth —
+implements the "Wizard network exposure and auth" decision in
+plans/joystick-notify-v2.md: loopback-only by default, forced password
+setup before anything else is reachable, and a hard refusal to bind
+non-loopback without a password already configured.
+
+Deliberately stdlib-only (hashlib.scrypt) — no new dependency for
+something this project only needs once, at first run.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import tempfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from ..config.store import default_config_dir
+
+SCRYPT_N = 2**14
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_DKLEN = 32
+SALT_BYTES = 16
+LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
+
+
+def default_credentials_path() -> Path:
+    return default_config_dir() / "credentials.json"
+
+
+@dataclass
+class Credentials:
+    username: str
+    salt_hex: str
+    hash_hex: str
+
+
+def _derive(password: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=SCRYPT_DKLEN)
+
+
+def create_credentials(username: str, password: str) -> Credentials:
+    salt = secrets.token_bytes(SALT_BYTES)
+    digest = _derive(password, salt)
+    return Credentials(username=username, salt_hex=salt.hex(), hash_hex=digest.hex())
+
+
+def verify_password(creds: Credentials, password: str) -> bool:
+    salt = bytes.fromhex(creds.salt_hex)
+    expected = bytes.fromhex(creds.hash_hex)
+    candidate = _derive(password, salt)
+    return secrets.compare_digest(candidate, expected)
+
+
+def load_credentials(path: Path | None = None) -> Credentials | None:
+    path = path or default_credentials_path()
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    try:
+        return Credentials(**raw)
+    except TypeError:
+        return None
+
+
+def save_credentials(creds: Credentials, path: Path | None = None) -> None:
+    path = path or default_credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".cred-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(asdict(creds), f)
+        os.replace(tmp_path, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def check_basic_auth(header_value: str | None, creds: Credentials) -> bool:
+    if not header_value or not header_value.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header_value[len("Basic ") :]).decode("utf-8")
+        username, _, password = decoded.partition(":")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    if not secrets.compare_digest(username, creds.username):
+        return False
+    return verify_password(creds, password)
+
+
+def validate_bind_address(bind_address: str, *, has_credentials: bool) -> None:
+    """Refuses a non-loopback bind with no password configured — the
+    wizard must not silently become LAN-reachable and unauthenticated.
+    Raise, don't warn: this is a hard refusal to start, not a log line.
+    """
+    if bind_address in LOOPBACK_ADDRESSES:
+        return
+    if not has_credentials:
+        raise ValueError(
+            f"refusing to bind the wizard to non-loopback address {bind_address!r} with no password "
+            "configured. Start with the default loopback bind, set a password via the setup page, "
+            "then set wizard.bind_address for LAN access."
+        )

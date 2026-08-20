@@ -1,0 +1,321 @@
+"""Generic controller enumeration — the kernel-level layer that makes an
+*unknown* controller work at all (profiles.py is cosmetic on top of this).
+
+Two independent event sources feed the same `RawEvent` shape into the
+debounce chokepoint:
+
+1. `UdevWatcher` — observes the `input`/`hid` subsystems via pyudev, gated
+   primarily on `ID_INPUT_JOYSTICK=1` (the kernel already classifies
+   gamepads generically, protocol-agnostic). This is what v1's
+   `udev/99-joystick-notify.rules` did via a spawned shell script per
+   event; here it's one long-running observer feeding one in-memory
+   pipeline instead.
+2. `HidrawLivenessWatcher` — direct port of v1's
+   `scripts/controller-liveness-watch.py`. Some receivers (confirmed
+   2026-08-17 against the Steam Controller Puck receiver via live
+   `udevadm monitor`) emit **zero** uevents on power-on/off — the receiver
+   stays enumerated on USB the whole time and silently starts/stops
+   relaying HID reports. No udev rule, however written, can catch that;
+   only watching for actual HID report data flow on the `/dev/hidraw*`
+   node can. Both sources feed the same debouncer, which already dedupes
+   redundant events from overlapping sources within its window.
+
+The important distinction from plans/joystick-notify-v2.md's tray-health
+section: "no controller currently connected" is a normal idle Health.ok()
+state. Only a broken *detection path itself* (pyudev context init failure,
+permission denied reading /dev/input or /dev/hidraw*) is Health.failed() —
+callers must not conflate the two.
+"""
+from __future__ import annotations
+
+import asyncio
+import glob
+import logging
+import os
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+from ..debounce import RawEvent, RawKind
+from ..health import Health
+from .profiles import GENERIC_PROFILE, match_profile
+
+logger = logging.getLogger(__name__)
+
+HID_ROOT = "/sys/bus/hid/devices"
+_NAME_PATTERNS = ("Controller", "Gamepad", "8BitDo")
+_EXCLUDE_PATTERNS = ("LED", "Light", "Lighting")
+
+
+def stable_device_id(properties: dict) -> str | None:
+    """Prefer HID_UNIQ (Bluetooth MAC, or a vendor's own unique string) as
+    the stable identifier — generalizes v1's lock_owner scheme. Falls back
+    to `usb:{vid}:{pid}` for wired/dongle devices with no HID_UNIQ at all
+    (v1 discovered the Steam Controller's HID_UNIQ has no colon, which
+    broke *Bluetooth-shaped matching* against it — but as a device_id on
+    its own, a bare HID_UNIQ or a vid:pid pair both work fine, matching was
+    the only thing that was wrong).
+    """
+    uniq = properties.get("HID_UNIQ")
+    if uniq:
+        return uniq
+    vid = properties.get("ID_VENDOR_ID")
+    pid = properties.get("ID_MODEL_ID")
+    if vid and pid:
+        return f"usb:{vid}:{pid}"
+    devpath = properties.get("DEVPATH")
+    if devpath:
+        return devpath
+    return None
+
+
+def is_candidate_hid(properties: dict) -> bool:
+    """ID_INPUT_JOYSTICK is the primary, protocol-agnostic signal. HID
+    name-pattern matching is v1's original heuristic, kept as a secondary
+    net for HID-subsystem parent-device events that don't themselves carry
+    ID_INPUT_JOYSTICK (that tag lives on the child evdev node)."""
+    if properties.get("ID_INPUT_JOYSTICK") == "1":
+        return True
+    name = properties.get("HID_NAME", "")
+    if not name:
+        return False
+    if any(x in name for x in _EXCLUDE_PATTERNS):
+        return False
+    return any(p in name for p in _NAME_PATTERNS)
+
+
+def device_present(device_id: str, hid_root: str = HID_ROOT, usb_root: str = "/sys/bus/usb/devices") -> bool:
+    """Point-in-time presence check for a specific device_id, used by
+    state_machine's owner-watch loop as defense-in-depth alongside the
+    debounced connect/disconnect events (matches v1's `id_present`, which
+    the no-controller-timeout logic in watcher-process.sh checked directly
+    rather than relying solely on already-processed events).
+    """
+    if device_id.startswith("usb:"):
+        _, vid, pid = device_id.split(":", 2)
+        vid, pid = vid.lower(), pid.lower()
+        for dev_dir in glob.glob(os.path.join(usb_root, "*")):
+            vid_file = os.path.join(dev_dir, "idVendor")
+            pid_file = os.path.join(dev_dir, "idProduct")
+            if not (os.path.exists(vid_file) and os.path.exists(pid_file)):
+                continue
+            try:
+                with open(vid_file) as f:
+                    dev_vid = f.read().strip().lower()
+                with open(pid_file) as f:
+                    dev_pid = f.read().strip().lower()
+            except OSError:
+                continue
+            if dev_vid == vid and dev_pid == pid:
+                return True
+        return False
+
+    for uevent_path in glob.glob(os.path.join(hid_root, "*", "uevent")):
+        try:
+            with open(uevent_path) as f:
+                content = f.read()
+        except OSError:
+            continue
+        if f"HID_UNIQ={device_id}" in content:
+            return True
+    return False
+
+
+def profile_for(properties: dict):
+    vendor_id = (properties.get("ID_VENDOR_ID") or "").lower()
+    product_id = (properties.get("ID_MODEL_ID") or "").lower()
+    hid_name = properties.get("HID_NAME", "")
+    return match_profile(vendor_id=vendor_id, product_id=product_id, hid_name=hid_name)
+
+
+@dataclass
+class DeviceInfo:
+    device_id: str
+    hid_name: str
+    profile_id: str
+    device_class: str
+    source: str
+
+
+class UdevWatcher:
+    """Long-running pyudev observer feeding RawEvents into a callback. Real
+    hardware/udev dependent — exercised on real hardware, not in the unit
+    test suite (see tests/test_debounce.py and test_state_machine.py for
+    the parts of this pipeline that ARE unit-testable without hardware).
+    """
+
+    def __init__(self, feed: Callable[[RawEvent], None], health: Health) -> None:
+        self._feed = feed
+        self._health = health
+        self._observer = None
+        self._context = None
+
+    def start(self) -> None:
+        try:
+            import pyudev
+        except ImportError as e:
+            self._health.failed("devices", "pyudev not installed", str(e))
+            return
+
+        try:
+            self._context = pyudev.Context()
+            monitor = pyudev.Monitor.from_netlink(self._context)
+            monitor.filter_by(subsystem="input")
+            monitor.filter_by(subsystem="hid")
+            self._observer = pyudev.MonitorObserver(monitor, callback=self._on_udev_event)
+            self._observer.start()
+            self._health.ok("devices", "udev observer running")
+        except Exception as e:
+            # Permission denied on netlink socket, no udev running, etc. —
+            # this is the "detection subsystem itself is broken" case from
+            # the plan's tray table, distinct from "nothing connected."
+            self._health.failed("devices", "udev observer failed to start", str(e))
+            logger.exception("devices: udev observer failed to start")
+
+    def _on_udev_event(self, device) -> None:
+        properties = dict(device.properties)
+        if not is_candidate_hid(properties):
+            return
+        device_id = stable_device_id(properties)
+        if not device_id:
+            return
+        profile = profile_for(properties)
+        action = properties.get("ACTION", "")
+        if action in ("add", "change"):
+            kind = RawKind.ADD
+        elif action == "remove":
+            kind = RawKind.REMOVE
+        else:
+            return
+        self._feed(RawEvent(device_id=device_id, kind=kind, device_class=profile.device_class, source="udev"))
+
+    def stop(self) -> None:
+        if self._observer is not None:
+            self._observer.stop()
+            self._observer = None
+
+
+class HidrawLivenessWatcher:
+    """Direct port of v1's controller-liveness-watch.py: watches actual HID
+    report data flow on /dev/hidraw* for receivers that produce no uevents
+    at all on power toggle. Runs as an asyncio task polling+selecting on
+    the candidate fds, rather than a separate systemd unit as in v1 — one
+    daemon, one event loop.
+    """
+
+    def __init__(
+        self,
+        feed: Callable[[RawEvent], None],
+        *,
+        rescan_interval_s: float = 5.0,
+        remove_timeout_s: float = 6.0,
+    ) -> None:
+        self._feed = feed
+        self._rescan_interval_s = rescan_interval_s
+        self._remove_timeout_s = remove_timeout_s
+        self._task: asyncio.Task | None = None
+        self._fds: dict[int, tuple[str, str, str]] = {}  # fd -> (path, device_id, device_class)
+        self._last_seen: dict[str, float] = {}
+        self._reported_live: set[str] = set()
+
+    @staticmethod
+    def _read_uevent(path: str) -> dict:
+        values: dict[str, str] = {}
+        try:
+            with open(os.path.join(path, "uevent")) as f:
+                for line in f:
+                    if "=" in line:
+                        key, _, value = line.rstrip("\n").partition("=")
+                        values[key] = value
+        except OSError:
+            pass
+        return values
+
+    def _find_candidate_nodes(self):
+        for hid_path in sorted(glob.glob(os.path.join(HID_ROOT, "*"))):
+            uevent = self._read_uevent(hid_path)
+            if not is_candidate_hid(uevent):
+                continue
+            device_id = stable_device_id(uevent) or os.path.basename(hid_path)
+            profile = profile_for(uevent)
+            for node in sorted(glob.glob(os.path.join(hid_path, "hidraw", "hidraw*"))):
+                yield "/dev/" + os.path.basename(node), device_id, profile.device_class
+
+    def start(self) -> None:
+        self._task = asyncio.ensure_future(self._run())
+
+    async def _run(self) -> None:
+        loop = asyncio.get_event_loop()
+        last_scan = 0.0
+        try:
+            while True:
+                now = time.monotonic()
+                if now - last_scan >= self._rescan_interval_s:
+                    last_scan = now
+                    self._rescan(loop)
+
+                if not self._fds:
+                    await asyncio.sleep(1.0)
+                else:
+                    await asyncio.sleep(0.5)
+
+                now = time.monotonic()
+                for device_id in list(self._reported_live):
+                    if now - self._last_seen.get(device_id, 0.0) > self._remove_timeout_s:
+                        self._reported_live.discard(device_id)
+                        self._feed(RawEvent(device_id=device_id, kind=RawKind.REMOVE, source="hidraw_liveness"))
+        except asyncio.CancelledError:
+            pass
+        finally:
+            for fd in list(self._fds):
+                self._safe_remove_reader(loop, fd)
+
+    def _rescan(self, loop: asyncio.AbstractEventLoop) -> None:
+        wanted = {path: (device_id, device_class) for path, device_id, device_class in self._find_candidate_nodes()}
+        open_paths = {path for path, _, _ in self._fds.values()}
+
+        for path, (device_id, device_class) in wanted.items():
+            if path in open_paths:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            self._fds[fd] = (path, device_id, device_class)
+            loop.add_reader(fd, self._on_readable, fd)
+
+        for fd, (path, _device_id, _device_class) in list(self._fds.items()):
+            if path not in wanted:
+                self._safe_remove_reader(loop, fd)
+                del self._fds[fd]
+
+    def _safe_remove_reader(self, loop: asyncio.AbstractEventLoop, fd: int) -> None:
+        try:
+            loop.remove_reader(fd)
+            os.close(fd)
+        except OSError:
+            pass
+
+    def _on_readable(self, fd: int) -> None:
+        path, device_id, device_class = self._fds.get(fd, (None, None, None))
+        if device_id is None:
+            return
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            return
+        if not data:
+            return
+        self._last_seen[device_id] = time.monotonic()
+        if device_id not in self._reported_live:
+            self._reported_live.add(device_id)
+            self._feed(RawEvent(device_id=device_id, kind=RawKind.ADD, device_class=device_class, source="hidraw_liveness"))
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None

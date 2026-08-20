@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Status — joystick-notify{% endblock %}
+{% block content %}
+
+{% if not config.configured %}
+<div class="card">
+  <h2>Setup needed</h2>
+  <p>joystick-notify hasn't been configured yet. Detected displays, audio
+  sinks, controllers, and CEC hardware still need to be reviewed and
+  confirmed before the daemon will do anything on controller connect.</p>
+  <a class="btn" href="/configure">Start configuration</a>
+</div>
+{% endif %}
+
+<div class="card" hx-get="/partials/status-detail" hx-trigger="load, every 3s" hx-swap="innerHTML">
+  <h2>Daemon health</h2>
+  <p class="muted">Loading…</p>
+</div>
+
+<div class="card">
+  <h2>Current configuration</h2>
+  <div class="component-row"><span>Desk output</span><span class="muted">{{ config.display.desk_port or "not set" }}</span></div>
+  <div class="component-row"><span>Couch output</span><span class="muted">{{ config.display.couch_port or "not set" }}</span></div>
+  <div class="component-row"><span>CEC</span><span class="muted">{{ "enabled" if config.cec.enabled else "disabled" }}</span></div>
+  <div class="component-row"><span>Launch on connect</span><span class="muted">{{ config.on_connect.run or "none" }}</span></div>
+  <a class="btn secondary" href="/configure">Edit configuration</a>
+</div>
+
+{% endblock %}

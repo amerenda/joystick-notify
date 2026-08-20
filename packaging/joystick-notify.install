@@ -1,0 +1,40 @@
+post_install() {
+	cat <<-EOF
+	==> joystick-notify installed. Two steps remain before it's usable:
+
+	1. One-time root setup (sudoers carve-out for DRM rescan + CEC self-heal,
+	   root-owned CEC system units):
+	       sudo jn-setup-root-carveout.sh
+
+	2. Enable the user-level daemon (do NOT run this as root):
+	       systemctl --user enable --now joystick-notify.service
+	       systemctl --user enable --now joystick-notify-tray.service   # optional, needs PyQt6
+
+	Then open the setup wizard: http://127.0.0.1:8642/
+	(Or click the tray icon — it opens the wizard directly once running.)
+
+	This does NOT auto-enable itself via a pacman scriptlet — see the
+	xdg-autostart entry and jn-setup-root-carveout.sh for why root-level
+	setup and per-user systemd state can't reliably happen from here.
+	EOF
+}
+
+post_upgrade() {
+	cat <<-EOF
+	==> joystick-notify upgraded. If the root carve-out (sudoers/CEC units)
+	    changed in this release, re-run: sudo jn-setup-root-carveout.sh
+
+	    Restart the user service to pick up the new version:
+	        systemctl --user restart joystick-notify.service
+	EOF
+}
+
+pre_remove() {
+	cat <<-EOF
+	==> Stop the user service before removing, if it's running:
+	        systemctl --user disable --now joystick-notify.service joystick-notify-tray.service
+	    Root carve-out files (sudoers rule, CEC system units) are not
+	    removed automatically — see /etc/sudoers.d/joystick-notify and
+	    /usr/lib/systemd/system/cec*.
+	EOF
+}
