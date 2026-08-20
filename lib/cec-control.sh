@@ -254,27 +254,90 @@ cec_allm_best_effort() {
     log "cec: ALLM ${mode} (phys-addr=${addr})"
 }
 
+# Query a logical address's reported power state via cec-ctl.
+# Prints "on" | "standby" | "unknown" to stdout.
+_cec_power_status_ctl() {
+    local addr="$1"; shift
+    local out
+    out="$(cec-ctl "$@" --to "$addr" --give-device-power-status 2>/dev/null)" || { echo "unknown"; return 1; }
+    if echo "$out" | grep -qi 'pwr-state:[[:space:]]*standby'; then
+        echo "standby"
+    elif echo "$out" | grep -qi 'pwr-state:[[:space:]]*on'; then
+        echo "on"
+    else
+        echo "unknown"
+    fi
+}
+
+# Query a logical address's reported power state via cec-client.
+# Prints "on" | "standby" | "unknown" to stdout.
+_cec_power_status_client() {
+    local addr="$1"
+    local out
+    out="$(printf 'pow %s\nq\n' "$addr" | cec-client -s -d 1 -p "$CEC_HDMI_PORT" 2>/dev/null)" || { echo "unknown"; return 1; }
+    if echo "$out" | grep -qi "power status:.*standby"; then
+        echo "standby"
+    elif echo "$out" | grep -qi "power status:.*'on'"; then
+        echo "on"
+    else
+        echo "unknown"
+    fi
+}
+
+# Send Standby to every address in CEC_STANDBY_TARGETS (TV + receiver by
+# default) and confirm each one actually reports standby before returning -
+# a fire-and-forget standby command can silently no-op (receiver asleep-but-
+# not-really, a dropped CEC frame, a device that ignores broadcast standby),
+# leaving the TV lit after "couch mode ended". Retries CEC_STANDBY_VERIFY_ATTEMPTS
+# times per address; any address that never confirms gets a loud, visible
+# notification instead of a silent best_effort swallow.
 cec_standby_best_effort() {
     [ "$CEC_ENABLED" = "true" ] || [ "$CEC_ENABLED" = "1" ] || return 0
     [ "$CEC_POWER_OFF_ON_TEARDOWN" = "true" ] || [ "$CEC_POWER_OFF_ON_TEARDOWN" = "1" ] || return 0
     [ -e "$CEC_STATE" ] || return 0
     cec_ensure_adapter_best_effort
 
-    # Mirror wake's tool preference: cec-ctl first (kernel CEC), cec-client fallback (Pulse-Eight USB).
+    local use_client=0 adapter_args=()
     if have cec-ctl && compgen -G "/dev/cec*" >/dev/null; then
-        local adapter_args=()
         [ -n "${CEC_ADAPTER:-}" ] && adapter_args+=( -d "$CEC_ADAPTER" )
-        cec-ctl "${adapter_args[@]}" --to 0 --standby >/dev/null 2>&1 || true
-        log "cec: standby sent (cec-ctl ${CEC_ADAPTER:-auto})"
+    elif have cec-client; then
+        use_client=1
+    else
+        log "cec: standby skipped (missing cec-ctl/cec-client)"
         return 0
     fi
 
-    if have cec-client; then
-        if printf 'standby 0\nq\n' | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1; then
-            log "cec: standby OK (cec-client -p $CEC_HDMI_PORT)"
-        else
-            log "cec: warn: standby failed (cec-client -p $CEC_HDMI_PORT)"
-        fi
-        return 0
+    local addr attempt status unconfirmed=""
+    for addr in $CEC_STANDBY_TARGETS; do
+        status="unknown"
+        for attempt in $(seq 1 "${CEC_STANDBY_VERIFY_ATTEMPTS:-3}"); do
+            if [ "$use_client" -eq 1 ]; then
+                printf 'standby %s\nq\n' "$addr" | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1 || true
+            else
+                cec-ctl "${adapter_args[@]}" --to "$addr" --standby >/dev/null 2>&1 || true
+            fi
+
+            sleep "${CEC_STANDBY_VERIFY_DELAY:-2}"
+
+            if [ "$use_client" -eq 1 ]; then
+                status="$(_cec_power_status_client "$addr")"
+            else
+                status="$(_cec_power_status_ctl "$addr" "${adapter_args[@]}")"
+            fi
+
+            if [ "$status" = "standby" ]; then
+                log "cec: standby confirmed for logical addr $addr (attempt $attempt/${CEC_STANDBY_VERIFY_ATTEMPTS:-3})"
+                break
+            fi
+            log "cec: standby not yet confirmed for logical addr $addr (attempt $attempt/${CEC_STANDBY_VERIFY_ATTEMPTS:-3}, status=$status)"
+        done
+        [ "$status" = "standby" ] || unconfirmed="${unconfirmed:+$unconfirmed,}$addr"
+    done
+
+    if [ -n "$unconfirmed" ]; then
+        log "cec: WARN - standby unconfirmed for logical addr(s) $unconfirmed after ${CEC_STANDBY_VERIFY_ATTEMPTS:-3} attempts - device(s) may still be on"
+        note "⚠️ CEC device may still be on" "Couldn't confirm standby for CEC addr(s) $unconfirmed. Check the TV/receiver manually."
+    else
+        log "cec: standby confirmed for all targets ($CEC_STANDBY_TARGETS)"
     fi
 }

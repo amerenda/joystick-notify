@@ -69,6 +69,14 @@ CEC_ALLM_ENABLED="${CEC_ALLM_ENABLED:-true}"
 # reconnects (or a human actively debugging the adapter) from repeatedly
 # triggering reattach/USB-bus-reset. Matches cec-watchdog.timer's own cadence.
 CEC_SELFHEAL_COOLDOWN="${CEC_SELFHEAL_COOLDOWN:-120}"
+# Logical addresses to send Standby to (and verify) on couch-mode teardown.
+# 0 = TV, 5 = Audio System (receiver/AVR). Both are woken explicitly on
+# activation (see cec_wake_and_select_input_best_effort), so both need an
+# explicit standby + confirmation on the way out too - a receiver doesn't
+# reliably follow the TV into standby on its own.
+CEC_STANDBY_TARGETS="${CEC_STANDBY_TARGETS:-0 5}"
+CEC_STANDBY_VERIFY_ATTEMPTS="${CEC_STANDBY_VERIFY_ATTEMPTS:-3}"
+CEC_STANDBY_VERIFY_DELAY="${CEC_STANDBY_VERIFY_DELAY:-2}"
 
 # KDE Plasma
 COUCH_DESKTOP_NAME="${COUCH_DESKTOP_NAME:-Couch}"

@@ -10,15 +10,16 @@ _output_is_enabled() {
     local port="$1"
     kscreen-doctor -j 2>/dev/null | python3 -c "
 import sys, json
+port = sys.argv[1]
 try:
     data = json.load(sys.stdin)
 except Exception:
     sys.exit(1)
 for o in data.get('outputs', []):
-    if o.get('name') == '$port':
+    if o.get('name') == port:
         sys.exit(0 if o.get('enabled') else 1)
 sys.exit(1)
-" 2>/dev/null
+" "$port" 2>/dev/null
 }
 
 desk_mode_active() {
@@ -33,13 +34,13 @@ desk_mode_active() {
         # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
         sleep 0.5
         # Use timeout to prevent hangs if driver is stuck
+        _kscreen_rc=0
         _kscreen_err="$(timeout 10 kscreen-doctor \
             "output.${DESK_PORT}.enable" \
             "output.${DESK_PORT}.priority.1" \
             "output.${DESK_PORT}.mode.${DESK_MODE}" \
             "output.${DESK_PORT}.position.0,0" \
-            "output.${COUCH_PORT}.disable" 2>&1)"
-        _kscreen_rc=$?
+            "output.${COUCH_PORT}.disable" 2>&1)" || _kscreen_rc=$?
 
         if [ "$_kscreen_rc" -eq 0 ] && _output_is_enabled "$DESK_PORT"; then
             log "display: $DESK_PORT active (attempt $_attempt/$_max_attempts)"
@@ -126,13 +127,13 @@ couch_mode_active() {
         # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
         sleep 0.5
         # Use timeout to prevent hangs if driver is stuck
+        _kscreen_rc=0
         _kscreen_err="$(timeout 10 kscreen-doctor \
             "output.${COUCH_PORT}.enable" \
             "output.${COUCH_PORT}.priority.1" \
             "output.${COUCH_PORT}.mode.${COUCH_MODE}" \
             "output.${COUCH_PORT}.position.0,0" \
-            "output.${DESK_PORT}.disable" 2>&1)"
-        _kscreen_rc=$?
+            "output.${DESK_PORT}.disable" 2>&1)" || _kscreen_rc=$?
 
         if [ "$_kscreen_rc" -eq 0 ] && _output_is_enabled "$COUCH_PORT"; then
             log "display: $COUCH_PORT active (attempt $_attempt/$_max_attempts)"
