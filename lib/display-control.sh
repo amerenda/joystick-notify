@@ -1,19 +1,60 @@
 #!/usr/bin/env bash
 # display-control.sh - Primary display switching logic
 
+# Query whether the given output is enabled at the compositor level (KWin's
+# view via kscreen-doctor), not just whether the kscreen-doctor command
+# exited 0. 2026-07-30 incident: a desk-mode switch logged as completed but
+# the enable never actually took effect (silent failure, output stayed
+# disabled) - a zero exit code alone is not proof the change applied.
+_output_is_enabled() {
+    local port="$1"
+    kscreen-doctor -j 2>/dev/null | python3 -c "
+import sys, json
+port = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for o in data.get('outputs', []):
+    if o.get('name') == port:
+        sys.exit(0 if o.get('enabled') else 1)
+sys.exit(1)
+" "$port" 2>/dev/null
+}
+
 desk_mode_active() {
     log "begin: desk_mode_active"
     debug "DISPLAY" "Switching to desk output: port=$DESK_PORT mode=$DESK_MODE"
     set_audio_to_sink "$HEADSET_SINK"
-    # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
-    sleep 0.5
-    # Use timeout to prevent hangs if driver is stuck
-    timeout 10 kscreen-doctor \
-        "output.${DESK_PORT}.enable" \
-        "output.${DESK_PORT}.priority.1" \
-        "output.${DESK_PORT}.mode.${DESK_MODE}" \
-        "output.${DESK_PORT}.position.0,0" \
-        "output.${COUCH_PORT}.disable" 2>/dev/null || debug "DISPLAY" "kscreen-doctor failed or timed out for desk"
+
+    _attempt=1
+    _max_attempts=5
+    _retry_delay=1
+    while [ "$_attempt" -le "$_max_attempts" ]; do
+        # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
+        sleep 0.5
+        # Use timeout to prevent hangs if driver is stuck
+        _kscreen_rc=0
+        _kscreen_err="$(timeout 10 kscreen-doctor \
+            "output.${DESK_PORT}.enable" \
+            "output.${DESK_PORT}.priority.1" \
+            "output.${DESK_PORT}.mode.${DESK_MODE}" \
+            "output.${DESK_PORT}.position.0,0" \
+            "output.${COUCH_PORT}.disable" 2>&1)" || _kscreen_rc=$?
+
+        if [ "$_kscreen_rc" -eq 0 ] && _output_is_enabled "$DESK_PORT"; then
+            log "display: $DESK_PORT active (attempt $_attempt/$_max_attempts)"
+            break
+        fi
+
+        if [ "$_attempt" -lt "$_max_attempts" ]; then
+            log "display: WARN - desk switch to $DESK_PORT did not take (attempt $_attempt/$_max_attempts, kscreen rc=$_kscreen_rc): ${_kscreen_err:-no output}. Retrying in ${_retry_delay}s"
+            sleep "$_retry_delay"
+        else
+            log "display: ERROR - failed to switch to $DESK_PORT after $_max_attempts attempts, giving up: ${_kscreen_err:-no output}"
+        fi
+        _attempt=$((_attempt + 1))
+    done
     log "end: desk_mode_active"
 }
 
@@ -79,18 +120,35 @@ couch_mode_active() {
         _attempt=$((_attempt + 1))
     done
 
-    # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
-    sleep 0.5
-    # Use timeout to prevent hangs if driver is stuck
-    if ! timeout 10 kscreen-doctor \
-        "output.${COUCH_PORT}.enable" \
-        "output.${COUCH_PORT}.priority.1" \
-        "output.${COUCH_PORT}.mode.${COUCH_MODE}" \
-        "output.${COUCH_PORT}.position.0,0" \
-        "output.${DESK_PORT}.disable" 2>/dev/null; then
-        log "display: FAILED - kscreen-doctor failed to switch display to $COUCH_PORT. Returning to desk mode."
-        return 1
-    fi
+    _attempt=1
+    _max_attempts=5
+    _retry_delay=1
+    while [ "$_attempt" -le "$_max_attempts" ]; do
+        # Brief delay to let GPU/driver settle before display changes (AMD RDNA3 workaround)
+        sleep 0.5
+        # Use timeout to prevent hangs if driver is stuck
+        _kscreen_rc=0
+        _kscreen_err="$(timeout 10 kscreen-doctor \
+            "output.${COUCH_PORT}.enable" \
+            "output.${COUCH_PORT}.priority.1" \
+            "output.${COUCH_PORT}.mode.${COUCH_MODE}" \
+            "output.${COUCH_PORT}.position.0,0" \
+            "output.${DESK_PORT}.disable" 2>&1)" || _kscreen_rc=$?
+
+        if [ "$_kscreen_rc" -eq 0 ] && _output_is_enabled "$COUCH_PORT"; then
+            log "display: $COUCH_PORT active (attempt $_attempt/$_max_attempts)"
+            break
+        fi
+
+        if [ "$_attempt" -lt "$_max_attempts" ]; then
+            log "display: WARN - couch switch to $COUCH_PORT did not take (attempt $_attempt/$_max_attempts, kscreen rc=$_kscreen_rc): ${_kscreen_err:-no output}. Retrying in ${_retry_delay}s"
+            sleep "$_retry_delay"
+        else
+            log "display: FAILED - kscreen-doctor failed to switch display to $COUCH_PORT after $_max_attempts attempts: ${_kscreen_err:-no output}. Returning to desk mode."
+            return 1
+        fi
+        _attempt=$((_attempt + 1))
+    done
 
     if couch_sink="$(resolve_couch_sink_with_wait)"; then
         log "audio: resolved couch sink -> $couch_sink"
