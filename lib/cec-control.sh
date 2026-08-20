@@ -144,6 +144,14 @@ cec_wake_and_select_input_best_effort() {
                 (
                     for _r in $(seq 1 "${CEC_ACTIVE_SOURCE_RETRIES:-2}"); do
                         sleep "${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
+                        # Cooperative cancellation: skip (and stop) if desk mode has taken
+                        # over since this retry was scheduled. Without this, a stale retry
+                        # can fire after teardown/standby and re-wake the TV to this input
+                        # with no display output behind it (confirmed 2026-08-19).
+                        if [ "$(cat "${LAST_MODE_FILE:-/dev/null}" 2>/dev/null)" != "couch" ]; then
+                            log "cec: active-source re-assert (retry $_r/${CEC_ACTIVE_SOURCE_RETRIES:-2}) skipped - no longer in couch mode"
+                            break
+                        fi
                         log "cec: active-source re-assert (retry $_r/${CEC_ACTIVE_SOURCE_RETRIES:-2}) phys-addr=$addr"
                         cec-ctl "${adapter_args[@]}" --to 0 --set-stream-path "phys-addr=$addr" >/dev/null 2>&1 || true
                         cec-ctl "${adapter_args[@]}" --to 0 --active-source "phys-addr=$addr" >/dev/null 2>&1 || true
@@ -199,6 +207,11 @@ cec_wake_and_select_input_best_effort() {
                 (
                     for _r in $(seq 1 "${CEC_ACTIVE_SOURCE_RETRIES:-2}"); do
                         sleep "${CEC_ACTIVE_SOURCE_RETRY_DELAY:-4}"
+                        # Cooperative cancellation: see cec-ctl branch above for rationale.
+                        if [ "$(cat "${LAST_MODE_FILE:-/dev/null}" 2>/dev/null)" != "couch" ]; then
+                            log "cec: active-source re-assert (retry $_r/${CEC_ACTIVE_SOURCE_RETRIES:-2}) skipped - no longer in couch mode"
+                            break
+                        fi
                         log "cec: active-source re-assert (retry $_r/${CEC_ACTIVE_SOURCE_RETRIES:-2})"
                         printf '%s\nq\n' "$tx_cmd" | cec-client -s -d 1 -p "$CEC_HDMI_PORT" >/dev/null 2>&1 || true
                     done

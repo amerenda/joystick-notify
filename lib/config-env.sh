@@ -12,6 +12,14 @@ DEBUG_SWITCHER="${DEBUG_SWITCHER:-false}"
 DEBUG_WRAPPER="${DEBUG_WRAPPER:-false}"
 
 DISCONNECT_GRACE="${DISCONNECT_GRACE:-30}"
+# Grace window after launching Steam during which a disconnect should NOT trigger
+# immediate teardown even if is_steam_running still reports false. A cold Steam
+# start takes several seconds before its process tree is visible to pgrep; without
+# this, a controller flapping disconnect/reconnect right after launch causes an
+# instant teardown (display/desktop switch) that yanks the desktop out from under
+# Steam mid-startup, crashing it (confirmed via steam bootstrap_log.txt showing
+# "Shutdown" ~5s after launch, 2026-08-19).
+STEAM_STARTUP_GRACE="${STEAM_STARTUP_GRACE:-10}"
 STEAM_POLL="${STEAM_POLL:-2}"
 # Seconds the owner controller must be absent (Steam running, no game) before auto-exiting couch mode
 STEAM_NO_CONTROLLER_TIMEOUT="${STEAM_NO_CONTROLLER_TIMEOUT:-120}"
@@ -124,6 +132,8 @@ CEC_BROKEN_FLAG="$JN_LOCKS/cec-broken.$(id -u)"
 # if the last known mode was desk, the scan is skipped so a passively-connected
 # USB controller (e.g. charging cable) does not trigger couch mode on service restart.
 LAST_MODE_FILE="$JN_LOCKS/last-mode.$(id -u)"
+# Timestamp of the most recent Steam launch attempt (see STEAM_STARTUP_GRACE above).
+STEAM_LAUNCH_TS_FILE="$JN_LOCKS/steam-launch-ts.$(id -u)"
 
 # Paths - Scripts
 LAUNCHER="/usr/local/bin/launch-bigpicture.sh"

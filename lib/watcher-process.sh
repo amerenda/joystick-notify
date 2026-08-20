@@ -41,6 +41,17 @@ is_steam_running() {
     pgrep -x steam >/dev/null 2>&1 || pgrep -f '/steam' >/dev/null 2>&1
 }
 
+# True if a Steam launch was initiated within the last STEAM_STARTUP_GRACE seconds.
+# Used to avoid treating a not-yet-visible cold-start process tree as "Steam never
+# started" (see STEAM_STARTUP_GRACE in lib/config-env.sh for the failure this avoids).
+steam_recently_launched() {
+    local ts now
+    ts="$(cat "${STEAM_LAUNCH_TS_FILE:-/dev/null}" 2>/dev/null || true)"
+    [ -n "$ts" ] || return 1
+    now="$(date +%s)"
+    [ "$(( now - ts ))" -lt "${STEAM_STARTUP_GRACE:-10}" ]
+}
+
 is_game_running() {
     pgrep -x gamescope >/dev/null 2>&1
 }

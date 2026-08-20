@@ -103,6 +103,7 @@ couch_mode_activate() {
             debug "SWITCHER" "Setting STEAM_COMPAT_COMMAND_PREFIX=/usr/local/bin/game-wrapper.sh for launch"
             export STEAM_COMPAT_COMMAND_PREFIX="/usr/local/bin/game-wrapper.sh"
             debug "SWITCHER" "Environment before launch: $(env | grep STEAM || true)"
+            date +%s > "$STEAM_LAUNCH_TS_FILE" 2>/dev/null || true
             LOCKFILE="$LOCK" "$LAUNCHER" >/dev/null 2>&1 &
 
             # Audio retry loop to ensure Steam/game lands on couch output
@@ -234,8 +235,8 @@ while IFS= read -r line; do
             if [ "$owner_now" = "$DEV" ] || ! any_controller_present; then
                 if is_game_running; then
                     log "remove: game is running -> staying in couch mode (dev=$DEV owner=$owner_now)"
-                elif is_steam_running; then
-                    log "remove: steam running -> scheduling grace teardown check (dev=$DEV owner=$owner_now)"
+                elif is_steam_running || steam_recently_launched; then
+                    log "remove: steam running or recently launched -> scheduling grace teardown check (dev=$DEV owner=$owner_now)"
                     schedule_disconnect_grace "$DEV"
                 else
                     log "remove: steam not running -> immediate teardown (dev=$DEV owner=$owner_now)"

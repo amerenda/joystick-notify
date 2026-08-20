@@ -133,6 +133,36 @@ Notable behaviors:
 ### `udev/71-8bitdo-controllers.rules`
 Misc device-specific tweaks (permissions / power settings) for certain controllers.
 
+### `scripts/controller-liveness-watch.py`, `systemd/controller-liveness-watch.service`
+**Not all controller receivers generate a udev event at all.** Confirmed
+2026-08-17 via a live `udevadm monitor` capture: turning a Steam Controller
+off/on via its own power button, with its USB "Puck" receiver left plugged
+in, produces *zero* uevents — no add, no change, nothing. The receiver's
+firmware silently starts/stops relaying HID reports with no kernel-visible
+device/subsystem state change. This is a hardware/firmware property, not a
+bug in the udev rule above — no rule, however written, can react to an event
+that is never emitted.
+
+This companion daemon runs permanently (not udev-triggered) and watches for
+actual HID report *data* instead of a hotplug event, using the same generic
+matching criteria as `99-joystick-notify.rules` (Valve vendor ID `28DE`, or
+`HID_NAME` containing `Controller`/`Gamepad`/`8BitDo` — not hardcoded to one
+controller model or one `hidraw` number, which can renumber on every
+reboot). It re-scans `/sys/bus/hid/devices/*` every `CONTROLLER_LIVENESS_RESCAN_INTERVAL`
+seconds (default 5) for matching devices and opens their `/dev/hidraw*`
+nodes (**not** `/dev/input/eventN`: once Steam has claimed a controller it
+holds the evdev path such that a second reader's `open()` succeeds but never
+observes data, even during confirmed active input — `hidraw` is what Steam
+itself reads raw reports from and is not exclusive). A data burst after
+silence synthesizes a real `add` event into the same `events.log` pipeline
+`joystick-event.sh` already writes to (reusing its existing debounce/lock
+handling rather than duplicating it); `CONTROLLER_LIVENESS_REMOVE_TIMEOUT`
+seconds (default 6) of silence synthesizes `remove`. If a device *also*
+fires a genuine udev event (e.g. the receiver dongle itself being
+unplugged), that still works too — `joystick-event.sh`'s own debounce logic
+already discards the redundant duplicate within its 5s window, so both
+mechanisms running at once is safe.
+
 ### `systemd/joystick-notify.service`
 Main **systemd user service** that runs `monitor-switcher.sh`.
 
