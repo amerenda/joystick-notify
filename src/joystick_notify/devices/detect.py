@@ -108,6 +108,16 @@ def vendor_product(properties: dict) -> tuple[str, str]:
     return vendor_id, product_id
 
 
+def device_name(properties: dict) -> str:
+    """HID-subsystem events carry the device name under `HID_NAME`;
+    input-subsystem (evdev child) events carry the same string under the
+    generic `NAME` key instead and never set `HID_NAME` at all. Checking
+    only `HID_NAME` (the original port) silently failed name-pattern
+    matching for every input-subsystem event — confirmed via live testing
+    2026-08-20 against a real 8BitDo Ultimate 2."""
+    return properties.get("HID_NAME") or properties.get("NAME", "")
+
+
 def is_candidate_hid(properties: dict) -> bool:
     """ID_INPUT_JOYSTICK is the primary, protocol-agnostic signal (only
     present on live pyudev events, never in a raw sysfs uevent read). HID
@@ -121,7 +131,7 @@ def is_candidate_hid(properties: dict) -> bool:
     vendor_id, _ = vendor_product(properties)
     if vendor_id == "28de":  # Valve
         return True
-    name = properties.get("HID_NAME", "")
+    name = device_name(properties)
     if not name:
         return False
     if any(x in name for x in _EXCLUDE_PATTERNS):
@@ -168,8 +178,7 @@ def device_present(device_id: str, hid_root: str = HID_ROOT, usb_root: str = "/s
 
 def profile_for(properties: dict):
     vendor_id, product_id = vendor_product(properties)
-    hid_name = properties.get("HID_NAME", "")
-    return match_profile(vendor_id=vendor_id, product_id=product_id, hid_name=hid_name)
+    return match_profile(vendor_id=vendor_id, product_id=product_id, hid_name=device_name(properties))
 
 
 @dataclass
@@ -231,6 +240,25 @@ class UdevWatcher:
         # Keep this callback free of anything that touches the event loop
         # except the single call_soon_threadsafe handoff at the end.
         properties = dict(device.properties)
+
+        # A single physical controller fires TWO independent udev events on
+        # connect: one from the "hid" subsystem (carries HID_UNIQ/HID_NAME —
+        # the good identity) and one from the "input" subsystem for its
+        # child evdev node (carries ID_INPUT_JOYSTICK but never HID_UNIQ).
+        # Without reconciling these, the same physical device produces two
+        # different device_ids and gets tracked as two separate
+        # controllers downstream — confirmed via live testing 2026-08-20
+        # (8BitDo showed up as both "950F5726DC" and "usb:2dc8:6012").
+        # Walk up to the HID parent and merge its identity fields in,
+        # keeping this event's own ACTION/SUBSYSTEM/DEVPATH, so both
+        # events for the same physical device resolve to one device_id.
+        if properties.get("SUBSYSTEM") != "hid":
+            hid_parent = device.find_parent("hid")
+            if hid_parent is not None:
+                merged = dict(hid_parent.properties)
+                merged.update(properties)
+                properties = merged
+
         if not is_candidate_hid(properties):
             return
         device_id = stable_device_id(properties)

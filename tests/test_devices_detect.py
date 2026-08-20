@@ -5,6 +5,7 @@ from joystick_notify.debounce import RawEvent, RawKind
 from joystick_notify.devices.detect import (
     HidrawLivenessWatcher,
     UdevWatcher,
+    device_name,
     is_candidate_hid,
     parse_hid_id,
     profile_for,
@@ -132,8 +133,12 @@ class _FakeLoop:
 
 
 class _FakeDevice:
-    def __init__(self, properties):
+    def __init__(self, properties, parent=None):
         self.properties = properties
+        self._parent = parent
+
+    def find_parent(self, subsystem):
+        return self._parent if subsystem == "hid" else None
 
 
 def test_udev_watcher_hands_off_via_call_soon_threadsafe_not_direct_call(tmp_path):
@@ -154,6 +159,7 @@ def test_udev_watcher_hands_off_via_call_soon_threadsafe_not_direct_call(tmp_pat
 
     device = _FakeDevice(
         {
+            "SUBSYSTEM": "hid",
             "ID_INPUT_JOYSTICK": "1",
             "HID_UNIQ": "aa:bb:cc:dd:ee:ff",
             "ACTION": "add",
@@ -182,9 +188,84 @@ def test_udev_watcher_no_op_when_loop_not_set(tmp_path):
     health = Health(path=Path(tmp_path) / "health.json")
     watcher = UdevWatcher(lambda e: fed.append(e), health)
     # start() was never called (e.g. pyudev import failed) — _loop is None.
-    device = _FakeDevice({"ID_INPUT_JOYSTICK": "1", "HID_UNIQ": "aa:bb", "ACTION": "add"})
+    device = _FakeDevice({"SUBSYSTEM": "hid", "ID_INPUT_JOYSTICK": "1", "HID_UNIQ": "aa:bb", "ACTION": "add"})
     watcher._on_udev_event(device)  # must not raise
     assert fed == []
+
+
+def test_device_name_prefers_hid_name_falls_back_to_name():
+    assert device_name({"HID_NAME": "8BitDo Ultimate 2"}) == "8BitDo Ultimate 2"
+    # Input-subsystem child events carry the generic NAME key instead.
+    assert device_name({"NAME": "8BitDo Ultimate 2 Wireless Controller for PC"}) == "8BitDo Ultimate 2 Wireless Controller for PC"
+    assert device_name({}) == ""
+
+
+def test_udev_watcher_merges_hid_parent_identity_for_input_subsystem_child_event(tmp_path):
+    # Direct regression test for the second live-testing finding: the same
+    # physical 8BitDo controller produced two device_ids (950F5726DC via
+    # the hid subsystem, usb:2dc8:6012 via the input subsystem child node)
+    # because the input-subsystem event has no HID_UNIQ/HID_NAME of its
+    # own. Walking up to the hid parent must unify both into one device_id.
+    fed = []
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(lambda e: fed.append(e), health)
+    fake_loop = _FakeLoop()
+    watcher._loop = fake_loop
+
+    hid_parent = _FakeDevice(
+        {
+            "SUBSYSTEM": "hid",
+            "HID_UNIQ": "950F5726DC",
+            "HID_NAME": "8BitDo 8BitDo Ultimate 2 Wireless Controller for PC",
+        }
+    )
+    input_child_event = _FakeDevice(
+        {
+            "SUBSYSTEM": "input",
+            "ACTION": "add",
+            "ID_INPUT_JOYSTICK": "1",
+            "ID_VENDOR_ID": "2dc8",
+            "ID_MODEL_ID": "6012",
+            "NAME": "8BitDo 8BitDo Ultimate 2 Wireless Controller for PC",
+        },
+        parent=hid_parent,
+    )
+
+    watcher._on_udev_event(input_child_event)
+    fn, args = fake_loop.calls[0]
+    fn(*args)
+
+    assert len(fed) == 1
+    # Must resolve to the HID parent's HID_UNIQ, not a usb:vid:pid fallback.
+    assert fed[0].device_id == "950F5726DC"
+    assert fed[0].device_class == "bitdo_dongle"
+
+
+def test_udev_watcher_input_event_with_no_hid_parent_falls_back_to_vidpid(tmp_path):
+    # A genuinely non-HID joystick (no hid-subsystem layer at all) must
+    # still work via the ID_INPUT_JOYSTICK + vid:pid fallback path.
+    fed = []
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(lambda e: fed.append(e), health)
+    fake_loop = _FakeLoop()
+    watcher._loop = fake_loop
+
+    device = _FakeDevice(
+        {
+            "SUBSYSTEM": "input",
+            "ACTION": "add",
+            "ID_INPUT_JOYSTICK": "1",
+            "ID_VENDOR_ID": "abcd",
+            "ID_MODEL_ID": "1234",
+        },
+        parent=None,
+    )
+    watcher._on_udev_event(device)
+    fn, args = fake_loop.calls[0]
+    fn(*args)
+
+    assert len(fed) == 1
+    assert fed[0].device_id == "usb:abcd:1234"
 
 
 def test_hidraw_liveness_watcher_add_tracks_device_class():
