@@ -208,6 +208,9 @@ def create_app() -> Starlette:
 def run(bind_address: str | None = None, port: int | None = None) -> None:
     import uvicorn
 
+    from ..session_env import ensure_session_environment
+
+    ensure_session_environment()
     config = config_store.load()
     bind_address = bind_address or config.wizard.bind_address
     port = port or config.wizard.port

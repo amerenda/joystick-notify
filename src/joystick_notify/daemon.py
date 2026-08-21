@@ -25,6 +25,7 @@ from .debounce import Debouncer, DeviceEvent
 from .devices import cec as cec_discover
 from .devices.detect import HidrawLivenessWatcher, UdevWatcher, device_present
 from .health import HEARTBEAT_INTERVAL_SECONDS, Health
+from .session_env import ensure_session_environment
 from .state_machine import ActionHooks, StateMachine
 
 logger = logging.getLogger(__name__)
@@ -231,6 +232,8 @@ def run_doctor(config: JoystickNotifyConfig, health: Health) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_session_environment()
+
     parser = argparse.ArgumentParser(prog="jn-daemon")
     parser.add_argument("--doctor", action="store_true", help="one-shot self-test; exit non-zero on failure")
     parser.add_argument("--config", type=str, default=None)
