@@ -36,16 +36,42 @@ class OutputInfo:
     preferred_mode: str = ""
 
 
+def _mode_label(mode: dict) -> str:
+    # Real kscreen-doctor -j output already provides a clean, pre-formatted
+    # "name" per mode (e.g. "2560x1440@60") — use it directly rather than
+    # reconstructing from raw width/height/refreshRate, which produces ugly
+    # float-precision artifacts (refreshRate is often something like
+    # 59.95100021362305, not a clean "60") and risks not matching the exact
+    # string kscreen-doctor itself expects for `output.X.mode.<name>`.
+    name = mode.get("name")
+    if name:
+        return name
+    size = mode.get("size", {})
+    refresh = mode.get("refreshRate", "")
+    return f"{size.get('width', '?')}x{size.get('height', '?')}@{refresh}"
+
+
 def parse_outputs(kscreen_json: dict) -> list[OutputInfo]:
     outputs = []
     for o in kscreen_json.get("outputs", []):
+        # Real kscreen-doctor -j output (confirmed via live testing
+        # 2026-08-21, KDE Plasma on archlinux) uses a `preferredModes`
+        # list of mode ids, not the singular `preferredModeId` or a
+        # per-mode `preferred` boolean this was originally written
+        # against — neither of those fields were ever populated on real
+        # data. Falls back to the currently-active mode (currentModeId)
+        # when no preferred-mode info is available at all, so the wizard
+        # still has a sane default to pre-fill rather than a blank field.
+        preferred_ids = set(o.get("preferredModes") or [])
         preferred = ""
+        current_mode_label = ""
         for mode in o.get("modes", []):
-            if mode.get("id") == o.get("preferredModeId") or mode.get("preferred"):
-                size = mode.get("size", {})
-                refresh = mode.get("refreshRate", "")
-                preferred = f"{size.get('width', '?')}x{size.get('height', '?')}@{refresh}"
-                break
+            if mode.get("id") == o.get("currentModeId"):
+                current_mode_label = _mode_label(mode)
+            if mode.get("id") in preferred_ids or mode.get("id") == o.get("preferredModeId") or mode.get("preferred"):
+                preferred = _mode_label(mode)
+        if not preferred:
+            preferred = current_mode_label
         outputs.append(
             OutputInfo(
                 name=o.get("name", ""),
