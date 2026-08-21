@@ -37,6 +37,21 @@ def test_setup_password_page_renders(client):
     assert "Set an admin password" in resp.text
 
 
+def test_setup_password_page_displays_the_username(client):
+    # Direct regression test: a real user reasonably assumed "admin" and
+    # couldn't log in because the page never said what username to use
+    # (it was silently the OS login name). The page must state it plainly.
+    resp = client.get("/setup-password")
+    assert auth_module.ADMIN_USERNAME in resp.text
+
+
+def test_login_works_with_admin_username_after_setup(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.get("/", headers=_basic("admin", "longenough1"))
+    assert resp.status_code == 200
+    assert auth_module.ADMIN_USERNAME == "admin"
+
+
 def test_setup_password_rejects_short_password(client):
     resp = client.post("/setup-password", data={"password": "short", "confirm": "short"})
     assert resp.status_code == 400
@@ -61,19 +76,19 @@ def test_setup_password_success_then_index_requires_auth(client):
 
 def test_index_with_correct_basic_auth_succeeds(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    resp = client.get("/", headers=_basic("alex", "longenough1"))
+    resp = client.get("/", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
     assert resp.status_code == 200
 
 
 def test_index_with_wrong_password_still_401(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    resp = client.get("/", headers=_basic("alex", "wrongpassword"))
+    resp = client.get("/", headers=_basic(auth_module.ADMIN_USERNAME, "wrongpassword"))
     assert resp.status_code == 401
 
 
 def test_setup_password_unreachable_once_configured(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    resp = client.get("/setup-password", headers=_basic("alex", "longenough1"))
+    resp = client.get("/setup-password", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
     assert resp.status_code in (302, 307)
     assert resp.headers["location"] == "/"
 
@@ -91,7 +106,7 @@ def test_configure_get_requires_auth(client):
 
 def test_configure_post_saves_and_marks_configured(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    auth_headers = _basic("alex", "longenough1")
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
 
     resp = client.post(
         "/configure",
@@ -118,7 +133,7 @@ def test_configure_post_saves_and_marks_configured(client):
 
 def test_api_status_no_snapshot_yet(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    resp = client.get("/api/status", headers=_basic("alex", "longenough1"))
+    resp = client.get("/api/status", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
     assert resp.status_code == 200
     body = resp.json()
     assert body["daemon_alive"] is False
@@ -131,7 +146,7 @@ def test_api_status_reflects_health_registry(client, isolated_config):
     health = Health()
     health.failed("deps", "cec-ctl not found")
 
-    resp = client.get("/api/status", headers=_basic("alex", "longenough1"))
+    resp = client.get("/api/status", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
     body = resp.json()
     assert body["daemon_alive"] is True
     assert body["overall"] == "failed"

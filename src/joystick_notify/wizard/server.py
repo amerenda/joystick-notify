@@ -76,7 +76,9 @@ async def index(request: Request):
 async def setup_password_get(request: Request):
     if auth_module.load_credentials() is not None:
         return RedirectResponse("/")
-    return templates.TemplateResponse(request, "setup_password.html", {"error": None})
+    return templates.TemplateResponse(
+        request, "setup_password.html", {"error": None, "username": auth_module.ADMIN_USERNAME}
+    )
 
 
 async def setup_password_post(request: Request):
@@ -91,8 +93,10 @@ async def setup_password_post(request: Request):
     elif password != confirm:
         error = "Passwords do not match."
     if error:
-        return templates.TemplateResponse(request, "setup_password.html", {"error": error}, status_code=400)
-    creds = auth_module.create_credentials("alex", password)
+        return templates.TemplateResponse(
+            request, "setup_password.html", {"error": error, "username": auth_module.ADMIN_USERNAME}, status_code=400
+        )
+    creds = auth_module.create_credentials(auth_module.ADMIN_USERNAME, password)
     auth_module.save_credentials(creds)
     return RedirectResponse("/", status_code=303)
 

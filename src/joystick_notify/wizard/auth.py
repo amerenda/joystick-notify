@@ -27,6 +27,15 @@ SCRYPT_DKLEN = 32
 SALT_BYTES = 16
 LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
 
+# Fixed, predictable login name for the wizard's single admin account.
+# Deliberately NOT tied to the OS username: confirmed via live testing
+# 2026-08-21 that a user reasonably assumed "admin" (the page never said
+# otherwise) and couldn't log in because it was silently the OS login name
+# instead. A fixed, well-known name removes the guesswork entirely — this
+# has nothing to do with real Linux user accounts, it's just a label on a
+# stored password hash.
+ADMIN_USERNAME = "admin"
+
 
 def default_credentials_path() -> Path:
     return default_config_dir() / "credentials.json"
