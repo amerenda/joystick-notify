@@ -232,9 +232,12 @@ async def configure_post(request: Request):
 
     config.timing.disconnect_grace_s = _positive_float("disconnect_grace_s", config.timing.disconnect_grace_s)
     config.timing.launch_startup_grace_s = _positive_float("launch_startup_grace_s", config.timing.launch_startup_grace_s)
-    config.timing.no_controller_timeout_s = _positive_float("no_controller_timeout_s", config.timing.no_controller_timeout_s)
     config.timing.poll_interval_s = _positive_float("poll_interval_s", config.timing.poll_interval_s)
     config.timing.debounce_default_ms = _nonneg_int("debounce_default_ms", config.timing.debounce_default_ms)
+
+    config.idle.wait_for_game = form.get("idle_wait_for_game") == "on"
+    config.idle.screensaver_enabled = form.get("idle_screensaver_enabled") == "on"
+    config.idle.idle_after_s = _positive_float("idle_after_s", config.idle.idle_after_s)
 
     config.screen_lock.enabled = form.get("screen_lock_enabled") == "on"
     config.screen_lock.hold_inhibit = form.get("screen_lock_hold_inhibit") == "on"

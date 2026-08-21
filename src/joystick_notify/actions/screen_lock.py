@@ -106,6 +106,37 @@ async def simulate_user_activity() -> None:
     await _run(["qdbus6", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.SimulateUserActivity"])
 
 
+async def activate_screensaver(health: Health) -> bool:
+    """Explicitly engages the screensaver (SetActive(true)) for couch-idle
+    (controller disconnected, launched game still running) -- couch mode
+    stays fully set up (display/audio untouched, Mode.COUCH unchanged) so
+    a reconnect resumes instantly; this just blanks the screen in the
+    meantime. Verified via GetActive() rather than trusted blind, matching
+    every other action module's discipline here.
+
+    Note: an explicit SetActive(true) is expected to work regardless of
+    whether a ScreenSaver.Inhibit() cookie is currently held for the whole
+    couch session (screen_lock.enabled + hold_inhibit) -- Inhibit() is
+    documented to suppress automatic *idle-timer* activation specifically,
+    not a direct manual request. Not yet confirmed against real KDE
+    behavior with both features enabled simultaneously; worth checking
+    during dogfooding.
+    """
+    await _run(["qdbus6", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.SetActive", "true"])
+    active = await get_active()
+    if active:
+        health.ok("screensaver", "engaged for couch idle")
+    else:
+        health.degraded("screensaver", "SetActive(true) did not take")
+    return active
+
+
+async def deactivate_screensaver(health: Health) -> None:
+    await _run(["qdbus6", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.SetActive", "false"])
+    await simulate_user_activity()
+    health.ok("screensaver", "dismissed")
+
+
 async def unlock_and_disable_autolock(health: Health, *, verify_attempts: int = 3, verify_delay_s: float = 0.5) -> None:
     await _run(["kwriteconfig6", "--file", "kscreenlockerrc", "--group", "Daemon", "--key", "Autolock", "false"])
     await _run(["qdbus6", "org.kde.screensaver", "/ScreenSaver", "org.kde.screensaver.configure"])

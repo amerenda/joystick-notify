@@ -152,6 +152,9 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
             return await launchers.is_launch_process_alive(config.on_connect.run)
         return True
 
+    async def has_launch_target() -> bool:
+        return bool(config.on_connect.run)
+
     async def is_owner_present(device_id: str) -> bool:
         return device_present(device_id)
 
@@ -164,6 +167,45 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         if config.shortcuts.exit_couch_enabled:
             await resources.manual_exit_watcher.start(device_id)
 
+    async def enter_couch_idle() -> None:
+        # Owner absent, game still running: screensaver + TV standby,
+        # WITHOUT touching display/audio or leaving Mode.COUCH -- the
+        # couch session stays fully set up so a reconnect resumes
+        # instantly instead of redoing the whole desk->couch activation.
+        await screen_lock_actions.activate_screensaver(health)
+        if config.cec.enabled and config.cec.power_off_on_teardown:
+            adapter = await _cec_adapter()
+            if adapter is not None:
+                await cec_control.standby_and_verify(
+                    adapter,
+                    config.cec.standby_targets,
+                    health,
+                    attempts=config.cec.standby_verify_attempts,
+                    delay_s=config.cec.standby_verify_delay_s,
+                )
+
+    async def exit_couch_idle() -> None:
+        # Wakes the TV back up and dismisses the screensaver -- the mirror
+        # of enter_couch_idle(), fired on reconnect (see
+        # on_reconnect_while_couch's sibling handling in state_machine.py).
+        if config.cec.enabled:
+            adapter = await _cec_adapter()
+            if adapter is not None:
+                # Store the returned retry-loop task the same way
+                # activate_couch() does, so a later activate_desk() cancels
+                # THIS one too, not just whatever activate_couch() spawned
+                # (which has almost certainly already finished its own
+                # bounded retries by the time an idle session wakes back up).
+                resources.cec_retry_task = await cec_control.wake_and_select_input(
+                    adapter,
+                    config.cec.active_source_phys_addr or None,
+                    health,
+                    wake_delay_s=config.cec.wake_delay_s,
+                    retries=config.cec.active_source_retries,
+                    retry_delay_s=config.cec.active_source_retry_delay_s,
+                )
+        await screen_lock_actions.deactivate_screensaver(health)
+
     return ActionHooks(
         activate_couch=activate_couch,
         activate_desk=activate_desk,
@@ -171,6 +213,9 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         is_launch_process_alive=is_launch_process_alive,
         is_owner_present=is_owner_present,
         on_reconnect_while_couch=on_reconnect_while_couch,
+        has_launch_target=has_launch_target,
+        enter_couch_idle=enter_couch_idle,
+        exit_couch_idle=exit_couch_idle,
     )
 
 
@@ -189,7 +234,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
     manual_exit_watcher = ManualExitWatcher(
         on_manual_exit,
         health,
-        button=config.shortcuts.exit_couch_button,
+        buttons=config.shortcuts.exit_couch_buttons,
         hold_seconds=config.shortcuts.exit_couch_hold_seconds,
     )
 
@@ -199,8 +244,10 @@ async def run_daemon(config_path: Path | None = None) -> None:
         health,
         disconnect_grace_s=config.timing.disconnect_grace_s,
         launch_startup_grace_s=config.timing.launch_startup_grace_s,
-        no_controller_timeout_s=config.timing.no_controller_timeout_s,
+        idle_after_s=config.idle.idle_after_s,
         poll_interval_s=config.timing.poll_interval_s,
+        wait_for_game_on_disconnect=config.idle.wait_for_game,
+        screensaver_enabled=config.idle.screensaver_enabled,
     )
 
     async def to_state_machine(event: DeviceEvent) -> None:

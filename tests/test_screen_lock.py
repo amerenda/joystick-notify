@@ -102,6 +102,64 @@ def test_activate_couch_noop_when_disabled(tmp_path):
     assert "disabled" in health.get("screen_lock").reason
 
 
+def test_activate_screensaver_reports_ok_when_verified_active(tmp_path, monkeypatch):
+    responses = iter(
+        [
+            (0, ""),      # SetActive true
+            (0, "true"),  # GetActive -> confirmed active
+        ]
+    )
+
+    async def fake_run(cmd, timeout=5.0):
+        return next(responses)
+
+    monkeypatch.setattr(screen_lock, "_run", fake_run)
+    health = Health(path=Path(tmp_path) / "health.json")
+
+    result = asyncio.run(screen_lock.activate_screensaver(health))
+
+    assert result is True
+    assert health.get("screensaver").status == Status.OK
+
+
+def test_activate_screensaver_reports_degraded_when_setactive_does_not_take(tmp_path, monkeypatch):
+    responses = iter(
+        [
+            (0, ""),       # SetActive true
+            (0, "false"),  # GetActive -> did not actually engage
+        ]
+    )
+
+    async def fake_run(cmd, timeout=5.0):
+        return next(responses)
+
+    monkeypatch.setattr(screen_lock, "_run", fake_run)
+    health = Health(path=Path(tmp_path) / "health.json")
+
+    result = asyncio.run(screen_lock.activate_screensaver(health))
+
+    assert result is False
+    assert health.get("screensaver").status == Status.DEGRADED
+
+
+def test_deactivate_screensaver_reports_ok(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(screen_lock, "_run", fake_run)
+    health = Health(path=Path(tmp_path) / "health.json")
+
+    asyncio.run(screen_lock.deactivate_screensaver(health))
+
+    assert health.get("screensaver").status == Status.OK
+    # SetActive(false) and SimulateUserActivity() both fired.
+    assert any(cmd[-2:] == ["org.freedesktop.ScreenSaver.SetActive", "false"] for cmd in calls)
+    assert any(cmd[-1] == "org.freedesktop.ScreenSaver.SimulateUserActivity" for cmd in calls)
+
+
 def test_activate_desk_noop_when_disabled(tmp_path, monkeypatch):
     from joystick_notify.config.schema import ScreenLockConfig
 

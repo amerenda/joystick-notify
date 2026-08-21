@@ -124,6 +124,7 @@ def test_configure_get_renders_all_sections(client, monkeypatch):
         "Wizard access", "wizard_lan_access", "wizard_bind_address", "wizard_port",
         "Controller shortcut: exit couch mode", "exit_couch_hold_seconds",
         "custom_command_name", "custom_command_value", "+ Add command",
+        "idle_wait_for_game", "idle_screensaver_enabled", "idle_after_s",
     ):
         assert needle in resp.text, f"missing from rendered page: {needle}"
 
@@ -367,7 +368,7 @@ def test_configure_post_saves_cec_power_off_and_timing_fields(client):
             "cec_power_off_on_teardown": "on",
             "disconnect_grace_s": "15",
             "launch_startup_grace_s": "20",
-            "no_controller_timeout_s": "60",
+            "idle_after_s": "60",
         },
     )
     assert resp.status_code == 303
@@ -378,7 +379,7 @@ def test_configure_post_saves_cec_power_off_and_timing_fields(client):
     assert saved.cec.power_off_on_teardown is True
     assert saved.timing.disconnect_grace_s == 15.0
     assert saved.timing.launch_startup_grace_s == 20.0
-    assert saved.timing.no_controller_timeout_s == 60.0
+    assert saved.idle.idle_after_s == 60.0
 
 
 def test_configure_post_unchecking_cec_power_off_saves_false(client):
@@ -550,6 +551,49 @@ def test_configure_post_saves_advanced_timing_fields(client):
     saved = config_store.load()
     assert saved.timing.poll_interval_s == 1.0
     assert saved.timing.debounce_default_ms == 0  # 0 is legitimate (no debounce), not "invalid"
+
+
+def test_configure_post_saves_idle_config(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "idle_wait_for_game": "on",
+            "idle_screensaver_enabled": "on",
+            "idle_after_s": "90",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.idle.wait_for_game is True
+    assert saved.idle.screensaver_enabled is True
+    assert saved.idle.idle_after_s == 90.0
+
+
+def test_configure_post_unchecking_idle_toggles_saves_false(client):
+    # Both idle.wait_for_game and idle.screensaver_enabled default True --
+    # unchecking them (absent from form data) must persist as False.
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": ""},
+    )
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.idle.wait_for_game is False
+    assert saved.idle.screensaver_enabled is False
 
 
 def test_configure_post_saves_wizard_port(client):

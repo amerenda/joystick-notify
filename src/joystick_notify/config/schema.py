@@ -55,13 +55,30 @@ class CecConfig:
 class TimingConfig:
     disconnect_grace_s: float = 30.0
     launch_startup_grace_s: float = 10.0
-    no_controller_timeout_s: float = 120.0
     poll_interval_s: float = 2.0
     debounce_default_ms: int = 300
     # Per-device-class overrides — e.g. a Steam Puck receiver and an 8BitDo
     # dongle don't necessarily bounce identically. Keyed by profile id from
     # devices/profiles.py.
     debounce_per_class_ms: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class IdleConfig:
+    # If the controller disconnects while a launched game is still
+    # running, wait for a reconnect instead of tearing down to desk after
+    # the usual disconnect_grace_s -- disable to restore the simpler "any
+    # disconnect tears down to desk" behavior regardless of whether a game
+    # is running (e.g. for a pure display/audio-switching setup, or anyone
+    # who'd rather not leave a game running unattended).
+    wait_for_game: bool = True
+    # Once the owner has been absent this long (with the game still
+    # running), engage the screensaver and put the TV into CEC standby
+    # (still gated on cec.power_off_on_teardown) -- while staying in
+    # couch mode, so a reconnect resumes instantly instead of redoing the
+    # whole desk->couch activation.
+    screensaver_enabled: bool = True
+    idle_after_s: float = 120.0
 
 
 @dataclass
@@ -102,10 +119,12 @@ class ShortcutConfig:
     # of what Steam/the game is doing is a good default, not something
     # that needs opt-in.
     exit_couch_enabled: bool = True
-    # evdev EV_KEY name (see manual_exit.py's DEFAULT_BUTTON docstring for
-    # why BTN_MODE/Guide button is the default).
-    exit_couch_button: str = "BTN_MODE"
-    exit_couch_hold_seconds: float = 3.0
+    # evdev EV_KEY names, ALL of which must be held together (see
+    # manual_exit.py's DEFAULT_BUTTONS docstring for why L1+R1+B is the
+    # default -- a three-button combo is harder to trigger by accident
+    # during normal play than any single button).
+    exit_couch_buttons: list[str] = field(default_factory=lambda: ["BTN_TL", "BTN_TR", "BTN_EAST"])
+    exit_couch_hold_seconds: float = 10.0
 
 
 @dataclass
@@ -129,6 +148,7 @@ class JoystickNotifyConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     cec: CecConfig = field(default_factory=CecConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
+    idle: IdleConfig = field(default_factory=IdleConfig)
     on_connect: ActionConfig = field(default_factory=ActionConfig)
     custom_commands: list[CustomCommand] = field(default_factory=list)
     screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)

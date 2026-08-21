@@ -182,11 +182,6 @@
            value="{{ config.timing.launch_startup_grace_s|int }}">
     <p class="muted" style="margin-top:-8px;">How long a cold-started game/launcher gets before "not visible yet" starts counting as "exited."</p>
 
-    <label for="no_controller_timeout_s">No-controller timeout (seconds)</label>
-    <input type="number" id="no_controller_timeout_s" name="no_controller_timeout_s" min="1" step="1"
-           value="{{ config.timing.no_controller_timeout_s|int }}">
-    <p class="muted" style="margin-top:-8px;">If the game/launcher is still running but the controller has been gone this long, switch back to desk anyway.</p>
-
     <details>
       <summary>Advanced timing</summary>
       <label for="poll_interval_s">Owner/process poll interval (seconds)</label>
@@ -202,6 +197,20 @@
   </div>
 
   <div class="card">
+    <h2>Controller disconnect while a game is running</h2>
+    <p class="muted">Controls what happens if the controller disconnects (battery died, went out of
+    range) while a launched game is still running.</p>
+    <label><input type="checkbox" name="idle_wait_for_game" {% if config.idle.wait_for_game %}checked{% endif %}> Wait for a reconnect instead of returning to desk</label>
+    <p class="muted" style="margin-top:-8px;">If unchecked, any disconnect returns to desk after the grace period above, regardless of whether a game is still running (the simpler, pre-existing behavior).</p>
+
+    <label><input type="checkbox" name="idle_screensaver_enabled" {% if config.idle.screensaver_enabled %}checked{% endif %}> Engage screensaver + put TV to sleep after a while</label>
+    <p class="muted" style="margin-top:-8px;">Only applies while waiting for a reconnect (above): after the controller has been gone this long, blank the screen and send the TV to CEC standby — without leaving couch mode, so reconnecting resumes instantly instead of redoing the whole switch-over.</p>
+
+    <label for="idle_after_s">Idle after (seconds)</label>
+    <input type="number" id="idle_after_s" name="idle_after_s" min="1" step="1" value="{{ config.idle.idle_after_s|int }}">
+  </div>
+
+  <div class="card">
     <h2>Controller shortcut: exit couch mode</h2>
     <p class="muted">Always available while couch mode is active, regardless of what Steam/the game
     is doing. Only switches display/audio/CEC/screen-lock back to desk — never stops the game.</p>
@@ -209,8 +218,8 @@
     <label for="exit_couch_hold_seconds">Hold duration (seconds)</label>
     <input type="number" id="exit_couch_hold_seconds" name="exit_couch_hold_seconds" min="1" step="0.5"
            value="{{ config.shortcuts.exit_couch_hold_seconds }}">
-    <p class="muted" style="margin-top:-8px;">Hold the controller's Guide/Home button (the button in
-    the middle most controllers use to open their system menu) for this long to force an exit.</p>
+    <p class="muted" style="margin-top:-8px;">Hold L1 + R1 + B together for this long to force an exit. A
+    three-button combo is deliberately harder to trigger by accident during normal play than any single button.</p>
   </div>
 
   <div class="card">

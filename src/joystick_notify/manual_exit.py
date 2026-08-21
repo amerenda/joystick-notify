@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from .devices.detect import find_evdev_path_for_device
 from .event_log import headline
@@ -24,12 +24,12 @@ from .supervisor import supervise
 
 logger = logging.getLogger(__name__)
 
-# Guide/Home/PS/Xbox button — present on nearly every modern gamepad
-# (Xbox, PlayStation, Switch Pro, Steam Controller/Deck, 8BitDo), unlike
-# any single face/shoulder button, which makes it the least likely to
-# collide with normal in-game use while couch mode is active.
-DEFAULT_BUTTON = "BTN_MODE"
-DEFAULT_HOLD_SECONDS = 3.0
+# L1 + R1 + B (Xbox-style face-button naming; BTN_EAST is "B"/Circle in the
+# standard Linux gamepad mapping) -- a three-button combo is deliberately
+# harder to trigger by accident during normal play than a single button,
+# since it requires both shoulder buttons plus a face button held together.
+DEFAULT_BUTTONS = ("BTN_TL", "BTN_TR", "BTN_EAST")
+DEFAULT_HOLD_SECONDS = 10.0
 
 
 class ManualExitWatcher:
@@ -38,12 +38,12 @@ class ManualExitWatcher:
         on_exit: Callable[[], Awaitable[None]],
         health: Health | None = None,
         *,
-        button: str = DEFAULT_BUTTON,
+        buttons: Sequence[str] = DEFAULT_BUTTONS,
         hold_seconds: float = DEFAULT_HOLD_SECONDS,
     ) -> None:
         self._on_exit = on_exit
         self._health = health
-        self._button = button
+        self._buttons = tuple(buttons)
         self._hold_seconds = hold_seconds
         self._task: asyncio.Task | None = None
 
@@ -79,13 +79,20 @@ class ManualExitWatcher:
         except OSError as e:
             logger.debug("manual_exit: could not open %s: %s", path, e)
             return
-        button_code = getattr(evdev.ecodes, self._button, None)
-        if button_code is None:
-            logger.warning("manual_exit: unknown button code %r, shortcut disabled", self._button)
-            device.close()
-            return
 
+        button_codes: dict[int, str] = {}
+        for name in self._buttons:
+            code = getattr(evdev.ecodes, name, None)
+            if code is None:
+                logger.warning("manual_exit: unknown button code %r, shortcut disabled", name)
+                device.close()
+                return
+            button_codes[code] = name
+        wanted_codes = set(button_codes)
+
+        held: set[int] = set()
         hold_task: asyncio.Task | None = None
+        combo_label = "+".join(self._buttons)
 
         async def fire_after_hold() -> None:
             try:
@@ -95,22 +102,29 @@ class ManualExitWatcher:
             headline(
                 logger,
                 "manual_exit: %s held %.1fs -> forcing exit to desk (launched process left untouched)",
-                self._button, self._hold_seconds,
+                combo_label, self._hold_seconds,
             )
             await self._on_exit()
 
         try:
             async for event in device.async_read_loop():
-                if event.type != evdev.ecodes.EV_KEY or event.code != button_code:
+                if event.type != evdev.ecodes.EV_KEY or event.code not in wanted_codes:
                     continue
-                if event.value == 1 and hold_task is None:
-                    if self._health is not None:
-                        hold_task = supervise("manual_exit_hold", fire_after_hold(), self._health)
-                    else:
-                        hold_task = asyncio.ensure_future(fire_after_hold())
-                elif event.value == 0 and hold_task is not None:
-                    hold_task.cancel()
-                    hold_task = None
+                if event.value == 1:
+                    held.add(event.code)
+                    if held == wanted_codes and hold_task is None:
+                        if self._health is not None:
+                            hold_task = supervise("manual_exit_hold", fire_after_hold(), self._health)
+                        else:
+                            hold_task = asyncio.ensure_future(fire_after_hold())
+                elif event.value == 0:
+                    held.discard(event.code)
+                    if hold_task is not None:
+                        # Any one of the combo's buttons releasing cancels
+                        # the pending hold -- all three must stay held for
+                        # the whole duration, not just be pressed once.
+                        hold_task.cancel()
+                        hold_task = None
         except asyncio.CancelledError:
             pass
         except OSError:

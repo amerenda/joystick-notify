@@ -32,6 +32,9 @@ def make_hooks(**overrides):
         is_launch_process_alive=overrides.get("is_launch_process_alive"),
         is_owner_present=overrides.get("is_owner_present"),
         on_reconnect_while_couch=overrides.get("on_reconnect_while_couch"),
+        has_launch_target=overrides.get("has_launch_target"),
+        enter_couch_idle=overrides.get("enter_couch_idle"),
+        exit_couch_idle=overrides.get("exit_couch_idle"),
     )
     return hooks, calls
 
@@ -185,8 +188,14 @@ async def test_process_not_visible_during_startup_grace_is_not_treated_as_exit(t
 
 
 @pytest.mark.asyncio
-async def test_no_controller_timeout_tears_down_even_with_process_alive(tmp_path):
+async def test_no_controller_timeout_enters_couch_idle_instead_of_tearing_down(tmp_path):
+    # Behavior change: owner absent + game still running used to force a
+    # full teardown to desk after no_controller_timeout_s. Now it goes
+    # couch-idle (screensaver + TV standby) and STAYS in Mode.COUCH, so a
+    # reconnect resumes instantly instead of redoing the whole desk->couch
+    # activation.
     health = make_health(tmp_path)
+    idle_calls = {"enter": 0, "exit": 0}
 
     async def is_launch_process_alive():
         return True
@@ -194,23 +203,247 @@ async def test_no_controller_timeout_tears_down_even_with_process_alive(tmp_path
     async def is_owner_present(device_id):
         return False  # owner never comes back
 
+    async def enter_couch_idle():
+        idle_calls["enter"] += 1
+
+    async def exit_couch_idle():
+        idle_calls["exit"] += 1
+
     hooks, calls = make_hooks(
-        is_launch_process_alive=is_launch_process_alive, is_owner_present=is_owner_present
+        is_launch_process_alive=is_launch_process_alive,
+        is_owner_present=is_owner_present,
+        enter_couch_idle=enter_couch_idle,
+        exit_couch_idle=exit_couch_idle,
     )
     sm = StateMachine(
         hooks,
         health,
         disconnect_grace_s=10,
         launch_startup_grace_s=0.01,
-        no_controller_timeout_s=0.03,
+        idle_after_s=0.03,
         poll_interval_s=0.01,
     )
 
     await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await asyncio.sleep(0.15)
+
+    assert sm.mode == Mode.COUCH  # stayed in couch, not torn down
+    assert calls["desk"] == 0
+    assert idle_calls["enter"] == 1
+
+    # Must not re-fire enter_couch_idle() on every subsequent poll tick.
     await asyncio.sleep(0.1)
+    assert idle_calls["enter"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_while_idle_wakes_up_and_resets_idle_state(tmp_path):
+    health = make_health(tmp_path)
+    idle_calls = {"enter": 0, "exit": 0}
+
+    async def is_launch_process_alive():
+        return True
+
+    async def is_owner_present(device_id):
+        return False
+
+    async def enter_couch_idle():
+        idle_calls["enter"] += 1
+
+    async def exit_couch_idle():
+        idle_calls["exit"] += 1
+
+    hooks, calls = make_hooks(
+        is_launch_process_alive=is_launch_process_alive,
+        is_owner_present=is_owner_present,
+        enter_couch_idle=enter_couch_idle,
+        exit_couch_idle=exit_couch_idle,
+    )
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=10, launch_startup_grace_s=0.01,
+        idle_after_s=0.03, poll_interval_s=0.01,
+    )
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await asyncio.sleep(0.08)
+    assert idle_calls["enter"] == 1
+
+    # Owner reconnects (same device_id, already in couch mode) -- must wake.
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+
+    assert idle_calls["exit"] == 1
+    assert sm.mode == Mode.COUCH
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_game_exit_while_idle_still_tears_down_to_desk(tmp_path):
+    # Going idle must not disable the process-exit teardown check --
+    # if the game itself exits while idle, we still need to leave couch mode.
+    health = make_health(tmp_path)
+    alive_flag = {"alive": True}
+
+    async def is_launch_process_alive():
+        return alive_flag["alive"]
+
+    async def is_owner_present(device_id):
+        return False
+
+    hooks, calls = make_hooks(
+        is_launch_process_alive=is_launch_process_alive, is_owner_present=is_owner_present,
+    )
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=10, launch_startup_grace_s=0.01,
+        idle_after_s=0.03, poll_interval_s=0.01,
+    )
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await asyncio.sleep(0.08)  # past the idle threshold
+
+    alive_flag["alive"] = False
+    await asyncio.sleep(0.05)
 
     assert sm.mode == Mode.DESK
     assert calls["desk"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_stays_in_couch_when_game_still_running(tmp_path):
+    # The headline feature: a controller disconnect must not tear down
+    # couch mode while a launched game is still alive -- it should wait
+    # for a reconnect instead.
+    health = make_health(tmp_path)
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return True
+
+    hooks, calls = make_hooks(
+        has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive,
+    )
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.03, poll_interval_s=0.01)
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.DISCONNECTED))
+    await asyncio.sleep(0.08)
+
+    assert sm.mode == Mode.COUCH
+    assert calls["desk"] == 0
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_tears_down_when_no_game_configured(tmp_path):
+    # Without has_launch_target/is_launch_process_alive hooks (nothing
+    # configured to launch, e.g. a pure display/audio-switching setup),
+    # a disconnect must still tear down after the grace period exactly
+    # like before this feature existed.
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks()
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.03, poll_interval_s=0.01)
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.DISCONNECTED))
+    await asyncio.sleep(0.08)
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_tears_down_when_game_configured_but_not_running(tmp_path):
+    # A launcher IS configured, but the game already exited -- disconnect
+    # should still tear down (there's nothing left to wait for), not stay
+    # in couch mode forever.
+    health = make_health(tmp_path)
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return False
+
+    hooks, calls = make_hooks(
+        has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive,
+    )
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.03, poll_interval_s=10)
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.DISCONNECTED))
+    await asyncio.sleep(0.08)
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_game_on_disconnect_false_restores_old_unconditional_teardown(tmp_path):
+    # wait_for_game_on_disconnect=False must restore the simple "any
+    # disconnect tears down to desk" behavior regardless of game status --
+    # for users who'd rather not leave a game running unattended.
+    health = make_health(tmp_path)
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return True  # game IS running
+
+    hooks, calls = make_hooks(
+        has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive,
+    )
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.03, poll_interval_s=0.01,
+        wait_for_game_on_disconnect=False,
+    )
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.DISCONNECTED))
+    await asyncio.sleep(0.08)
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_screensaver_enabled_false_never_enters_idle(tmp_path):
+    # screensaver_enabled=False must never engage the idle hook, but must
+    # not tear down either -- just wait, fully awake, for a reconnect.
+    health = make_health(tmp_path)
+    idle_calls = {"enter": 0}
+
+    async def is_launch_process_alive():
+        return True
+
+    async def is_owner_present(device_id):
+        return False
+
+    async def enter_couch_idle():
+        idle_calls["enter"] += 1
+
+    hooks, calls = make_hooks(
+        is_launch_process_alive=is_launch_process_alive,
+        is_owner_present=is_owner_present,
+        enter_couch_idle=enter_couch_idle,
+    )
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=10, launch_startup_grace_s=0.01,
+        idle_after_s=0.03, poll_interval_s=0.01, screensaver_enabled=False,
+    )
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await asyncio.sleep(0.15)
+
+    assert sm.mode == Mode.COUCH
+    assert calls["desk"] == 0
+    assert idle_calls["enter"] == 0
     await sm.aclose()
 
 

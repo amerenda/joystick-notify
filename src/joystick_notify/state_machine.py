@@ -79,11 +79,25 @@ class ActionHooks:
     # /dev/input/eventN left it permanently dead for the rest of that
     # session even though nothing else about couch mode was affected.
     on_reconnect_while_couch: Optional[Callable[[str], Awaitable[None]]] = None
+    # Whether anything is configured to launch at all -- distinct from
+    # is_launch_process_alive(), which conservatively returns True when
+    # nothing is configured (so the *process-exit* teardown check never
+    # false-triggers for a pure display/audio-switching setup with no
+    # launcher). The disconnect path needs the opposite default: "nothing
+    # configured" must mean "there's no game to wait for," not "assume
+    # something's running."
+    has_launch_target: Optional[Callable[[], Awaitable[bool]]] = None
+    # Couch-idle: controller absent, launched game still running. Screen-
+    # saver + CEC standby fire here WITHOUT leaving Mode.COUCH -- display/
+    # audio stay exactly as they are so a reconnect resumes instantly
+    # instead of redoing the whole desk->couch activation.
+    enter_couch_idle: Optional[Callable[[], Awaitable[None]]] = None
+    exit_couch_idle: Optional[Callable[[], Awaitable[None]]] = None
 
 
 DEFAULT_DISCONNECT_GRACE_S = 30
 DEFAULT_LAUNCH_STARTUP_GRACE_S = 10
-DEFAULT_NO_CONTROLLER_TIMEOUT_S = 120
+DEFAULT_IDLE_AFTER_S = 120
 DEFAULT_POLL_INTERVAL_S = 2
 
 
@@ -95,8 +109,10 @@ class StateMachine:
         *,
         disconnect_grace_s: float = DEFAULT_DISCONNECT_GRACE_S,
         launch_startup_grace_s: float = DEFAULT_LAUNCH_STARTUP_GRACE_S,
-        no_controller_timeout_s: float = DEFAULT_NO_CONTROLLER_TIMEOUT_S,
+        idle_after_s: float = DEFAULT_IDLE_AFTER_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        wait_for_game_on_disconnect: bool = True,
+        screensaver_enabled: bool = True,
     ) -> None:
         self.mode = Mode.DESK
         self._owner: str | None = None
@@ -104,11 +120,14 @@ class StateMachine:
         self._tasks: dict[str, asyncio.Task] = {}
         self._hooks = hooks
         self._health = health
+        self._wait_for_game_on_disconnect = wait_for_game_on_disconnect
+        self._screensaver_enabled = screensaver_enabled
         self._launch_ts: float | None = None
         self._no_controller_since: float | None = None
+        self._idle = False
         self._disconnect_grace_s = disconnect_grace_s
         self._launch_startup_grace_s = launch_startup_grace_s
-        self._no_controller_timeout_s = no_controller_timeout_s
+        self._idle_after_s = idle_after_s
         self._poll_interval_s = poll_interval_s
 
     @property
@@ -148,14 +167,20 @@ class StateMachine:
             return
         if self.mode == Mode.DESK:
             await self._transition(Mode.COUCH, device_id=device_id)
-        elif self._hooks.on_reconnect_while_couch is not None:
+        else:
             # Already in COUCH -- this is a reconnect (e.g. a brief
             # Bluetooth drop), not a fresh activation, so activate_couch()
             # must not run again. Hooks that opened something tied to the
             # old connection's specific device node still need a chance to
             # reopen it against whatever node the reconnect landed on.
             headline(logger, "state_machine[%s]: reconnected while already in couch mode", device_id)
-            await self._hooks.on_reconnect_while_couch(device_id)
+            if self._idle:
+                headline(logger, "state_machine[%s]: waking from couch idle (screensaver + TV standby)", device_id)
+                if self._hooks.exit_couch_idle is not None:
+                    await self._hooks.exit_couch_idle()
+                self._idle = False
+            if self._hooks.on_reconnect_while_couch is not None:
+                await self._hooks.on_reconnect_while_couch(device_id)
 
     async def _on_disconnect(self, device_id: str) -> None:
         if device_id != self._owner:
@@ -168,8 +193,29 @@ class StateMachine:
             await asyncio.sleep(self._disconnect_grace_s)
         except asyncio.CancelledError:
             return
+        if self._wait_for_game_on_disconnect and await self._game_still_running():
+            logger.info(
+                "state_machine[%s]: owner absent for %ss but the launched game is still running, staying in couch mode",
+                device_id, self._disconnect_grace_s,
+            )
+            return
         headline(logger, "state_machine[%s]: owner absent for %ss, tearing down to desk", device_id, self._disconnect_grace_s)
         await self._teardown_from("disconnect_grace", device_id)
+
+    async def _game_still_running(self) -> bool:
+        """True only when something is actually configured to launch AND
+        it's currently alive -- distinct from is_launch_process_alive()'s
+        own conservative "nothing configured -> True" default (see
+        ActionHooks.has_launch_target's docstring for why that default is
+        wrong for this specific decision: no game configured means there's
+        nothing to wait for, so a disconnect should tear down immediately,
+        same as it always has for a pure display/audio-switching setup).
+        """
+        if self._hooks.has_launch_target is None or self._hooks.is_launch_process_alive is None:
+            return False
+        if not await self._hooks.has_launch_target():
+            return False
+        return await self._hooks.is_launch_process_alive()
 
     async def _teardown_from(self, task_name: str, device_id: str | None) -> None:
         """Every teardown trigger that runs *as* a named, cancellable task
@@ -211,6 +257,7 @@ class StateMachine:
                 self.mode = Mode.COUCH
                 self._launch_ts = time.monotonic()
                 self._no_controller_since = None
+                self._idle = False
                 if self._hooks.launch is not None:
                     await self._hooks.launch()
                 self._spawn_task("owner_watch", self._owner_watch_loop())
@@ -224,19 +271,26 @@ class StateMachine:
                 self._owner = None
                 self._launch_ts = None
                 self._no_controller_since = None
+                self._idle = False
             self._health.ok("state_machine", f"mode={self.mode.value}")
             headline(logger, "state_machine[%s]: transitioned to %s", tag, self.mode.value)
 
     async def _owner_watch_loop(self) -> None:
         """Generalized version of v1's watcher-process.sh: auto-exits couch
-        mode when either the launched process has exited, or the owner
-        controller has been absent for `no_controller_timeout_s` — checked
-        directly here (not just via the debounced disconnect event) as
-        defense in depth, matching v1's comment that a permanently-attached
-        second USB device shouldn't prevent this timer from ever firing.
+        mode to desk when the launched game has exited -- checked directly
+        here (not just via the debounced disconnect event) as defense in
+        depth, matching v1's comment that a permanently-attached second USB
+        device shouldn't prevent this timer from ever firing.
         `launch_startup_grace_s` is the direct port of `STEAM_STARTUP_GRACE`:
         a cold process start takes time to become visible, so "not visible
         yet" must not be read as "already exited."
+
+        Separately, if the owner controller has been absent for
+        `no_controller_timeout_s` *while the game is still running*, this
+        goes couch-idle (screensaver + TV standby) rather than tearing down
+        to desk -- see the note on that branch below for why staying in
+        Mode.COUCH matters (an instant resume on reconnect, not a redo of
+        the whole desk->couch activation).
         """
         owner = self._owner
         try:
@@ -260,17 +314,31 @@ class StateMachine:
                     now = time.monotonic()
                     if present:
                         self._no_controller_since = None
-                    else:
-                        if self._no_controller_since is None:
-                            self._no_controller_since = now
-                        elif now - self._no_controller_since >= self._no_controller_timeout_s:
-                            headline(
-                                logger,
-                                "state_machine[%s]: owner absent %ss (process still alive) -> tearing down to desk",
-                                owner, self._no_controller_timeout_s,
-                            )
-                            await self._teardown_from("owner_watch", owner)
-                            return
+                    elif self._no_controller_since is None:
+                        self._no_controller_since = now
+                    elif (
+                        self._screensaver_enabled
+                        and not self._idle
+                        and now - self._no_controller_since >= self._idle_after_s
+                    ):
+                        # Owner absent, game still running (the process-exit
+                        # check above already confirmed that this tick) --
+                        # go idle (screensaver + TV standby) instead of
+                        # tearing down: the game is left running and a
+                        # reconnect should resume instantly, not redo the
+                        # whole desk->couch activation. `not self._idle`
+                        # guards this from re-firing every poll tick once
+                        # already idle; the loop keeps running regardless so
+                        # the game exiting while idle still tears down
+                        # normally via the check above.
+                        headline(
+                            logger,
+                            "state_machine[%s]: owner absent %ss (game still running) -> couch idle (screensaver + TV standby)",
+                            owner, self._idle_after_s,
+                        )
+                        if self._hooks.enter_couch_idle is not None:
+                            await self._hooks.enter_couch_idle()
+                        self._idle = True
         except asyncio.CancelledError:
             return
 

@@ -12,6 +12,10 @@ def test_missing_config_returns_defaults_unconfigured(tmp_path):
     # Bypassing the lock screen is a real security tradeoff -- must
     # default off, same treatment as CEC.
     assert cfg.screen_lock.enabled is False
+    # Waiting for a reconnect and the idle screensaver are pure safety/
+    # convenience defaults, not security tradeoffs -- on by default.
+    assert cfg.idle.wait_for_game is True
+    assert cfg.idle.screensaver_enabled is True
 
 
 def test_round_trip_preserves_values(tmp_path):
@@ -29,6 +33,9 @@ def test_round_trip_preserves_values(tmp_path):
     ]
     cfg.screen_lock.enabled = True
     cfg.screen_lock.hold_inhibit = False
+    cfg.idle.wait_for_game = False
+    cfg.idle.screensaver_enabled = False
+    cfg.idle.idle_after_s = 45.0
 
     save(cfg, path)
     loaded = load(path)
@@ -43,6 +50,9 @@ def test_round_trip_preserves_values(tmp_path):
     ]
     assert loaded.screen_lock.enabled is True
     assert loaded.screen_lock.hold_inhibit is False
+    assert loaded.idle.wait_for_game is False
+    assert loaded.idle.screensaver_enabled is False
+    assert loaded.idle.idle_after_s == 45.0
 
 
 def test_save_sets_restrictive_permissions(tmp_path):
@@ -73,8 +83,12 @@ def test_loading_config_with_removed_field_does_not_raise(tmp_path):
         "\n"
         "[on_disconnect]\n"
         "run = \"some-command\"\n"
+        "\n"
+        "[timing]\n"
+        "no_controller_timeout_s = 120.0\n"
     )
     cfg = load(path)
     assert cfg.configured is True
     assert cfg.cec.enabled is True
     assert cfg.on_connect.run == "steam-bigpicture"
+    assert cfg.idle.idle_after_s == 120.0  # schema default, unaffected by the stale timing key
