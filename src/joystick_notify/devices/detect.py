@@ -211,6 +211,18 @@ class UdevWatcher:
         self._observer = None
         self._context = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # DEVPATH -> (device_id, device_class) resolved at ADD time, reused
+        # on the matching REMOVE for the same devpath instead of
+        # re-resolving from a tree that may be mid-teardown by then. Live
+        # testing 2026-08-20 found the HID-parent walk (see _on_udev_event)
+        # can fail on REMOVE even when it succeeded on the matching ADD —
+        # the parent's sysfs entry is sometimes already gone by the time
+        # an input-subsystem child's remove event is delivered, splitting
+        # one physical disconnect back into two device_ids. Caching by the
+        # event's own DEVPATH (stable across one connect session, since add
+        # and remove for the same instance reference the same sysfs path)
+        # closes that gap without needing the parent to still exist.
+        self._resolved_by_devpath: dict[str, tuple[str, str]] = {}
 
     def start(self) -> None:
         try:
@@ -240,39 +252,53 @@ class UdevWatcher:
         # Keep this callback free of anything that touches the event loop
         # except the single call_soon_threadsafe handoff at the end.
         properties = dict(device.properties)
-
-        # A single physical controller fires TWO independent udev events on
-        # connect: one from the "hid" subsystem (carries HID_UNIQ/HID_NAME —
-        # the good identity) and one from the "input" subsystem for its
-        # child evdev node (carries ID_INPUT_JOYSTICK but never HID_UNIQ).
-        # Without reconciling these, the same physical device produces two
-        # different device_ids and gets tracked as two separate
-        # controllers downstream — confirmed via live testing 2026-08-20
-        # (8BitDo showed up as both "950F5726DC" and "usb:2dc8:6012").
-        # Walk up to the HID parent and merge its identity fields in,
-        # keeping this event's own ACTION/SUBSYSTEM/DEVPATH, so both
-        # events for the same physical device resolve to one device_id.
-        if properties.get("SUBSYSTEM") != "hid":
-            hid_parent = device.find_parent("hid")
-            if hid_parent is not None:
-                merged = dict(hid_parent.properties)
-                merged.update(properties)
-                properties = merged
-
-        if not is_candidate_hid(properties):
-            return
-        device_id = stable_device_id(properties)
-        if not device_id:
-            return
-        profile = profile_for(properties)
+        devpath = properties.get("DEVPATH", "")
         action = properties.get("ACTION", "")
+
+        cached = self._resolved_by_devpath.get(devpath) if devpath else None
+        if cached is not None:
+            # Reuse the identity resolved when THIS SAME devpath was added
+            # — see _resolved_by_devpath's docstring in __init__ for why
+            # re-deriving on REMOVE is unreliable.
+            device_id, device_class = cached
+        else:
+            # A single physical controller fires TWO independent udev
+            # events on connect: one from the "hid" subsystem (carries
+            # HID_UNIQ/HID_NAME — the good identity) and one from the
+            # "input" subsystem for its child evdev node (carries
+            # ID_INPUT_JOYSTICK but never HID_UNIQ). Walk up to the HID
+            # parent and merge its identity fields in, so both events for
+            # the same physical device resolve to one device_id — confirmed
+            # via live testing 2026-08-20 (8BitDo showed up as both
+            # "950F5726DC" and "usb:2dc8:6012" before this fix).
+            if properties.get("SUBSYSTEM") != "hid":
+                hid_parent = device.find_parent("hid")
+                if hid_parent is not None:
+                    merged = dict(hid_parent.properties)
+                    merged.update(properties)
+                    properties = merged
+
+            if not is_candidate_hid(properties):
+                return
+            device_id = stable_device_id(properties)
+            if not device_id:
+                return
+            device_class = profile_for(properties).device_class
+
         if action in ("add", "change"):
             kind = RawKind.ADD
         elif action == "remove":
             kind = RawKind.REMOVE
         else:
             return
-        event = RawEvent(device_id=device_id, kind=kind, device_class=profile.device_class, source="udev")
+
+        if devpath:
+            if kind == RawKind.ADD:
+                self._resolved_by_devpath[devpath] = (device_id, device_class)
+            else:
+                self._resolved_by_devpath.pop(devpath, None)
+
+        event = RawEvent(device_id=device_id, kind=kind, device_class=device_class, source="udev")
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._feed, event)
 

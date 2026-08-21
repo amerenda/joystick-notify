@@ -268,6 +268,63 @@ def test_udev_watcher_input_event_with_no_hid_parent_falls_back_to_vidpid(tmp_pa
     assert fed[0].device_id == "usb:abcd:1234"
 
 
+def test_udev_watcher_reuses_add_time_identity_when_parent_gone_on_remove(tmp_path):
+    # Direct regression test for the third live-testing finding: on
+    # disconnect, the HID parent's sysfs entry is sometimes already torn
+    # down by the time the input-subsystem child's remove event arrives,
+    # so find_parent("hid") returns None and the same physical device
+    # splits back into a usb:vid:pid identity on the remove side even
+    # though the connect side was correctly unified. The devpath cache
+    # populated at ADD time must be reused here instead.
+    fed = []
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(lambda e: fed.append(e), health)
+    fake_loop = _FakeLoop()
+    watcher._loop = fake_loop
+
+    child_devpath = "/devices/.../3-2/3-2:1.0/0003:2DC8:6012.0030/input/input88"
+    hid_parent = _FakeDevice(
+        {"SUBSYSTEM": "hid", "HID_UNIQ": "950F5726DC", "HID_NAME": "8BitDo Ultimate 2"}
+    )
+    add_event = _FakeDevice(
+        {
+            "SUBSYSTEM": "input",
+            "ACTION": "add",
+            "DEVPATH": child_devpath,
+            "ID_INPUT_JOYSTICK": "1",
+            "ID_VENDOR_ID": "2dc8",
+            "ID_MODEL_ID": "6012",
+        },
+        parent=hid_parent,
+    )
+    watcher._on_udev_event(add_event)
+
+    # Now the parent is gone by the time the matching remove arrives —
+    # same devpath, but find_parent("hid") returns None this time.
+    remove_event = _FakeDevice(
+        {
+            "SUBSYSTEM": "input",
+            "ACTION": "remove",
+            "DEVPATH": child_devpath,
+            "ID_VENDOR_ID": "2dc8",
+            "ID_MODEL_ID": "6012",
+        },
+        parent=None,
+    )
+    watcher._on_udev_event(remove_event)
+
+    assert len(fake_loop.calls) == 2
+    for fn, args in fake_loop.calls:
+        fn(*args)
+
+    assert len(fed) == 2
+    assert fed[0].device_id == "950F5726DC" and fed[0].kind == RawKind.ADD
+    assert fed[1].device_id == "950F5726DC" and fed[1].kind == RawKind.REMOVE
+    assert fed[1].device_class == "bitdo_dongle"
+    # Cache entry cleaned up after the remove.
+    assert child_devpath not in watcher._resolved_by_devpath
+
+
 def test_hidraw_liveness_watcher_add_tracks_device_class():
     fed = []
     watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
