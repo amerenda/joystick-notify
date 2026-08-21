@@ -68,10 +68,35 @@ def is_process_running(name_patterns: list[str], proc_root: str = "/proc") -> bo
 
 
 async def _run_detached(cmd: list[str]) -> None:
+    """Fire-and-forget from the caller's perspective (doesn't block the
+    launch call), but NOT invisible in logs: a background task awaits the
+    process and logs a nonzero exit with whatever it printed. Confirmed
+    necessary via live testing 2026-08-21 -- discarding stdout/stderr to
+    DEVNULL meant Steam's own "unable to open a connection to X" failure
+    (a real launch failure, see session_env.py) was completely invisible
+    in the daemon's logs; the only way we found out was watching the
+    screen directly, which defeats the entire point of structured
+    logging for something meant to run unattended.
+    """
     try:
-        await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
     except FileNotFoundError:
         logger.error("launchers: command not found: %s", cmd[0])
+        return
+    asyncio.ensure_future(_log_outcome(cmd, proc))
+
+
+async def _log_outcome(cmd: list[str], proc: asyncio.subprocess.Process) -> None:
+    out, _ = await proc.communicate()
+    if proc.returncode != 0:
+        logger.error(
+            "launchers: %s exited %s: %s",
+            cmd[0], proc.returncode, out.decode(errors="replace").strip()[:500],
+        )
+    else:
+        logger.debug("launchers: %s exited 0", cmd[0])
 
 
 async def launch_steam_bigpicture() -> None:
