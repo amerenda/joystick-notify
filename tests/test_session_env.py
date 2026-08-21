@@ -51,6 +51,28 @@ def test_respects_explicit_wayland_session_type_and_defaults_wayland_display(mon
     assert "DISPLAY" not in os.environ
 
 
+def test_ignores_non_display_session_type_and_infers_instead(monkeypatch):
+    # Direct regression test for the real bug found via live testing
+    # 2026-08-21: an SSH session gets XDG_SESSION_TYPE=tty from
+    # systemd-logind (confirmed via `loginctl show-session`), which is not
+    # a display-server value at all. Trusting it literally left
+    # WAYLAND_DISPLAY unset and crashed kscreen-doctor (SIGABRT via Qt's
+    # qFatal(), confirmed via coredumpctl backtrace) the first time this
+    # ran over SSH instead of an interactive desktop shell.
+    monkeypatch.setenv("XDG_SESSION_TYPE", "tty")
+    monkeypatch.setenv("DISPLAY", ":1")
+    ensure_session_environment()
+    assert os.environ["XDG_SESSION_TYPE"] == "x11"
+    assert os.environ["DISPLAY"] == ":1"
+
+
+def test_ignores_unspecified_session_type_falls_back_to_wayland_default(monkeypatch):
+    monkeypatch.setenv("XDG_SESSION_TYPE", "unspecified")
+    ensure_session_environment()
+    assert os.environ["XDG_SESSION_TYPE"] == "wayland"
+    assert os.environ["WAYLAND_DISPLAY"] == "wayland-0"
+
+
 def test_falls_back_to_wayland_when_nothing_detectable():
     # No WAYLAND_DISPLAY, no DISPLAY, no XDG_SESSION_TYPE, no wayland
     # socket present -- matches v1's original assumption as the

@@ -21,6 +21,9 @@ from __future__ import annotations
 import os
 
 
+_KNOWN_SESSION_TYPES = {"wayland", "x11"}
+
+
 def _wayland_socket_present() -> bool:
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     return os.path.exists(os.path.join(runtime_dir, "wayland-0"))
@@ -30,9 +33,19 @@ def ensure_session_environment() -> None:
     os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
 
     session_type = os.environ.get("XDG_SESSION_TYPE")
-    if not session_type:
-        # Infer from what's actually present rather than assuming Wayland
-        # unconditionally.
+    if session_type not in _KNOWN_SESSION_TYPES:
+        # XDG_SESSION_TYPE is frequently set to something unrelated to the
+        # display server in this exact position -- confirmed via live
+        # testing 2026-08-21: an SSH session gets XDG_SESSION_TYPE=tty from
+        # systemd-logind. Trusting that literally left WAYLAND_DISPLAY
+        # unset, and kscreen-doctor's QGuiApplication failed to create a
+        # platform event dispatcher with no working QPA backend, aborting
+        # via Qt's qFatal() (confirmed via coredumpctl backtrace: abort ->
+        # QMessageLogger::fatal -> QGuiApplicationPrivate::
+        # createEventDispatcher -> QGuiApplicationPrivate::init). Only
+        # trust XDG_SESSION_TYPE when it's actually "wayland" or "x11";
+        # anything else (tty, unspecified, unset) falls through to
+        # inferring from what's actually present, same as before.
         if os.environ.get("WAYLAND_DISPLAY") or _wayland_socket_present():
             session_type = "wayland"
         elif os.environ.get("DISPLAY"):
