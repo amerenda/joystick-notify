@@ -72,7 +72,7 @@ def main() -> int:
 
     try:
         from PyQt6.QtCore import Qt, QTimer
-        from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+        from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
         from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
     except ImportError as e:
         sys.stderr.write(
@@ -95,6 +95,18 @@ def main() -> int:
         TrayState.DAEMON_UNREACHABLE: (70, 70, 70),
     }
 
+    def gamepad_path() -> QPainterPath:
+        # Simple recognizable gamepad silhouette: a pill-shaped body with a
+        # rounded grip bump on each side, built by unioning basic shapes
+        # rather than a hand-authored SVG -- keeps the tray dependency-free
+        # (no icon theme, no external asset) while reading clearly at
+        # small tray sizes.
+        path = QPainterPath()
+        path.addRoundedRect(10.0, 22.0, 44.0, 20.0, 10.0, 10.0)  # body
+        path.addEllipse(4.0, 26.0, 20.0, 20.0)  # left grip
+        path.addEllipse(40.0, 26.0, 20.0, 20.0)  # right grip
+        return path.simplified()
+
     def dot_icon(state: TrayState) -> QIcon:
         pm = QPixmap(64, 64)
         pm.fill(Qt.GlobalColor.transparent)
@@ -102,7 +114,15 @@ def main() -> int:
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(*COLORS[state]))
-        p.drawEllipse(8, 8, 48, 48)
+        p.drawPath(gamepad_path())
+
+        # Thumbstick/D-pad detail: two small darker dots on the body, just
+        # enough to read as "controller" rather than an abstract blob.
+        detail = QColor(*COLORS[state]).darker(140)
+        p.setBrush(detail)
+        p.drawEllipse(20, 28, 8, 8)
+        p.drawEllipse(36, 28, 8, 8)
+
         if state == TrayState.BROKEN:
             pen = QPen(QColor(255, 255, 255))
             pen.setWidth(4)
