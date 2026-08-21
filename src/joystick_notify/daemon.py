@@ -19,6 +19,7 @@ from .actions import audio as audio_actions
 from .actions import cec_control
 from .actions import display as display_actions
 from .actions import launchers
+from .activity_gate import ActivityGate
 from .config import store as config_store
 from .config.schema import JoystickNotifyConfig
 from .debounce import Debouncer, DeviceEvent
@@ -147,8 +148,19 @@ async def run_daemon(config_path: Path | None = None) -> None:
         poll_interval_s=config.timing.poll_interval_s,
     )
 
-    async def emit(event: DeviceEvent) -> None:
+    async def to_state_machine(event: DeviceEvent) -> None:
         await sm.handle_device_event(event)
+
+    # Debounce says a signal is stable; the gate says whether it's
+    # trustworthy — a device present at startup (or plugged in only to
+    # charge) must prove real activity before it can ever trigger a mode
+    # switch. See activity_gate.py's module docstring for the real bug
+    # this closes (2026-08-21: a stale Puck receiver connection triggered
+    # couch mode on daemon startup with nobody touching it).
+    gate = ActivityGate(to_state_machine)
+
+    async def emit(event: DeviceEvent) -> None:
+        await gate.handle(event)
 
     debouncer = Debouncer(
         emit,
@@ -213,6 +225,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
         udev_watcher.stop()
         await liveness_watcher.stop()
         await debouncer.aclose()
+        await gate.aclose()
         await sm.aclose()
         if wizard_server is not None:
             wizard_server.should_exit = True

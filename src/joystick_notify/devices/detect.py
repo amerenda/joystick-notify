@@ -181,6 +181,43 @@ def profile_for(properties: dict):
     return match_profile(vendor_id=vendor_id, product_id=product_id, hid_name=device_name(properties))
 
 
+def _resolve_identity(properties: dict, parent_properties: dict | None) -> str | None:
+    """Pure identity resolution, reusing the exact same merge logic
+    UdevWatcher uses on connect (parent HID properties fill in what the
+    input-subsystem child event itself lacks). Split out so
+    find_evdev_path_for_device() below can be tested without pyudev.
+    """
+    merged = dict(parent_properties) if parent_properties else {}
+    merged.update(properties)
+    if not is_candidate_hid(merged):
+        return None
+    return stable_device_id(merged)
+
+
+def find_evdev_path_for_device(target_device_id: str, *, _devices=None) -> str | None:
+    """Resolves a device_id (the same identity debounce.py/state_machine.py
+    already use) to its /dev/input/eventN node, for activity_gate.py's
+    EvdevActivityDetector. `_devices` is an injectable iterable of pyudev-
+    Device-shaped objects (must expose .device_node, .properties,
+    .find_parent) for testing without real pyudev/hardware.
+    """
+    if _devices is None:
+        import pyudev
+
+        _devices = pyudev.Context().list_devices(subsystem="input")
+
+    for device in _devices:
+        devnode = getattr(device, "device_node", None)
+        if not devnode or "event" not in devnode:
+            continue
+        properties = dict(device.properties)
+        hid_parent = device.find_parent("hid")
+        parent_properties = dict(hid_parent.properties) if hid_parent is not None else None
+        if _resolve_identity(properties, parent_properties) == target_device_id:
+            return devnode
+    return None
+
+
 @dataclass
 class DeviceInfo:
     device_id: str
