@@ -106,14 +106,36 @@ async def list_sinks() -> list[SinkInfo]:
 
 
 async def resolve_couch_sink(config: AudioConfig) -> str | None:
+    """Configured couch_sink is trusted only after confirming it still
+    exists. Real bug found via live testing 2026-08-21: PipeWire's HDMI
+    sink names carry a dynamically-assigned numeric suffix
+    (...hdmi-stereo-extra2 vs ...extra3) that changes across HDMI
+    reconnects -- a name saved once in config.toml goes stale the next
+    time the output re-initializes, and the old code trusted it
+    unconditionally, routing audio to a sink that no longer existed while
+    still reporting success. The dynamic-resolution fallbacks below only
+    ever return names pulled from pactl's *live* output, so they can't go
+    stale the same way -- falling through to them when the configured
+    name is gone is strictly safer than trusting it blind.
+    """
+    sinks: list[SinkInfo] | None = None
     if config.couch_sink:
-        return config.couch_sink
+        sinks = await list_sinks()
+        if any(s.name == config.couch_sink for s in sinks):
+            return config.couch_sink
+        logger.warning(
+            "audio: configured couch_sink %r no longer exists (PipeWire sink names can change across "
+            "HDMI reconnects), falling back to dynamic resolution",
+            config.couch_sink,
+        )
+
     rc, short_out = await _pactl("list", "short", "sinks")
     if rc == 0:
         hdmi = resolve_hdmi_sink(short_out)
         if hdmi:
             return hdmi
-    sinks = await list_sinks()
+    if sinks is None:
+        sinks = await list_sinks()
     return resolve_sink_by_description(sinks, "Couch")
 
 
@@ -126,9 +148,13 @@ async def resolve_couch_sink_with_wait(config: AudioConfig, *, attempts: int = 4
     return None
 
 
-async def set_default_sink(sink: str) -> None:
-    await _pactl("set-default-sink", sink)
+async def set_default_sink(sink: str) -> bool:
+    rc, out = await _pactl("set-default-sink", sink)
+    if rc != 0:
+        logger.error("audio: failed to set default sink to %s: %s", sink, out.strip())
+        return False
     logger.info("audio: default -> %s", sink)
+    return True
 
 
 async def move_all_sink_inputs_to(sink: str) -> None:
@@ -144,17 +170,26 @@ async def move_all_sink_inputs_to(sink: str) -> None:
     logger.info("audio: moved %d sink-input(s) -> %s", moved, sink)
 
 
-async def set_audio_to_sink(sink: str) -> None:
-    await set_default_sink(sink)
+async def set_audio_to_sink(sink: str) -> bool:
+    ok = await set_default_sink(sink)
     await move_all_sink_inputs_to(sink)
+    return ok
 
 
 async def activate_desk(config: AudioConfig, health: Health) -> None:
     if not config.desk_sink:
         health.degraded("audio", "no desk sink configured")
         return
-    await set_audio_to_sink(config.desk_sink)
-    health.ok("audio", f"desk sink {config.desk_sink} active")
+    sinks = await list_sinks()
+    if not any(s.name == config.desk_sink for s in sinks):
+        logger.warning("audio: configured desk_sink %r does not currently exist", config.desk_sink)
+        health.degraded("audio", f"desk sink {config.desk_sink} not found")
+        return
+    ok = await set_audio_to_sink(config.desk_sink)
+    if ok:
+        health.ok("audio", f"desk sink {config.desk_sink} active")
+    else:
+        health.degraded("audio", f"failed to switch to desk sink {config.desk_sink}")
 
 
 async def activate_couch(config: AudioConfig, health: Health) -> None:
@@ -162,5 +197,8 @@ async def activate_couch(config: AudioConfig, health: Health) -> None:
     if not sink:
         health.degraded("audio", "could not resolve couch sink after waiting")
         return
-    await set_audio_to_sink(sink)
-    health.ok("audio", f"couch sink {sink} active")
+    ok = await set_audio_to_sink(sink)
+    if ok:
+        health.ok("audio", f"couch sink {sink} active")
+    else:
+        health.degraded("audio", f"failed to switch to couch sink {sink}")
