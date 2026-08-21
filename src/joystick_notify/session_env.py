@@ -1,57 +1,82 @@
 """Ensures the session environment variables that display-server-aware
-tools depend on are present, defaulting them the same way v1's
-`lib/config-env.sh` did -- but generalized past v1's single Wayland/KDE
-box.
+tools depend on are present, replacing three successive rounds of
+individually-guessed defaults with one authoritative source.
 
-Two real bugs found via live testing 2026-08-21 before landing on this
-design:
+The history here matters, because it's the reason this module looks the
+way it does. Live testing 2026-08-21 found, one at a time, in this order:
 
 1. `kscreen-doctor -j` aborted (SIGABRT via Qt's qFatal(), confirmed via
-   coredumpctl backtrace) with WAYLAND_DISPLAY unset -- a systemd `--user`
-   service and an SSH shell don't reliably inherit it.
+   coredumpctl) with WAYLAND_DISPLAY unset.
 2. Steam's Big Picture launch failed ("unable to open a connection to X")
-   even after fixing (1), because this module originally treated Wayland
-   and X11 as mutually exclusive -- inferring "wayland" and therefore
-   never setting DISPLAY. Real desktop sessions are frequently hybrid: a
-   Wayland compositor (KDE/GNOME) running an XWayland server alongside it
-   for X11-only apps, and Steam is a concrete example of an app that needs
-   DISPLAY even on an otherwise-Wayland session.
+   because a first fix defaulted only WAYLAND_DISPLAY, never DISPLAY.
+3. Steam failed *again*, same error message, after DISPLAY was also
+   defaulted — this time because of a missing XAUTHORITY (X11 refuses an
+   unauthenticated connection even with a valid DISPLAY).
 
-The fix: stop trying to pick one. Default *both* WAYLAND_DISPLAY and
-DISPLAY unconditionally (via setdefault, never overriding something
-already correctly set). Defaulting the one that's genuinely not in use is
-harmless -- an app that doesn't need it won't use it, and an app that
-tries to connect to a nonexistent socket/display fails exactly the same
-way it would if the variable were simply unset. This is deliberately
-"dumb but robust" after two rounds of "clever inference" each introducing
-a real bug of its own.
+That's the exact reactive, one-variable-at-a-time pattern this project
+exists to avoid. The actual root cause was never "which variable is
+missing this time" — it was that every test ran as `nohup jn-daemon ... &`
+from an SSH shell, which structurally cannot have the real session
+environment, because SSH doesn't go through the desktop session startup
+that populates it. `systemctl --user show-environment` already has the
+complete, correct set (confirmed live: DISPLAY, WAYLAND_DISPLAY,
+XAUTHORITY, XDG_SESSION_TYPE, all correct) — KDE's session startup
+populates systemd's user manager instance specifically so real
+`systemd --user` services never have to guess. A real deployment (systemd
+unit under graphical-session.target) would have had all of this from the
+very first test.
+
+This module now pulls that complete environment wholesale via
+`setdefault` (never overriding anything already correctly set) rather
+than enumerating which specific variables matter — closing the whole
+class of "some app needs env var X nobody's discovered needing yet," not
+just the three hit so far. The three original per-variable guesses remain
+only as a last-resort fallback for when systemd's environment genuinely
+isn't available (non-systemd systems, or a session not yet imported).
 """
 from __future__ import annotations
 
 import os
-
-_KNOWN_SESSION_TYPES = {"wayland", "x11"}
-
-
-def _wayland_socket_present() -> bool:
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return os.path.exists(os.path.join(runtime_dir, "wayland-0"))
+import subprocess
 
 
-def _x11_socket_present() -> bool:
-    return os.path.exists("/tmp/.X11-unix/X0")
+def parse_systemd_environment(output: str) -> dict[str, str]:
+    """Pure parsing of `systemctl --user show-environment`'s KEY=VALUE
+    lines — split out so this is testable against real captured output
+    without needing a real systemd user session.
+    """
+    env: dict[str, str] = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key:
+            env[key] = value
+    return env
+
+
+def _systemd_user_environment() -> dict[str, str]:
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    return parse_systemd_environment(result.stdout)
 
 
 def ensure_session_environment() -> None:
+    for key, value in _systemd_user_environment().items():
+        os.environ.setdefault(key, value)
+
+    # Last-resort fallback only for what systemd's environment didn't
+    # provide (non-systemd systems, or a session not yet fully imported).
     os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
     os.environ.setdefault("DISPLAY", ":0")
-
-    # Informational only from here down -- nothing in this codebase
-    # branches on XDG_SESSION_TYPE; both display variables are already
-    # defaulted unconditionally above regardless of what this resolves to.
-    if os.environ.get("XDG_SESSION_TYPE") not in _KNOWN_SESSION_TYPES:
-        if _wayland_socket_present():
-            os.environ["XDG_SESSION_TYPE"] = "wayland"
-        elif _x11_socket_present():
-            os.environ["XDG_SESSION_TYPE"] = "x11"
