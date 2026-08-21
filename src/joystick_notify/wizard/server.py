@@ -143,6 +143,9 @@ async def configure_post(request: Request):
     power_on = form.getlist("power_on") if hasattr(form, "getlist") else []
     config.on_connect.power_on = list(power_on)
 
+    config.screen_lock.enabled = form.get("screen_lock_enabled") == "on"
+    config.screen_lock.hold_inhibit = form.get("screen_lock_hold_inhibit") == "on"
+
     config.configured = True
     config_store.save(config)
     return RedirectResponse("/", status_code=303)

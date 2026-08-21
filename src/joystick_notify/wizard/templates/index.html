@@ -23,6 +23,7 @@
   <div class="component-row"><span>Couch output</span><span class="muted">{{ config.display.couch_port or "not set" }}</span></div>
   <div class="component-row"><span>CEC</span><span class="muted">{{ "enabled" if config.cec.enabled else "disabled" }}</span></div>
   <div class="component-row"><span>Launch on connect</span><span class="muted">{{ config.on_connect.run or "none" }}</span></div>
+  <div class="component-row"><span>Lock screen bypass</span><span class="muted">{{ "enabled" if config.screen_lock.enabled else "disabled" }}</span></div>
   <a class="btn secondary" href="/configure">Edit configuration</a>
 </div>
 

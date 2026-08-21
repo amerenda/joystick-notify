@@ -106,6 +106,16 @@
     </select>
   </div>
 
+  <div class="card">
+    <h2>Bypass lock screen on connect</h2>
+    <p class="muted" style="color:#e0b13c;">Security tradeoff, not a cosmetic setting: this dismisses an
+    active lock screen and disables auto-lock for the duration of couch mode. It makes physical access to this
+    machine equivalent to being logged in while couch mode is active. Only enable this if you're comfortable
+    with that on this specific machine.</p>
+    <label><input type="checkbox" name="screen_lock_enabled" {% if config.screen_lock.enabled %}checked{% endif %}> Unlock screen and disable auto-lock during couch mode</label>
+    <label><input type="checkbox" name="screen_lock_hold_inhibit" {% if config.screen_lock.hold_inhibit %}checked{% endif %}> Also hold a screensaver inhibit for the whole session (recommended if enabled above)</label>
+  </div>
+
   <button type="submit">Save configuration</button>
 </form>
 

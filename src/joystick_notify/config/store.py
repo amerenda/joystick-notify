@@ -18,6 +18,7 @@ from .schema import (
     CecConfig,
     DisplayConfig,
     JoystickNotifyConfig,
+    ScreenLockConfig,
     TimingConfig,
     WizardConfig,
 )
@@ -74,5 +75,6 @@ def _from_dict(raw: dict) -> JoystickNotifyConfig:
         timing=TimingConfig(**{**asdict(defaults.timing), **raw.get("timing", {})}),
         on_connect=ActionConfig(**{**asdict(defaults.on_connect), **raw.get("on_connect", {})}),
         on_disconnect=ActionConfig(**{**asdict(defaults.on_disconnect), **raw.get("on_disconnect", {})}),
+        screen_lock=ScreenLockConfig(**{**asdict(defaults.screen_lock), **raw.get("screen_lock", {})}),
         wizard=WizardConfig(**{**asdict(defaults.wizard), **raw.get("wizard", {})}),
     )

@@ -75,6 +75,19 @@ class ActionConfig:
 
 
 @dataclass
+class ScreenLockConfig:
+    # A real security tradeoff, not a cosmetic feature: bypassing the lock
+    # screen makes physical access to the machine equivalent to being
+    # logged in. Explicit opt-in only — see actions/screen_lock.py's
+    # module docstring. Default False, same treatment CEC gets.
+    enabled: bool = False
+    # Also hold a ScreenSaver.Inhibit() D-Bus cookie for the whole couch
+    # session, on top of disabling the config-based autolock -- the robust
+    # layer for cases where the config-based disable alone doesn't hold.
+    hold_inhibit: bool = True
+
+
+@dataclass
 class WizardConfig:
     # Loopback-only by default — see plans/joystick-notify-v2.md, "Wizard
     # network exposure and auth" for why this must not default to a LAN
@@ -97,4 +110,5 @@ class JoystickNotifyConfig:
     timing: TimingConfig = field(default_factory=TimingConfig)
     on_connect: ActionConfig = field(default_factory=ActionConfig)
     on_disconnect: ActionConfig = field(default_factory=ActionConfig)
+    screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)

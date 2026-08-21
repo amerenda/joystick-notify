@@ -19,6 +19,7 @@ from .actions import audio as audio_actions
 from .actions import cec_control
 from .actions import display as display_actions
 from .actions import launchers
+from .actions import screen_lock as screen_lock_actions
 from .activity_gate import ActivityGate
 from .config import store as config_store
 from .config.schema import JoystickNotifyConfig
@@ -70,6 +71,7 @@ def check_startup_health(config: JoystickNotifyConfig, health: Health) -> bool:
 
 def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
     cec_retry_task: asyncio.Task | None = None
+    screen_lock_cookie: str | None = None
 
     async def _cec_adapter() -> str | None:
         if config.cec.adapter:
@@ -77,7 +79,11 @@ def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
         return await cec_discover.ensure_adapter(health)
 
     async def activate_couch() -> None:
-        nonlocal cec_retry_task
+        nonlocal cec_retry_task, screen_lock_cookie
+        # First, so nothing else that follows is hidden behind a lock
+        # screen — display/CEC/audio/launch all still proceed regardless,
+        # but the user should actually be able to see the result.
+        screen_lock_cookie = await screen_lock_actions.activate_couch(config.screen_lock, health)
         if config.cec.enabled:
             adapter = await _cec_adapter()
             if adapter is None:
@@ -95,7 +101,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
         await audio_actions.activate_couch(config.audio, health)
 
     async def activate_desk() -> None:
-        nonlocal cec_retry_task
+        nonlocal cec_retry_task, screen_lock_cookie
         if cec_retry_task is not None:
             cec_retry_task.cancel()
             cec_retry_task = None
@@ -111,6 +117,8 @@ def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
                 )
         await display_actions.activate_desk(config.display, health)
         await audio_actions.activate_desk(config.audio, health)
+        await screen_lock_actions.activate_desk(config.screen_lock, health, screen_lock_cookie)
+        screen_lock_cookie = None
 
     async def launch() -> None:
         if config.on_connect.run:
