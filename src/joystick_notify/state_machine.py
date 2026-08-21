@@ -109,28 +109,31 @@ class StateMachine:
         self._cancel_task("disconnect_grace")
         if self._owner is None:
             self._owner = device_id
-            logger.info("state_machine: %s is now the owning controller", device_id)
+            logger.info("state_machine[%s]: is now the owning controller", device_id)
         if self._owner != device_id:
             # A second controller connecting doesn't change mode ownership —
             # matches v1's single-owner lock semantics.
+            logger.debug("state_machine[%s]: connected but owner is %s, ignoring", device_id, self._owner)
             return
         if self.mode == Mode.DESK:
-            await self._transition(Mode.COUCH)
+            await self._transition(Mode.COUCH, device_id=device_id)
 
     async def _on_disconnect(self, device_id: str) -> None:
         if device_id != self._owner:
+            logger.debug("state_machine[%s]: disconnected but owner is %s, ignoring", device_id, self._owner)
             return
-        self._spawn_task("disconnect_grace", self._disconnect_grace_then_teardown())
+        self._spawn_task("disconnect_grace", self._disconnect_grace_then_teardown(device_id))
 
-    async def _disconnect_grace_then_teardown(self) -> None:
+    async def _disconnect_grace_then_teardown(self, device_id: str) -> None:
         try:
             await asyncio.sleep(self._disconnect_grace_s)
         except asyncio.CancelledError:
             return
-        logger.info("state_machine: owner absent for %ss, tearing down to desk", self._disconnect_grace_s)
-        await self._transition(Mode.DESK)
+        logger.info("state_machine[%s]: owner absent for %ss, tearing down to desk", device_id, self._disconnect_grace_s)
+        await self._transition(Mode.DESK, device_id=device_id)
 
-    async def _transition(self, target: Mode) -> None:
+    async def _transition(self, target: Mode, *, device_id: str | None = None) -> None:
+        tag = device_id or self._owner or "-"
         async with self._lock:
             if self.mode == target:
                 return
@@ -140,7 +143,7 @@ class StateMachine:
                     await self._hooks.activate_couch()
                 except ActivationError as e:
                     self._health.failed(e.component, e.reason, e.detail)
-                    logger.error("state_machine: couch activation failed (%s: %s), staying in desk", e.component, e.reason)
+                    logger.error("state_machine[%s]: couch activation failed (%s: %s), staying in desk", tag, e.component, e.reason)
                     return
                 self.mode = Mode.COUCH
                 self._launch_ts = time.monotonic()
@@ -153,13 +156,13 @@ class StateMachine:
                     await self._hooks.activate_desk()
                 except ActivationError as e:
                     self._health.failed(e.component, e.reason, e.detail)
-                    logger.error("state_machine: desk activation failed (%s: %s)", e.component, e.reason)
+                    logger.error("state_machine[%s]: desk activation failed (%s: %s)", tag, e.component, e.reason)
                 self.mode = Mode.DESK
                 self._owner = None
                 self._launch_ts = None
                 self._no_controller_since = None
             self._health.ok("state_machine", f"mode={self.mode.value}")
-            logger.info("state_machine: transitioned to %s", self.mode.value)
+            logger.info("state_machine[%s]: transitioned to %s", tag, self.mode.value)
 
     async def _owner_watch_loop(self) -> None:
         """Generalized version of v1's watcher-process.sh: auto-exits couch
@@ -172,6 +175,7 @@ class StateMachine:
         a cold process start takes time to become visible, so "not visible
         yet" must not be read as "already exited."
         """
+        owner = self._owner
         try:
             while True:
                 await asyncio.sleep(self._poll_interval_s)
@@ -184,8 +188,8 @@ class StateMachine:
                 if self._hooks.is_launch_process_alive is not None:
                     alive = await self._hooks.is_launch_process_alive()
                     if not alive:
-                        logger.info("state_machine: launched process exited -> tearing down to desk")
-                        await self._transition(Mode.DESK)
+                        logger.info("state_machine[%s]: launched process exited -> tearing down to desk", owner)
+                        await self._transition(Mode.DESK, device_id=owner)
                         return
 
                 if self._hooks.is_owner_present is not None and self._owner is not None:
@@ -198,10 +202,10 @@ class StateMachine:
                             self._no_controller_since = now
                         elif now - self._no_controller_since >= self._no_controller_timeout_s:
                             logger.info(
-                                "state_machine: owner absent %ss (process still alive) -> tearing down to desk",
-                                self._no_controller_timeout_s,
+                                "state_machine[%s]: owner absent %ss (process still alive) -> tearing down to desk",
+                                owner, self._no_controller_timeout_s,
                             )
-                            await self._transition(Mode.DESK)
+                            await self._transition(Mode.DESK, device_id=owner)
                             return
         except asyncio.CancelledError:
             return

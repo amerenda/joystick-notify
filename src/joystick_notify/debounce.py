@@ -83,6 +83,14 @@ class Debouncer:
         call from any event source (udev callback, evdev reader, hidraw
         liveness poller) without awaiting anything.
         """
+        # Every raw event that reaches the debouncer is logged here, in one
+        # place, regardless of which source produced it — this is the
+        # single line to `journalctl | grep <device_id>` for to see
+        # everything a device did, no matter which detector saw it first.
+        logger.debug(
+            "debounce[%s]: raw %s (class=%s, source=%s)",
+            event.device_id, event.kind.value, event.device_class, event.source,
+        )
         target = _RAW_TO_STABLE[event.kind]
         current_pending = self._pending_tasks.get(event.device_id)
         if current_pending is not None:
@@ -92,7 +100,7 @@ class Debouncer:
         if self._last_stable.get(event.device_id) == target:
             # Bounce absorbed: device is already in (or settling toward) this
             # state, so there's nothing new to debounce toward.
-            logger.debug("debounce: %s bounce back to %s absorbed, no-op", event.device_id, target.value)
+            logger.debug("debounce[%s]: bounce back to %s absorbed, no-op", event.device_id, target.value)
             return
 
         task = asyncio.ensure_future(self._settle(event.device_id, target, event.device_class))
@@ -102,9 +110,11 @@ class Debouncer:
         try:
             await asyncio.sleep(self._window_for(device_class))
         except asyncio.CancelledError:
+            logger.debug("debounce[%s]: pending %s cancelled before settling", device_id, target.value)
             return
         self._last_stable[device_id] = target
         self._pending_tasks.pop(device_id, None)
+        logger.info("debounce[%s]: settled -> %s", device_id, target.value)
         await self._emit(DeviceEvent(device_id=device_id, kind=target, device_class=device_class))
 
     async def aclose(self) -> None:

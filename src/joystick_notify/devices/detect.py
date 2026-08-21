@@ -261,6 +261,7 @@ class UdevWatcher:
             # — see _resolved_by_devpath's docstring in __init__ for why
             # re-deriving on REMOVE is unreliable.
             device_id, device_class = cached
+            logger.debug("devices[%s]: reused cached identity for devpath %s", device_id, devpath)
         else:
             # A single physical controller fires TWO independent udev
             # events on connect: one from the "hid" subsystem (carries
@@ -277,6 +278,8 @@ class UdevWatcher:
                     merged = dict(hid_parent.properties)
                     merged.update(properties)
                     properties = merged
+                else:
+                    logger.debug("devices: no HID parent found for devpath %s (non-hid subsystem event)", devpath)
 
             if not is_candidate_hid(properties):
                 return
