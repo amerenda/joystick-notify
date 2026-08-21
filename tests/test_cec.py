@@ -1,7 +1,12 @@
 import asyncio
 
 from joystick_notify.actions.cec_control import parse_power_status
-from joystick_notify.devices.cec import find_audio_system_target, parse_own_physical_address, parse_topology
+from joystick_notify.devices.cec import (
+    find_audio_system_target,
+    get_topology,
+    parse_own_physical_address,
+    parse_topology,
+)
 from joystick_notify.health import Health, Status
 from pathlib import Path
 
@@ -74,6 +79,63 @@ def test_parse_power_status_on():
 
 def test_parse_power_status_unknown_on_garbage():
     assert parse_power_status("no meaningful output") == "unknown"
+
+
+class _FakeProc:
+    def __init__(self, out: bytes, returncode: int = 0):
+        self._out = out
+        self.returncode = returncode
+
+    async def communicate(self):
+        return self._out, b""
+
+
+def test_get_topology_parses_real_subprocess_output(monkeypatch):
+    async def fake_exec(*args, **kwargs):
+        assert args[0] == "cec-ctl"
+        return _FakeProc(DRIVER_INFO_SAMPLE.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    devices = asyncio.run(get_topology("/dev/cec0"))
+    assert len(devices) == 2
+    assert devices[0].device_type == "TV"
+
+
+def test_get_topology_returns_empty_when_cec_ctl_missing(monkeypatch):
+    async def fake_exec(*args, **kwargs):
+        raise FileNotFoundError("cec-ctl not found")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert asyncio.run(get_topology(None)) == []
+
+
+def test_get_topology_returns_empty_on_nonzero_exit(monkeypatch):
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc(b"some error", returncode=1)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert asyncio.run(get_topology("/dev/cec0")) == []
+
+
+def test_standby_and_verify_logs_warning_when_unconfirmed(tmp_path, caplog):
+    # Direct regression test: the final degraded outcome previously had no
+    # log line of its own -- only the per-attempt INFO lines and a silent
+    # Health.degraded() call -- so it never showed up in the event log at
+    # a level anyone would notice while troubleshooting "TV didn't turn off."
+    from joystick_notify.actions import cec_control
+
+    async def fake_run(cmd, timeout=5.0):
+        return 0, "pwr-state: on"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        with caplog.at_level("WARNING", logger="joystick_notify.actions.cec_control"):
+            asyncio.run(cec_control.standby_and_verify(None, [0, 5], health, attempts=1, delay_s=0))
+        assert any("unconfirmed" in r.message for r in caplog.records)
+    finally:
+        cec_control._run = orig_run
 
 
 def test_standby_and_verify_reports_degraded_when_unconfirmed(tmp_path):

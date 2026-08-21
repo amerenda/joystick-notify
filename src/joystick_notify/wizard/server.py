@@ -23,6 +23,7 @@ from ..actions import audio as audio_actions
 from ..actions import display as display_actions
 from ..actions import launchers
 from ..config import store as config_store
+from ..config.schema import CustomCommand
 from ..devices import cec as cec_discover
 from ..health import read_snapshot
 from . import auth as auth_module
@@ -102,12 +103,30 @@ async def setup_password_post(request: Request):
 
 
 async def configure_get(request: Request):
+    from dataclasses import asdict
+
     config = config_store.load()
     kjson = await display_actions.get_kscreen_json() or {"outputs": []}
     outputs = display_actions.parse_outputs(kjson)
     sinks = await audio_actions.list_sinks()
     detected_launchers = launchers.detect_launchers()
     cec_adapters = cec_discover.discover_adapters()
+
+    # Best-effort topology auto-detect: only worth attempting once an
+    # adapter actually exists, and never blocks the page on failure (see
+    # get_topology()'s own docstring -- it returns [] rather than raising).
+    cec_topology = []
+    cec_suggested_standby_targets = ""
+    if cec_adapters:
+        adapter = config.cec.adapter or cec_adapters[0]
+        cec_topology = await cec_discover.get_topology(adapter)
+        if cec_topology:
+            suggested = {0}  # TV is always logical address 0
+            audio_target = cec_discover.find_audio_system_target(cec_topology)
+            if audio_target is not None:
+                suggested.add(audio_target.logical_address)
+            cec_suggested_standby_targets = ",".join(str(a) for a in sorted(suggested))
+
     return templates.TemplateResponse(
         request,
         "configure.html",
@@ -117,7 +136,13 @@ async def configure_get(request: Request):
             "sinks": sinks,
             "launchers": detected_launchers,
             "cec_adapters": cec_adapters,
+            "cec_topology": cec_topology,
+            "cec_suggested_standby_targets": cec_suggested_standby_targets,
             "launch_presets": list(launchers.LAUNCH_PRESETS.keys()),
+            # Alpine's x-data needs plain dicts to JSON-serialize via
+            # Jinja's |tojson -- a raw list of CustomCommand dataclass
+            # instances isn't JSON-serializable.
+            "custom_commands_json": [asdict(c) for c in config.custom_commands],
         },
     )
 
@@ -134,17 +159,105 @@ async def configure_post(request: Request):
     config.audio.desk_sink = str(form.get("desk_sink", ""))
     config.audio.couch_sink = str(form.get("couch_sink", ""))
 
+    def _float(field: str, default: float, *, min_value: float) -> float:
+        raw = str(form.get(field, "")).strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            return default
+        return value if value >= min_value else default
+
+    def _positive_float(field: str, default: float) -> float:
+        return _float(field, default, min_value=1e-9)  # ">0" without a magic epsilon comparison quirk
+
+    def _nonneg_float(field: str, default: float) -> float:
+        return _float(field, default, min_value=0.0)
+
+    def _int(field: str, default: int, *, min_value: int) -> int:
+        raw = str(form.get(field, "")).strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+        return value if value >= min_value else default
+
+    def _positive_int(field: str, default: int) -> int:
+        return _int(field, default, min_value=1)
+
+    def _nonneg_int(field: str, default: int) -> int:
+        return _int(field, default, min_value=0)
+
+    def _int_list(field: str, default: list[int]) -> list[int]:
+        raw = str(form.get(field, "")).strip()
+        if not raw:
+            return []
+        values: list[int] = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                values.append(int(part))
+            except ValueError:
+                return default  # any malformed entry: reject the whole list, don't silently drop it
+        return values
+
     config.cec.enabled = form.get("cec_enabled") == "on"
     config.cec.adapter = str(form.get("cec_adapter", ""))
     phys_addr = str(form.get("cec_active_source_phys_addr", "")).strip()
     config.cec.active_source_phys_addr = phys_addr
+    config.cec.power_off_on_teardown = form.get("cec_power_off_on_teardown") == "on"
+    config.cec.wake_delay_s = _nonneg_float("cec_wake_delay_s", config.cec.wake_delay_s)
+    config.cec.active_source_retries = _nonneg_int("cec_active_source_retries", config.cec.active_source_retries)
+    config.cec.active_source_retry_delay_s = _positive_float(
+        "cec_active_source_retry_delay_s", config.cec.active_source_retry_delay_s
+    )
+    config.cec.standby_targets = _int_list("cec_standby_targets", config.cec.standby_targets)
+    config.cec.standby_verify_attempts = _positive_int(
+        "cec_standby_verify_attempts", config.cec.standby_verify_attempts
+    )
+    config.cec.standby_verify_delay_s = _positive_float(
+        "cec_standby_verify_delay_s", config.cec.standby_verify_delay_s
+    )
 
     config.on_connect.run = str(form.get("launch_preset", ""))
-    power_on = form.getlist("power_on") if hasattr(form, "getlist") else []
-    config.on_connect.power_on = list(power_on)
+
+    names = form.getlist("custom_command_name") if hasattr(form, "getlist") else []
+    values = form.getlist("custom_command_value") if hasattr(form, "getlist") else []
+    config.custom_commands = [
+        CustomCommand(name=n.strip(), command=v.strip())
+        for n, v in zip(names, values)
+        if n.strip() and v.strip()
+    ]
+
+    config.timing.disconnect_grace_s = _positive_float("disconnect_grace_s", config.timing.disconnect_grace_s)
+    config.timing.launch_startup_grace_s = _positive_float("launch_startup_grace_s", config.timing.launch_startup_grace_s)
+    config.timing.no_controller_timeout_s = _positive_float("no_controller_timeout_s", config.timing.no_controller_timeout_s)
+    config.timing.poll_interval_s = _positive_float("poll_interval_s", config.timing.poll_interval_s)
+    config.timing.debounce_default_ms = _nonneg_int("debounce_default_ms", config.timing.debounce_default_ms)
 
     config.screen_lock.enabled = form.get("screen_lock_enabled") == "on"
     config.screen_lock.hold_inhibit = form.get("screen_lock_hold_inhibit") == "on"
+
+    config.shortcuts.exit_couch_enabled = form.get("exit_couch_enabled") == "on"
+    config.shortcuts.exit_couch_hold_seconds = _positive_float(
+        "exit_couch_hold_seconds", config.shortcuts.exit_couch_hold_seconds
+    )
+
+    # The advanced text field only overrides the checkbox when it holds a
+    # genuinely specific address (e.g. a VPN/Tailscale interface IP) --
+    # otherwise (blank, or still showing the generic 127.0.0.1/0.0.0.0 it
+    # was populated with) the checkbox is the authoritative control, so
+    # unchecking it to revoke LAN access always works even if the advanced
+    # field wasn't touched.
+    lan_access = form.get("wizard_lan_access") == "on"
+    custom_bind = str(form.get("wizard_bind_address", "")).strip()
+    if custom_bind and custom_bind not in ("127.0.0.1", "0.0.0.0"):
+        config.wizard.bind_address = custom_bind
+    else:
+        config.wizard.bind_address = "0.0.0.0" if lan_access else "127.0.0.1"
+    config.wizard.port = _positive_int("wizard_port", config.wizard.port)
+    auth_module.validate_bind_address(config.wizard.bind_address, has_credentials=True)
 
     config.configured = True
     config_store.save(config)
@@ -178,27 +291,31 @@ async def status_detail_fragment(request: Request):
 
 
 async def events_fragment(request: Request):
-    """"What just happened" view — the same INFO-level events already
-    written to the log (controller detected, waiting for input, CEC
-    wake sent, display switched, ...), newest first, for troubleshooting
-    directly from the wizard instead of SSHing in to tail a log file."""
+    """"What just happened" view, newest first, for troubleshooting
+    directly from the wizard instead of SSHing in to tail a log file.
+    Defaults to the curated "main events" tier (controller connected,
+    mode transitions, teardown decisions) -- the `level` query param
+    (from the panel's dropdown) widens it to info/warning/error/debug.
+    """
     import datetime
 
-    from ..event_log import read_events
+    from ..event_log import DEFAULT_LEVEL_FILTER, filter_events, read_events
 
-    events = list(reversed(read_events()))[:50]
+    level = request.query_params.get("level", DEFAULT_LEVEL_FILTER)
+    events = list(reversed(filter_events(read_events(), level)))[:50]
     rows = [
-        {"time": datetime.datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S"), "message": e.message}
+        {"time": datetime.datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S"), "level": e.level, "message": e.message}
         for e in events
     ]
-    return templates.TemplateResponse(request, "_events_fragment.html", {"events": rows})
+    return templates.TemplateResponse(request, "_events_fragment.html", {"events": rows, "level": level})
 
 
 async def api_events(request: Request):
-    from ..event_log import read_events
+    from ..event_log import DEFAULT_LEVEL_FILTER, filter_events, read_events
 
-    events = list(reversed(read_events()))[:50]
-    return JSONResponse({"events": [e.to_dict() for e in events]})
+    level = request.query_params.get("level", DEFAULT_LEVEL_FILTER)
+    events = list(reversed(filter_events(read_events(), level)))[:50]
+    return JSONResponse({"events": [e.to_dict() for e in events], "level": level})
 
 
 async def api_cec_test(request: Request):

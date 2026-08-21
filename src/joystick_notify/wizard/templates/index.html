@@ -29,8 +29,19 @@
 
 <div class="card">
   <h2>What just happened</h2>
-  <p class="muted" style="margin-top:-8px;">Newest first — the same high-level steps written to the log (controller detected, waiting for input, CEC/display/audio actions), not full debug output.</p>
-  <div hx-get="/partials/events" hx-trigger="load, every 2s" hx-swap="innerHTML">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+    <p class="muted" style="margin-top:-8px;">Newest first. Shows main events by default (controller connected, mode transitions, teardown decisions) — pick a more verbose level below to see routine detail.</p>
+    <select id="event-level-select" name="level"
+            hx-get="/partials/events" hx-trigger="change" hx-target="#events-list" hx-swap="innerHTML"
+            style="flex-shrink:0;">
+      <option value="main" selected>Main events</option>
+      <option value="info">Info</option>
+      <option value="warning">Warning</option>
+      <option value="error">Error</option>
+      <option value="debug">Debug (everything)</option>
+    </select>
+  </div>
+  <div id="events-list" hx-get="/partials/events" hx-trigger="load, every 2s" hx-include="#event-level-select" hx-swap="innerHTML">
     <p class="muted">Loading…</p>
   </div>
 </div>

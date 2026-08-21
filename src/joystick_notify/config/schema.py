@@ -43,14 +43,12 @@ class CecConfig:
     power_off_on_teardown: bool = True
     active_source_retries: int = 2
     active_source_retry_delay_s: float = 4.0
-    allm_enabled: bool = True
     # Logical addresses (0 = TV, 5 = Audio System/receiver) to standby+verify
     # on teardown. Auto-populated by the wizard's topology scan, not
     # hand-typed (generalizes v1's hardcoded CEC_STANDBY_TARGETS).
     standby_targets: list[int] = field(default_factory=lambda: [0])
     standby_verify_attempts: int = 3
     standby_verify_delay_s: float = 2.0
-    selfheal_cooldown_s: float = 120.0
 
 
 @dataclass
@@ -68,10 +66,20 @@ class TimingConfig:
 
 @dataclass
 class ActionConfig:
-    # Resolved against detected CEC targets, e.g. ["cec:tv", "cec:receiver"].
-    power_on: list[str] = field(default_factory=list)
-    # Launcher preset id (from actions/launchers.py) or a custom shell command.
+    # Launcher preset id (from actions/launchers.py) or a custom shell
+    # command -- for a user-defined CustomCommand, this holds its `command`
+    # string directly (see CustomCommand below), not a name/reference, so
+    # launchers.py needs no lookup step to resolve it.
     run: str = ""
+
+
+@dataclass
+class CustomCommand:
+    # A user-defined, named entry in the "Launch on connect" picker --
+    # `name` is a wizard-UI-only label; `command` is what actually gets
+    # run (same shell-command shape as a hand-typed ActionConfig.run).
+    name: str = ""
+    command: str = ""
 
 
 @dataclass
@@ -85,6 +93,19 @@ class ScreenLockConfig:
     # session, on top of disabling the config-based autolock -- the robust
     # layer for cases where the config-based disable alone doesn't hold.
     hold_inhibit: bool = True
+
+
+@dataclass
+class ShortcutConfig:
+    # On by default -- unlike screen_lock, this isn't a security tradeoff,
+    # it's a pure safety net: always having a way back to desk regardless
+    # of what Steam/the game is doing is a good default, not something
+    # that needs opt-in.
+    exit_couch_enabled: bool = True
+    # evdev EV_KEY name (see manual_exit.py's DEFAULT_BUTTON docstring for
+    # why BTN_MODE/Guide button is the default).
+    exit_couch_button: str = "BTN_MODE"
+    exit_couch_hold_seconds: float = 3.0
 
 
 @dataclass
@@ -109,6 +130,7 @@ class JoystickNotifyConfig:
     cec: CecConfig = field(default_factory=CecConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     on_connect: ActionConfig = field(default_factory=ActionConfig)
-    on_disconnect: ActionConfig = field(default_factory=ActionConfig)
+    custom_commands: list[CustomCommand] = field(default_factory=list)
     screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)
+    shortcuts: ShortcutConfig = field(default_factory=ShortcutConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)

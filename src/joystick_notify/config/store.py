@@ -16,9 +16,11 @@ from .schema import (
     ActionConfig,
     AudioConfig,
     CecConfig,
+    CustomCommand,
     DisplayConfig,
     JoystickNotifyConfig,
     ScreenLockConfig,
+    ShortcutConfig,
     TimingConfig,
     WizardConfig,
 )
@@ -64,17 +66,45 @@ def save(config: JoystickNotifyConfig, path: Path | None = None) -> None:
         raise
 
 
+def _section(cls, current, raw_section: dict):
+    """Merges a loaded TOML section over a dataclass's current values,
+    silently dropping any key that isn't a field on `cls` anymore.
+
+    Without this, removing a config field (as happened to
+    cec.allm_enabled/selfheal_cooldown_s and on_connect.power_on/
+    on_disconnect) would make _from_dict() raise TypeError on anyone's
+    existing config.toml that still has the old key on disk, rather than
+    just ignoring it — a field rename/removal shouldn't be able to break
+    loading an old config.
+    """
+    known = {f for f in asdict(current)}
+    filtered = {k: v for k, v in raw_section.items() if k in known}
+    return cls(**{**asdict(current), **filtered})
+
+
+def _custom_commands(raw_list) -> list[CustomCommand]:
+    known = {f for f in asdict(CustomCommand())}
+    result = []
+    for item in raw_list or []:
+        if not isinstance(item, dict):
+            continue
+        filtered = {k: v for k, v in item.items() if k in known}
+        result.append(CustomCommand(**filtered))
+    return result
+
+
 def _from_dict(raw: dict) -> JoystickNotifyConfig:
     defaults = JoystickNotifyConfig()
     return JoystickNotifyConfig(
         version=raw.get("version", defaults.version),
         configured=raw.get("configured", defaults.configured),
-        display=DisplayConfig(**{**asdict(defaults.display), **raw.get("display", {})}),
-        audio=AudioConfig(**{**asdict(defaults.audio), **raw.get("audio", {})}),
-        cec=CecConfig(**{**asdict(defaults.cec), **raw.get("cec", {})}),
-        timing=TimingConfig(**{**asdict(defaults.timing), **raw.get("timing", {})}),
-        on_connect=ActionConfig(**{**asdict(defaults.on_connect), **raw.get("on_connect", {})}),
-        on_disconnect=ActionConfig(**{**asdict(defaults.on_disconnect), **raw.get("on_disconnect", {})}),
-        screen_lock=ScreenLockConfig(**{**asdict(defaults.screen_lock), **raw.get("screen_lock", {})}),
-        wizard=WizardConfig(**{**asdict(defaults.wizard), **raw.get("wizard", {})}),
+        display=_section(DisplayConfig, defaults.display, raw.get("display", {})),
+        audio=_section(AudioConfig, defaults.audio, raw.get("audio", {})),
+        cec=_section(CecConfig, defaults.cec, raw.get("cec", {})),
+        timing=_section(TimingConfig, defaults.timing, raw.get("timing", {})),
+        on_connect=_section(ActionConfig, defaults.on_connect, raw.get("on_connect", {})),
+        custom_commands=_custom_commands(raw.get("custom_commands", [])),
+        screen_lock=_section(ScreenLockConfig, defaults.screen_lock, raw.get("screen_lock", {})),
+        shortcuts=_section(ShortcutConfig, defaults.shortcuts, raw.get("shortcuts", {})),
+        wizard=_section(WizardConfig, defaults.wizard, raw.get("wizard", {})),
     )

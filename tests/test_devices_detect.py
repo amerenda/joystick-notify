@@ -6,6 +6,7 @@ from joystick_notify.devices.detect import (
     HidrawLivenessWatcher,
     UdevWatcher,
     device_name,
+    find_evdev_path_for_device,
     is_candidate_hid,
     parse_hid_id,
     profile_for,
@@ -133,9 +134,10 @@ class _FakeLoop:
 
 
 class _FakeDevice:
-    def __init__(self, properties, parent=None):
+    def __init__(self, properties, parent=None, device_node=None):
         self.properties = properties
         self._parent = parent
+        self.device_node = device_node
 
     def find_parent(self, subsystem):
         return self._parent if subsystem == "hid" else None
@@ -360,3 +362,44 @@ def test_hidraw_liveness_watcher_remove_event_carries_correct_device_class():
 
     assert len(fed) == 1
     assert fed[0].device_class == "bitdo_dongle"
+
+
+class _FakeUdevContext:
+    def __init__(self, devices):
+        self._devices = devices
+
+    def list_devices(self, subsystem=None):
+        return iter(self._devices)
+
+
+def test_find_evdev_path_for_device_matches_via_hid_parent_identity(monkeypatch):
+    import pyudev
+
+    hid_parent = _FakeDevice({"HID_UNIQ": "FXB99617010AC"})
+    matching_event = _FakeDevice(
+        {"ID_INPUT_JOYSTICK": "1"}, parent=hid_parent, device_node="/dev/input/event7"
+    )
+    other_event = _FakeDevice(
+        {"ID_INPUT_JOYSTICK": "1"}, parent=_FakeDevice({"HID_UNIQ": "someoneelse"}), device_node="/dev/input/event3"
+    )
+    monkeypatch.setattr(pyudev, "Context", lambda: _FakeUdevContext([other_event, matching_event]))
+
+    assert find_evdev_path_for_device("FXB99617010AC") == "/dev/input/event7"
+
+
+def test_find_evdev_path_for_device_skips_non_event_nodes(monkeypatch):
+    import pyudev
+
+    hid_parent = _FakeDevice({"HID_UNIQ": "FXB99617010AC"})
+    js_node = _FakeDevice({"ID_INPUT_JOYSTICK": "1"}, parent=hid_parent, device_node="/dev/input/js2")
+    monkeypatch.setattr(pyudev, "Context", lambda: _FakeUdevContext([js_node]))
+
+    assert find_evdev_path_for_device("FXB99617010AC") is None
+
+
+def test_find_evdev_path_for_device_returns_none_when_no_match(monkeypatch):
+    import pyudev
+
+    monkeypatch.setattr(pyudev, "Context", lambda: _FakeUdevContext([]))
+
+    assert find_evdev_path_for_device("nonexistent") is None

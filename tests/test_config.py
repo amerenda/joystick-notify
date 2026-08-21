@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from joystick_notify.config.schema import JoystickNotifyConfig
+from joystick_notify.config.schema import CustomCommand, JoystickNotifyConfig
 from joystick_notify.config.store import load, save
 
 
@@ -22,8 +22,11 @@ def test_round_trip_preserves_values(tmp_path):
     cfg.display.couch_port = "HDMI-A-1"
     cfg.cec.enabled = True
     cfg.cec.standby_targets = [0, 5]
-    cfg.on_connect.power_on = ["cec:tv", "cec:receiver"]
     cfg.on_connect.run = "steam-bigpicture"
+    cfg.custom_commands = [
+        CustomCommand(name="Play Portal 2", command="steam steam://rungameid/620"),
+        CustomCommand(name="Play Half-Life 2", command="steam steam://rungameid/220"),
+    ]
     cfg.screen_lock.enabled = True
     cfg.screen_lock.hold_inhibit = False
 
@@ -33,8 +36,11 @@ def test_round_trip_preserves_values(tmp_path):
     assert loaded.configured is True
     assert loaded.display.desk_port == "HDMI-A-2"
     assert loaded.cec.standby_targets == [0, 5]
-    assert loaded.on_connect.power_on == ["cec:tv", "cec:receiver"]
     assert loaded.on_connect.run == "steam-bigpicture"
+    assert loaded.custom_commands == [
+        CustomCommand(name="Play Portal 2", command="steam steam://rungameid/620"),
+        CustomCommand(name="Play Half-Life 2", command="steam steam://rungameid/220"),
+    ]
     assert loaded.screen_lock.enabled is True
     assert loaded.screen_lock.hold_inhibit is False
 
@@ -44,3 +50,31 @@ def test_save_sets_restrictive_permissions(tmp_path):
     save(JoystickNotifyConfig(), path)
     mode = path.stat().st_mode & 0o777
     assert mode == 0o600
+
+
+def test_loading_config_with_removed_field_does_not_raise(tmp_path):
+    # Direct regression test: cec.allm_enabled, cec.selfheal_cooldown_s,
+    # on_connect.power_on, and on_disconnect were all removed from the
+    # schema as dead fields. An old config.toml written before that
+    # removal still has these keys on disk -- loading it must silently
+    # drop them, not raise TypeError on an unexpected keyword argument.
+    path = Path(tmp_path) / "config.toml"
+    path.write_text(
+        "configured = true\n"
+        "\n"
+        "[cec]\n"
+        "enabled = true\n"
+        "allm_enabled = true\n"
+        "selfheal_cooldown_s = 120.0\n"
+        "\n"
+        "[on_connect]\n"
+        "run = \"steam-bigpicture\"\n"
+        "power_on = [\"cec:tv\"]\n"
+        "\n"
+        "[on_disconnect]\n"
+        "run = \"some-command\"\n"
+    )
+    cfg = load(path)
+    assert cfg.configured is True
+    assert cfg.cec.enabled is True
+    assert cfg.on_connect.run == "steam-bigpicture"

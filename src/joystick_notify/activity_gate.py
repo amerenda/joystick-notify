@@ -41,6 +41,8 @@ import time
 from typing import Awaitable, Callable
 
 from .debounce import DeviceEvent, StableKind
+from .health import Health
+from .supervisor import supervise
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +53,13 @@ class ActivityGate:
     def __init__(
         self,
         emit: Callable[[DeviceEvent], Awaitable[None]],
+        health: Health | None = None,
         *,
         startup_grace_s: float = DEFAULT_STARTUP_GRACE_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._emit = emit
+        self._health = health
         self._startup_grace_s = startup_grace_s
         self._clock = clock
         self._started_at = clock()
@@ -92,7 +96,11 @@ class ActivityGate:
             event.device_id,
         )
         self._cancel(event.device_id)
-        self._pending[event.device_id] = asyncio.ensure_future(self._wait_for_grace_then_forward(event))
+        coro = self._wait_for_grace_then_forward(event)
+        if self._health is not None:
+            self._pending[event.device_id] = supervise(f"activity_gate:{event.device_id}", coro, self._health)
+        else:
+            self._pending[event.device_id] = asyncio.ensure_future(coro)
 
     async def _wait_for_grace_then_forward(self, event: DeviceEvent) -> None:
         remaining = self._startup_grace_s - (self._clock() - self._started_at)

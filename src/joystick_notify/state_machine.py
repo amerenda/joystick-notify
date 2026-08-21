@@ -31,6 +31,8 @@ from enum import Enum
 from typing import Awaitable, Callable, Optional
 
 from .debounce import DeviceEvent, StableKind
+from .event_log import headline
+from .supervisor import supervise
 from .health import Health
 
 logger = logging.getLogger(__name__)
@@ -58,11 +60,25 @@ class ActivationError(Exception):
 
 @dataclass
 class ActionHooks:
-    activate_couch: Callable[[], Awaitable[None]]
+    # Takes the owning device_id -- resolved by _transition() from
+    # self._owner (always set by _on_connect before a COUCH transition can
+    # happen) -- so hooks that need to know *who* just connected (e.g. the
+    # manual-exit shortcut watcher, which opens that specific controller's
+    # evdev node) don't need their own back-channel into the state machine.
+    activate_couch: Callable[[str], Awaitable[None]]
     activate_desk: Callable[[], Awaitable[None]]
     launch: Optional[Callable[[], Awaitable[None]]] = None
     is_launch_process_alive: Optional[Callable[[], Awaitable[bool]]] = None
     is_owner_present: Optional[Callable[[str], Awaitable[bool]]] = None
+    # Fired when the owner reconnects while ALREADY in COUCH mode (not a
+    # fresh desk->couch transition, so activate_couch() doesn't run again)
+    # -- for state that's tied to the specific evdev node a device landed
+    # on, which can renumber across a brief mid-session disconnect/
+    # reconnect. Confirmed gap 2026-08: the manual-exit shortcut watcher
+    # only ever started once, at couch entry; a reconnect on a renumbered
+    # /dev/input/eventN left it permanently dead for the rest of that
+    # session even though nothing else about couch mode was affected.
+    on_reconnect_while_couch: Optional[Callable[[str], Awaitable[None]]] = None
 
 
 DEFAULT_DISCONNECT_GRACE_S = 30
@@ -99,6 +115,21 @@ class StateMachine:
     def owner(self) -> str | None:
         return self._owner
 
+    async def force_exit_to_desk(self) -> None:
+        """Manual override for the controller-shortcut exit path: tears down
+        to desk unconditionally, regardless of owner/disconnect/process
+        state. Reuses the exact same _transition(Mode.DESK) machinery as
+        every other teardown trigger (disconnect grace, process-exit,
+        no-controller-timeout) rather than a separate code path, so it gets
+        the same self-deregistration protection against being cancelled
+        mid-flight, and the same guarantee that only CEC/display/audio/
+        screen-lock ever run — activate_desk() never touches the launched
+        process, so this can never stop Steam or the game.
+        """
+        if self.mode == Mode.DESK:
+            return
+        await self._transition(Mode.DESK, device_id=self._owner)
+
     async def handle_device_event(self, event: DeviceEvent) -> None:
         if event.kind == StableKind.CONNECTED:
             await self._on_connect(event.device_id)
@@ -109,7 +140,7 @@ class StateMachine:
         self._cancel_task("disconnect_grace")
         if self._owner is None:
             self._owner = device_id
-            logger.info("state_machine[%s]: is now the owning controller", device_id)
+            headline(logger, "state_machine[%s]: is now the owning controller", device_id)
         if self._owner != device_id:
             # A second controller connecting doesn't change mode ownership —
             # matches v1's single-owner lock semantics.
@@ -117,6 +148,14 @@ class StateMachine:
             return
         if self.mode == Mode.DESK:
             await self._transition(Mode.COUCH, device_id=device_id)
+        elif self._hooks.on_reconnect_while_couch is not None:
+            # Already in COUCH -- this is a reconnect (e.g. a brief
+            # Bluetooth drop), not a fresh activation, so activate_couch()
+            # must not run again. Hooks that opened something tied to the
+            # old connection's specific device node still need a chance to
+            # reopen it against whatever node the reconnect landed on.
+            headline(logger, "state_machine[%s]: reconnected while already in couch mode", device_id)
+            await self._hooks.on_reconnect_while_couch(device_id)
 
     async def _on_disconnect(self, device_id: str) -> None:
         if device_id != self._owner:
@@ -129,7 +168,31 @@ class StateMachine:
             await asyncio.sleep(self._disconnect_grace_s)
         except asyncio.CancelledError:
             return
-        logger.info("state_machine[%s]: owner absent for %ss, tearing down to desk", device_id, self._disconnect_grace_s)
+        headline(logger, "state_machine[%s]: owner absent for %ss, tearing down to desk", device_id, self._disconnect_grace_s)
+        await self._teardown_from("disconnect_grace", device_id)
+
+    async def _teardown_from(self, task_name: str, device_id: str | None) -> None:
+        """Every teardown trigger that runs *as* a named, cancellable task
+        in self._tasks (disconnect_grace, owner_watch) must call this,
+        never `_transition` directly — deregistering `task_name` first is
+        what stops `_transition`'s unconditional `_cancel_task("owner_watch")`
+        from being a self-cancellation when the caller IS that task, and
+        stops an unrelated event (a reconnect calling
+        `_cancel_task("disconnect_grace")`) from cancelling this same task
+        mid-flight once it's already committed to tearing down. Both are
+        real incidents from 2026-08-21 live testing, not hypothetical: a
+        self-cancellation silently aborted activate_desk() partway through
+        (logged "tearing down to desk", then nothing else for over a
+        minute), and a reconnect racing an in-flight disconnect-grace
+        teardown cut its CEC standby retry loop off mid-sequence.
+
+        This MUST happen here, synchronously, with no `await` in between —
+        moving it inside `_transition()` itself (e.g. under the lock) was
+        tried and rejected: if the lock is contended, the caller can
+        suspend *before* reaching the deregistration, leaving a window
+        where the same race reopens.
+        """
+        self._tasks.pop(task_name, None)
         await self._transition(Mode.DESK, device_id=device_id)
 
     async def _transition(self, target: Mode, *, device_id: str | None = None) -> None:
@@ -140,7 +203,7 @@ class StateMachine:
             self._cancel_task("owner_watch")
             if target == Mode.COUCH:
                 try:
-                    await self._hooks.activate_couch()
+                    await self._hooks.activate_couch(self._owner)
                 except ActivationError as e:
                     self._health.failed(e.component, e.reason, e.detail)
                     logger.error("state_machine[%s]: couch activation failed (%s: %s), staying in desk", tag, e.component, e.reason)
@@ -162,7 +225,7 @@ class StateMachine:
                 self._launch_ts = None
                 self._no_controller_since = None
             self._health.ok("state_machine", f"mode={self.mode.value}")
-            logger.info("state_machine[%s]: transitioned to %s", tag, self.mode.value)
+            headline(logger, "state_machine[%s]: transitioned to %s", tag, self.mode.value)
 
     async def _owner_watch_loop(self) -> None:
         """Generalized version of v1's watcher-process.sh: auto-exits couch
@@ -188,8 +251,8 @@ class StateMachine:
                 if self._hooks.is_launch_process_alive is not None:
                     alive = await self._hooks.is_launch_process_alive()
                     if not alive:
-                        logger.info("state_machine[%s]: launched process exited -> tearing down to desk", owner)
-                        await self._transition(Mode.DESK, device_id=owner)
+                        headline(logger, "state_machine[%s]: launched process exited -> tearing down to desk", owner)
+                        await self._teardown_from("owner_watch", owner)
                         return
 
                 if self._hooks.is_owner_present is not None and self._owner is not None:
@@ -201,18 +264,19 @@ class StateMachine:
                         if self._no_controller_since is None:
                             self._no_controller_since = now
                         elif now - self._no_controller_since >= self._no_controller_timeout_s:
-                            logger.info(
+                            headline(
+                                logger,
                                 "state_machine[%s]: owner absent %ss (process still alive) -> tearing down to desk",
                                 owner, self._no_controller_timeout_s,
                             )
-                            await self._transition(Mode.DESK, device_id=owner)
+                            await self._teardown_from("owner_watch", owner)
                             return
         except asyncio.CancelledError:
             return
 
     def _spawn_task(self, name: str, coro: Awaitable) -> None:
         self._cancel_task(name)
-        self._tasks[name] = asyncio.ensure_future(coro)
+        self._tasks[name] = supervise(name, coro, self._health)
 
     def _cancel_task(self, name: str) -> None:
         task = self._tasks.pop(name, None)

@@ -89,6 +89,42 @@
             result.textContent = data.ok ? 'sent — did your TV switch to this PC?' : ('error: ' + (data.error || 'unknown'));
           }
         </script>
+        <label><input type="checkbox" name="cec_power_off_on_teardown" {% if config.cec.power_off_on_teardown %}checked{% endif %}> Power off TV when finished (send CEC standby on switch back to desk)</label>
+
+        <details>
+          <summary>Advanced CEC tuning</summary>
+          <label for="cec_wake_delay_s">Wake delay before input switch (seconds)</label>
+          <input type="number" id="cec_wake_delay_s" name="cec_wake_delay_s" min="0" step="0.5"
+                 value="{{ config.cec.wake_delay_s }}">
+          <p class="muted" style="margin-top:-8px;">Pause between waking the TV and sending the input switch — raise this if your TV is slow to wake and misses the switch command.</p>
+
+          <label for="cec_active_source_retries">Active-source re-assert retries</label>
+          <input type="number" id="cec_active_source_retries" name="cec_active_source_retries" min="0" step="1"
+                 value="{{ config.cec.active_source_retries }}">
+          <label for="cec_active_source_retry_delay_s">Re-assert delay (seconds)</label>
+          <input type="number" id="cec_active_source_retry_delay_s" name="cec_active_source_retry_delay_s" min="0.5" step="0.5"
+                 value="{{ config.cec.active_source_retry_delay_s }}">
+          <p class="muted" style="margin-top:-8px;">Re-sends the input switch this many times, this far apart — reclaims input from another CEC device (e.g. a game console) that wakes and grabs it back.</p>
+
+          <label for="cec_standby_targets">Standby targets on teardown (comma-separated CEC logical addresses)</label>
+          <input type="text" id="cec_standby_targets" name="cec_standby_targets"
+                 value="{{ config.cec.standby_targets|join(',') }}" placeholder="e.g. 0,5 — 0=TV, 5=Audio System/receiver">
+          {% if cec_topology %}
+          <p class="muted" style="margin-top:-8px;">Detected on the bus:
+            {% for d in cec_topology %}{{ d.device_type }} (address {{ d.logical_address }}{% if d.osd_name %}, "{{ d.osd_name }}"{% endif %}){{ ", " if not loop.last }}{% endfor %}.
+            {% if cec_suggested_standby_targets %}
+            <button type="button" class="secondary" onclick="document.getElementById('cec_standby_targets').value = '{{ cec_suggested_standby_targets }}'">Use detected ({{ cec_suggested_standby_targets }})</button>
+            {% endif %}
+          </p>
+          {% endif %}
+          <label for="cec_standby_verify_attempts">Standby confirm attempts</label>
+          <input type="number" id="cec_standby_verify_attempts" name="cec_standby_verify_attempts" min="1" step="1"
+                 value="{{ config.cec.standby_verify_attempts }}">
+          <label for="cec_standby_verify_delay_s">Standby confirm delay (seconds)</label>
+          <input type="number" id="cec_standby_verify_delay_s" name="cec_standby_verify_delay_s" min="0.5" step="0.5"
+                 value="{{ config.cec.standby_verify_delay_s }}">
+          <p class="muted" style="margin-top:-8px;">Each target gets this many standby attempts, this far apart, before being reported as "may still be on." Raise these if your TV/receiver is slow to confirm standby.</p>
+        </details>
         {% endif %}
       </div>
     </template>
@@ -97,13 +133,84 @@
   <div class="card">
     <h2>Launch on connect</h2>
     <p class="muted">Detected launchers: {% for name, found in launchers.items() %}{{ name }}{{ "✓" if found else "✗" }}{{ ", " if not loop.last }}{% endfor %}</p>
-    <label for="launch_preset">Preset or custom command</label>
-    <select id="launch_preset" name="launch_preset">
-      <option value="">— none —</option>
-      {% for preset in launch_presets %}
-      <option value="{{ preset }}" {% if preset == config.on_connect.run %}selected{% endif %}>{{ preset }}</option>
-      {% endfor %}
-    </select>
+
+    <div x-data="customCommands({{ custom_commands_json|tojson }})">
+      <label for="launch_preset">Preset or custom command</label>
+      <select id="launch_preset" name="launch_preset">
+        <option value="">— none —</option>
+        {% for preset in launch_presets %}
+        <option value="{{ preset }}" {% if preset == config.on_connect.run %}selected{% endif %}>{{ preset }}</option>
+        {% endfor %}
+        <template x-for="cmd in commands" :key="cmd.command">
+          <option :value="cmd.command" :selected="cmd.command === {{ config.on_connect.run|tojson }}" x-text="cmd.name || cmd.command"></option>
+        </template>
+      </select>
+
+      <p class="muted" style="margin-top:12px;">Custom commands — define a name and the command to run, then pick it above.</p>
+      <template x-for="(cmd, index) in commands" :key="index">
+        <div class="component-row">
+          <input type="text" name="custom_command_name" x-model="cmd.name" placeholder="Name (e.g. Play Portal 2)">
+          <input type="text" name="custom_command_value" x-model="cmd.command" placeholder="Command (e.g. steam steam://rungameid/620)">
+          <button type="button" class="secondary" @click="remove(index)">Remove</button>
+        </div>
+      </template>
+      <button type="button" class="secondary" @click="add()">+ Add command</button>
+    </div>
+  </div>
+
+  <script>
+    function customCommands(initial) {
+      return {
+        commands: initial || [],
+        add() { this.commands.push({name: '', command: ''}); },
+        remove(index) { this.commands.splice(index, 1); },
+      };
+    }
+  </script>
+
+  <div class="card">
+    <h2>Teardown timing</h2>
+    <p class="muted">Controls how quickly couch mode switches back to desk. Lower values react
+    faster but risk a false trigger from a brief disconnect or a slow-starting game.</p>
+    <label for="disconnect_grace_s">Controller disconnect grace (seconds)</label>
+    <input type="number" id="disconnect_grace_s" name="disconnect_grace_s" min="1" step="1"
+           value="{{ config.timing.disconnect_grace_s|int }}">
+    <p class="muted" style="margin-top:-8px;">How long to wait after the controller disconnects before switching back to desk (covers brief receiver flakiness).</p>
+
+    <label for="launch_startup_grace_s">Launch startup grace (seconds)</label>
+    <input type="number" id="launch_startup_grace_s" name="launch_startup_grace_s" min="1" step="1"
+           value="{{ config.timing.launch_startup_grace_s|int }}">
+    <p class="muted" style="margin-top:-8px;">How long a cold-started game/launcher gets before "not visible yet" starts counting as "exited."</p>
+
+    <label for="no_controller_timeout_s">No-controller timeout (seconds)</label>
+    <input type="number" id="no_controller_timeout_s" name="no_controller_timeout_s" min="1" step="1"
+           value="{{ config.timing.no_controller_timeout_s|int }}">
+    <p class="muted" style="margin-top:-8px;">If the game/launcher is still running but the controller has been gone this long, switch back to desk anyway.</p>
+
+    <details>
+      <summary>Advanced timing</summary>
+      <label for="poll_interval_s">Owner/process poll interval (seconds)</label>
+      <input type="number" id="poll_interval_s" name="poll_interval_s" min="0.5" step="0.5"
+             value="{{ config.timing.poll_interval_s }}">
+      <p class="muted" style="margin-top:-8px;">How often to check whether the launched process is still alive and the controller is still present. Lower reacts faster; higher uses less CPU.</p>
+
+      <label for="debounce_default_ms">Connect/disconnect debounce (milliseconds)</label>
+      <input type="number" id="debounce_default_ms" name="debounce_default_ms" min="0" step="50"
+             value="{{ config.timing.debounce_default_ms }}">
+      <p class="muted" style="margin-top:-8px;">How long a raw connect/disconnect signal must stay stable before it's trusted — raise this if a flaky receiver causes false mode switches.</p>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Controller shortcut: exit couch mode</h2>
+    <p class="muted">Always available while couch mode is active, regardless of what Steam/the game
+    is doing. Only switches display/audio/CEC/screen-lock back to desk — never stops the game.</p>
+    <label><input type="checkbox" name="exit_couch_enabled" {% if config.shortcuts.exit_couch_enabled %}checked{% endif %}> Enable shortcut</label>
+    <label for="exit_couch_hold_seconds">Hold duration (seconds)</label>
+    <input type="number" id="exit_couch_hold_seconds" name="exit_couch_hold_seconds" min="1" step="0.5"
+           value="{{ config.shortcuts.exit_couch_hold_seconds }}">
+    <p class="muted" style="margin-top:-8px;">Hold the controller's Guide/Home button (the button in
+    the middle most controllers use to open their system menu) for this long to force an exit.</p>
   </div>
 
   <div class="card">
@@ -114,6 +221,25 @@
     with that on this specific machine.</p>
     <label><input type="checkbox" name="screen_lock_enabled" {% if config.screen_lock.enabled %}checked{% endif %}> Unlock screen and disable auto-lock during couch mode</label>
     <label><input type="checkbox" name="screen_lock_hold_inhibit" {% if config.screen_lock.hold_inhibit %}checked{% endif %}> Also hold a screensaver inhibit for the whole session (recommended if enabled above)</label>
+  </div>
+
+  <div class="card">
+    <h2>Wizard access</h2>
+    <p class="muted" style="color:#e0b13c;">Security-relevant, not cosmetic: LAN access means anyone on
+    your network can reach this page (they'll still need the admin password you already set — HTTP Basic
+    Auth, sent unencrypted, so treat that password as only as strong as your LAN's trust level). Takes
+    effect on the next daemon restart.</p>
+    <label><input type="checkbox" name="wizard_lan_access" {% if config.wizard.bind_address not in ("127.0.0.1", "::1", "localhost") %}checked{% endif %}> Allow LAN access (reachable from other devices on your network, e.g. a phone or tablet)</label>
+    <p class="muted" style="margin-top:-8px;">Unchecked: only reachable from this machine (127.0.0.1). Checked: reachable on all network interfaces (0.0.0.0).</p>
+
+    <details>
+      <summary>Advanced: specific bind address / port</summary>
+      <label for="wizard_bind_address">Bind address</label>
+      <input type="text" id="wizard_bind_address" name="wizard_bind_address" value="{{ config.wizard.bind_address }}" placeholder="127.0.0.1">
+      <p class="muted" style="margin-top:-8px;">Overrides the checkbox above if set to something other than 127.0.0.1/0.0.0.0 — e.g. to bind only a specific interface (a VPN/Tailscale IP) rather than every interface.</p>
+      <label for="wizard_port">Port</label>
+      <input type="number" id="wizard_port" name="wizard_port" min="1" max="65535" step="1" value="{{ config.wizard.port }}">
+    </details>
   </div>
 
   <button type="submit">Save configuration</button>

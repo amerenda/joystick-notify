@@ -19,6 +19,7 @@ import logging
 import re
 
 from ..health import Health
+from ..supervisor import supervise
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ async def set_stream_path_and_active_source(adapter: str | None, phys_addr: str)
 async def wake_and_select_input(
     adapter: str | None,
     phys_addr: str | None,
+    health: Health,
     *,
     wake_delay_s: float = 0.0,
     retries: int = 2,
@@ -95,7 +97,7 @@ async def wake_and_select_input(
         except asyncio.CancelledError:
             return
 
-    return asyncio.ensure_future(_retry_loop())
+    return supervise("cec_retry_loop", _retry_loop(), health)
 
 
 _PWR_STATE_RE = re.compile(r"pwr-state\s*:\s*([a-zA-Z-]+)", re.IGNORECASE)
@@ -151,6 +153,12 @@ async def standby_and_verify(
             unconfirmed.append(addr)
 
     if unconfirmed:
+        # The per-attempt lines above are only ever INFO -- without this,
+        # the final degraded outcome (the thing anyone troubleshooting
+        # "TV didn't turn off" actually needs to see) had no log line of
+        # its own at all, only a Health.degraded() call with no matching
+        # entry in the event log.
+        logger.warning("cec: standby unconfirmed for address(es) %s, device(s) may still be on", unconfirmed)
         health.degraded("cec", f"standby unconfirmed for address(es) {unconfirmed}", "device(s) may still be on")
     else:
         health.ok("cec", "standby confirmed for all targets")

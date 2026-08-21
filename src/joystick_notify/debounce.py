@@ -22,6 +22,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable
 
+from .health import Health
+from .supervisor import supervise
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DEBOUNCE_MS = 300
@@ -65,11 +68,13 @@ class Debouncer:
     def __init__(
         self,
         emit: Callable[[DeviceEvent], Awaitable[None]],
+        health: Health | None = None,
         *,
         default_debounce_ms: int = DEFAULT_DEBOUNCE_MS,
         per_class_debounce_ms: dict[str, int] | None = None,
     ) -> None:
         self._emit = emit
+        self._health = health
         self._default_debounce_ms = default_debounce_ms
         self._per_class_debounce_ms = per_class_debounce_ms or {}
         self._last_stable: dict[str, StableKind] = {}
@@ -103,7 +108,11 @@ class Debouncer:
             logger.debug("debounce[%s]: bounce back to %s absorbed, no-op", event.device_id, target.value)
             return
 
-        task = asyncio.ensure_future(self._settle(event.device_id, target, event.device_class))
+        coro = self._settle(event.device_id, target, event.device_class)
+        if self._health is not None:
+            task = supervise(f"debounce:{event.device_id}", coro, self._health)
+        else:
+            task = asyncio.ensure_future(coro)
         self._pending_tasks[event.device_id] = task
 
     async def _settle(self, device_id: str, target: StableKind, device_class: str) -> None:

@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
+
+from .atomic_json import atomic_write_json
 
 SCHEMA_VERSION = 1
 
@@ -124,17 +125,7 @@ class Health:
             "heartbeat": time.time(),
             "components": {name: c.to_dict() for name, c in self._components.items()},
         }
-        fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, prefix=".health-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(snapshot, f)
-            os.replace(tmp_path, self._path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_json(self._path, snapshot, prefix=".health-")
 
 
 @dataclass

@@ -26,8 +26,11 @@ from .config.schema import JoystickNotifyConfig
 from .debounce import Debouncer, DeviceEvent
 from .devices import cec as cec_discover
 from .devices.detect import HidrawLivenessWatcher, UdevWatcher, device_present
+from .event_log import headline
 from .health import HEARTBEAT_INTERVAL_SECONDS, Health
+from .manual_exit import ManualExitWatcher
 from .session_env import ensure_session_environment
+from .supervisor import supervise
 from .state_machine import ActionHooks, StateMachine
 
 logger = logging.getLogger(__name__)
@@ -69,29 +72,47 @@ def check_startup_health(config: JoystickNotifyConfig, health: Health) -> bool:
     return ok
 
 
-def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
-    cec_retry_task: asyncio.Task | None = None
-    screen_lock_cookie: str | None = None
+class CouchSessionResources:
+    """Owns state that's scoped to a single couch-mode session and needs a
+    matching teardown when it ends: the CEC active-source retry task, the
+    held screen-lock inhibit cookie, and the manual-exit shortcut watcher.
+
+    Plain attributes on one object, not `nonlocal` closure variables in
+    build_hooks() -- confirmed growing three times already (CEC retry
+    task, screen-lock cookie, manual-exit watcher), each addition meaning
+    another nonlocal declaration to remember in both activate_couch() and
+    activate_desk(). A fourth couch-scoped resource is now one attribute,
+    not two edited functions.
+    """
+
+    def __init__(self, manual_exit_watcher: ManualExitWatcher) -> None:
+        self.manual_exit_watcher = manual_exit_watcher
+        self.cec_retry_task: asyncio.Task | None = None
+        self.screen_lock_cookie: str | None = None
+
+
+def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watcher: ManualExitWatcher) -> ActionHooks:
+    resources = CouchSessionResources(manual_exit_watcher)
 
     async def _cec_adapter() -> str | None:
         if config.cec.adapter:
             return config.cec.adapter
         return await cec_discover.ensure_adapter(health)
 
-    async def activate_couch() -> None:
-        nonlocal cec_retry_task, screen_lock_cookie
+    async def activate_couch(device_id: str) -> None:
         # First, so nothing else that follows is hidden behind a lock
         # screen — display/CEC/audio/launch all still proceed regardless,
         # but the user should actually be able to see the result.
-        screen_lock_cookie = await screen_lock_actions.activate_couch(config.screen_lock, health)
+        resources.screen_lock_cookie = await screen_lock_actions.activate_couch(config.screen_lock, health)
         if config.cec.enabled:
             adapter = await _cec_adapter()
             if adapter is None:
                 health.failed("cec", "CEC enabled but no adapter found at activation time")
             else:
-                cec_retry_task = await cec_control.wake_and_select_input(
+                resources.cec_retry_task = await cec_control.wake_and_select_input(
                     adapter,
                     config.cec.active_source_phys_addr or None,
+                    health,
                     wake_delay_s=config.cec.wake_delay_s,
                     retries=config.cec.active_source_retries,
                     retry_delay_s=config.cec.active_source_retry_delay_s,
@@ -99,12 +120,14 @@ def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
                 health.ok("cec", "wake + active-source sent")
         await display_actions.activate_couch(config.display, health)
         await audio_actions.activate_couch(config.audio, health)
+        if config.shortcuts.exit_couch_enabled:
+            await resources.manual_exit_watcher.start(device_id)
 
     async def activate_desk() -> None:
-        nonlocal cec_retry_task, screen_lock_cookie
-        if cec_retry_task is not None:
-            cec_retry_task.cancel()
-            cec_retry_task = None
+        await resources.manual_exit_watcher.stop()
+        if resources.cec_retry_task is not None:
+            resources.cec_retry_task.cancel()
+            resources.cec_retry_task = None
         if config.cec.enabled and config.cec.power_off_on_teardown:
             adapter = await _cec_adapter()
             if adapter is not None:
@@ -117,8 +140,8 @@ def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
                 )
         await display_actions.activate_desk(config.display, health)
         await audio_actions.activate_desk(config.audio, health)
-        await screen_lock_actions.activate_desk(config.screen_lock, health, screen_lock_cookie)
-        screen_lock_cookie = None
+        await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
+        resources.screen_lock_cookie = None
 
     async def launch() -> None:
         if config.on_connect.run:
@@ -132,12 +155,22 @@ def build_hooks(config: JoystickNotifyConfig, health: Health) -> ActionHooks:
     async def is_owner_present(device_id: str) -> bool:
         return device_present(device_id)
 
+    async def on_reconnect_while_couch(device_id: str) -> None:
+        # Restarts the manual-exit shortcut watcher against whatever evdev
+        # node the reconnect landed on -- a brief disconnect/reconnect
+        # within disconnect_grace_s never tears couch mode down, but the
+        # watcher already exited (OSError on the now-dead node) and nothing
+        # else would ever restart it for the rest of this session.
+        if config.shortcuts.exit_couch_enabled:
+            await resources.manual_exit_watcher.start(device_id)
+
     return ActionHooks(
         activate_couch=activate_couch,
         activate_desk=activate_desk,
         launch=launch,
         is_launch_process_alive=is_launch_process_alive,
         is_owner_present=is_owner_present,
+        on_reconnect_while_couch=on_reconnect_while_couch,
     )
 
 
@@ -146,7 +179,21 @@ async def run_daemon(config_path: Path | None = None) -> None:
     health = Health()
     check_startup_health(config, health)
 
-    hooks = build_hooks(config, health)
+    # `sm` doesn't exist yet at the line below, but this callback isn't
+    # actually invoked until a shortcut fires later, well after `sm` is
+    # assigned — Python closures resolve free variables at call time, not
+    # definition time, so this forward reference is safe.
+    async def on_manual_exit() -> None:
+        await sm.force_exit_to_desk()
+
+    manual_exit_watcher = ManualExitWatcher(
+        on_manual_exit,
+        health,
+        button=config.shortcuts.exit_couch_button,
+        hold_seconds=config.shortcuts.exit_couch_hold_seconds,
+    )
+
+    hooks = build_hooks(config, health, manual_exit_watcher)
     sm = StateMachine(
         hooks,
         health,
@@ -165,20 +212,21 @@ async def run_daemon(config_path: Path | None = None) -> None:
     # switch. See activity_gate.py's module docstring for the real bug
     # this closes (2026-08-21: a stale Puck receiver connection triggered
     # couch mode on daemon startup with nobody touching it).
-    gate = ActivityGate(to_state_machine)
+    gate = ActivityGate(to_state_machine, health)
 
     async def emit(event: DeviceEvent) -> None:
         await gate.handle(event)
 
     debouncer = Debouncer(
         emit,
+        health,
         default_debounce_ms=config.timing.debounce_default_ms,
         per_class_debounce_ms=config.timing.debounce_per_class_ms,
     )
 
     udev_watcher = UdevWatcher(debouncer.feed, health)
     udev_watcher.start()
-    liveness_watcher = HidrawLivenessWatcher(debouncer.feed)
+    liveness_watcher = HidrawLivenessWatcher(debouncer.feed, health)
     liveness_watcher.start()
 
     # The wizard is served from this same process (one package, one daemon
@@ -201,7 +249,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
         )
         wizard_server = uvicorn.Server(uvicorn_config)
         wizard_server.install_signal_handlers = lambda: None  # daemon owns SIGTERM/SIGINT, not uvicorn
-        wizard_task = asyncio.ensure_future(wizard_server.serve())
+        wizard_task = supervise("wizard", wizard_server.serve(), health)
         health.ok("wizard", f"listening on {config.wizard.bind_address}:{config.wizard.port}")
     except ValueError as e:
         # Refused bind (LAN address with no password configured) — loud,
@@ -220,7 +268,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
         except NotImplementedError:
             pass  # signal handlers unsupported on this platform (e.g. some test runners)
 
-    logger.info("daemon: started, mode=%s configured=%s", sm.mode.value, config.configured)
+    headline(logger, "daemon: started, mode=%s configured=%s", sm.mode.value, config.configured)
     try:
         while not stop_event.is_set():
             health.heartbeat()
@@ -229,12 +277,13 @@ async def run_daemon(config_path: Path | None = None) -> None:
             except asyncio.TimeoutError:
                 pass
     finally:
-        logger.info("daemon: shutting down")
+        headline(logger, "daemon: shutting down")
         udev_watcher.stop()
         await liveness_watcher.stop()
         await debouncer.aclose()
         await gate.aclose()
         await sm.aclose()
+        await manual_exit_watcher.stop()
         if wizard_server is not None:
             wizard_server.should_exit = True
         if wizard_task is not None:
@@ -272,7 +321,15 @@ def main(argv: list[str] | None = None) -> int:
 
     log_dir = default_state_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(log_dir / "daemon.log")
+    # RotatingFileHandler, not a plain FileHandler: this is a long-running
+    # systemd user service with no external log rotation configured for it
+    # (unlike journald, which the ExecStart's stdout/stderr already flow
+    # through) -- a plain FileHandler grows daemon.log forever.
+    from logging.handlers import RotatingFileHandler
+
+    file_handler = RotatingFileHandler(
+        log_dir / "daemon.log", maxBytes=10 * 1024 * 1024, backupCount=3
+    )
     file_handler.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(file_handler)
 

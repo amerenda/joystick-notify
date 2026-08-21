@@ -38,6 +38,7 @@ from typing import Callable
 
 from ..debounce import RawEvent, RawKind
 from ..health import Health
+from ..supervisor import supervise
 from .profiles import GENERIC_PROFILE, match_profile
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,42 @@ def device_present(device_id: str, hid_root: str = HID_ROOT, usb_root: str = "/s
         if f"HID_UNIQ={device_id}" in content:
             return True
     return False
+
+
+def find_evdev_path_for_device(device_id: str) -> str | None:
+    """Resolves an already-identified stable device_id (see
+    stable_device_id()) back to its /dev/input/eventN node — for a
+    component that needs to read raw button events from one *specific,
+    already-known* device, not classify an unknown one. Currently only used
+    by manual_exit.py's couch-mode-exit shortcut watcher, which only ever
+    watches the current owner.
+
+    Reuses the same HID-parent identity merge as UdevWatcher._on_udev_event
+    (an evdev child node carries ID_INPUT_JOYSTICK but never HID_UNIQ; the
+    stable identity lives on its HID-subsystem parent) so this resolves the
+    same device_id the rest of the pipeline already uses.
+    """
+    try:
+        import pyudev
+    except ImportError:
+        return None
+    try:
+        context = pyudev.Context()
+    except Exception:
+        return None
+    for device in context.list_devices(subsystem="input"):
+        devnode = device.device_node
+        if not devnode or not os.path.basename(devnode).startswith("event"):
+            continue
+        properties = dict(device.properties)
+        hid_parent = device.find_parent("hid")
+        if hid_parent is not None:
+            merged = dict(hid_parent.properties)
+            merged.update(properties)
+            properties = merged
+        if stable_device_id(properties) == device_id:
+            return devnode
+    return None
 
 
 def profile_for(properties: dict):
@@ -322,11 +359,13 @@ class HidrawLivenessWatcher:
     def __init__(
         self,
         feed: Callable[[RawEvent], None],
+        health: Health | None = None,
         *,
         rescan_interval_s: float = 5.0,
         remove_timeout_s: float = 6.0,
     ) -> None:
         self._feed = feed
+        self._health = health
         self._rescan_interval_s = rescan_interval_s
         self._remove_timeout_s = remove_timeout_s
         self._task: asyncio.Task | None = None
@@ -363,7 +402,10 @@ class HidrawLivenessWatcher:
                 yield "/dev/" + os.path.basename(node), device_id, profile.device_class
 
     def start(self) -> None:
-        self._task = asyncio.ensure_future(self._run())
+        if self._health is not None:
+            self._task = supervise("hidraw_liveness", self._run(), self._health)
+        else:
+            self._task = asyncio.ensure_future(self._run())
 
     async def _run(self) -> None:
         loop = asyncio.get_event_loop()

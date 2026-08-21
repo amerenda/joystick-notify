@@ -175,3 +175,33 @@ def find_audio_system_target(topology: list[TopologyDevice]) -> TopologyDevice |
         if "audio" in device.device_type.lower():
             return device
     return None
+
+
+TOPOLOGY_TIMEOUT_S = 5.0
+
+
+async def get_topology(adapter: str | None) -> list[TopologyDevice]:
+    """Runs `cec-ctl -S` and parses the topology dump for the wizard's CEC
+    step -- real hardware I/O, exercised only on a box with actual CEC
+    hardware. Returns [] on any failure (no cec-ctl, no adapter, timeout)
+    rather than raising -- this is a best-effort auto-fill suggestion for
+    the wizard, never something that should block rendering the page.
+    """
+    args = ["cec-ctl", "-S"]
+    if adapter:
+        args = ["cec-ctl", "-d", adapter, "-S"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+    except FileNotFoundError:
+        return []
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=TOPOLOGY_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return []
+    if proc.returncode != 0:
+        return []
+    return parse_topology(out.decode(errors="replace"))
