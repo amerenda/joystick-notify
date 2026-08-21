@@ -66,6 +66,10 @@ def _wizard_url() -> str:
 
 
 def main() -> int:
+    from ..session_env import ensure_session_environment
+
+    ensure_session_environment()
+
     try:
         from PyQt6.QtCore import Qt, QTimer
         from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
