@@ -6,7 +6,6 @@ from joystick_notify.devices.detect import (
     HidrawLivenessWatcher,
     UdevWatcher,
     device_name,
-    find_evdev_path_for_device,
     is_candidate_hid,
     parse_hid_id,
     profile_for,
@@ -134,10 +133,9 @@ class _FakeLoop:
 
 
 class _FakeDevice:
-    def __init__(self, properties, parent=None, device_node=None):
+    def __init__(self, properties, parent=None):
         self.properties = properties
         self._parent = parent
-        self.device_node = device_node
 
     def find_parent(self, subsystem):
         return self._parent if subsystem == "hid" else None
@@ -362,38 +360,3 @@ def test_hidraw_liveness_watcher_remove_event_carries_correct_device_class():
 
     assert len(fed) == 1
     assert fed[0].device_class == "bitdo_dongle"
-
-
-# --- find_evdev_path_for_device (activity_gate.py's device-to-node resolution) ---
-
-
-def test_find_evdev_path_matches_via_hid_parent():
-    hid_parent = _FakeDevice({"SUBSYSTEM": "hid", "HID_UNIQ": "950F5726DC", "HID_NAME": "8BitDo Ultimate 2"})
-    input_child = _FakeDevice(
-        {"SUBSYSTEM": "input", "ID_INPUT_JOYSTICK": "1"},
-        parent=hid_parent,
-        device_node="/dev/input/event7",
-    )
-    other_device = _FakeDevice(
-        {"SUBSYSTEM": "input", "ID_INPUT_JOYSTICK": "1", "HID_UNIQ": "unrelated"},
-        device_node="/dev/input/event3",
-    )
-
-    path = find_evdev_path_for_device("950F5726DC", _devices=[other_device, input_child])
-    assert path == "/dev/input/event7"
-
-
-def test_find_evdev_path_returns_none_when_no_match():
-    device = _FakeDevice({"SUBSYSTEM": "input", "ID_INPUT_JOYSTICK": "1", "HID_UNIQ": "aa:bb"}, device_node="/dev/input/event0")
-    assert find_evdev_path_for_device("950F5726DC", _devices=[device]) is None
-
-
-def test_find_evdev_path_skips_non_event_nodes():
-    # e.g. /dev/input/mouse0 or /dev/input/js0 -- not the evdev node we want.
-    device = _FakeDevice({"SUBSYSTEM": "input", "HID_UNIQ": "950F5726DC"}, device_node="/dev/input/js0")
-    assert find_evdev_path_for_device("950F5726DC", _devices=[device]) is None
-
-
-def test_find_evdev_path_skips_devices_with_no_device_node():
-    device = _FakeDevice({"SUBSYSTEM": "input", "HID_UNIQ": "950F5726DC"}, device_node=None)
-    assert find_evdev_path_for_device("950F5726DC", _devices=[device]) is None

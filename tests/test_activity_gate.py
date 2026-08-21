@@ -1,8 +1,15 @@
-"""Direct regression coverage for the 2026-08-21 live-testing finding: a
-controller already producing idle presence data at daemon startup
-triggered couch mode with nobody touching it. ActivityGate must withhold
-a first-time connect until genuine activity is proven, and must never
-falsely delay/block a disconnect or an already-proven-active device.
+"""Direct regression coverage for two rounds of live-testing findings on
+2026-08-21:
+
+1. A controller already producing idle presence data at daemon startup
+   triggered couch mode with nobody touching it -- the startup grace
+   window must withhold that.
+2. A first attempt required a genuine evdev button press before trusting
+   ANY connect, for the device's whole lifetime under the daemon -- live
+   testing showed that's stricter than wanted: a deliberate power-on
+   after the startup window (or any reconnect the daemon has directly
+   witnessed a prior disconnect for) must be trusted immediately, no
+   button press required.
 """
 import asyncio
 
@@ -12,28 +19,15 @@ from joystick_notify.activity_gate import ActivityGate
 from joystick_notify.debounce import DeviceEvent, StableKind
 
 
-class FakeDetector:
-    """Test double: wait_for_activity() blocks until the test explicitly
-    fires it via `resolve(device_id)`, or raises CancelledError if the
-    gate cancels it first (simulating a disconnect before activity).
-    Matches the real EvdevActivityDetector's shape: each call starts a
-    fresh wait with no memory of a previous device_id's activity, so a
-    second connect after a real disconnect must be resolved again.
-    """
+class FakeClock:
+    def __init__(self, start: float = 0.0):
+        self.now = start
 
-    def __init__(self):
-        self._pending: dict[str, list[asyncio.Event]] = {}
-        self.watched: list[str] = []
+    def __call__(self) -> float:
+        return self.now
 
-    async def wait_for_activity(self, device_id: str) -> None:
-        self.watched.append(device_id)
-        event = asyncio.Event()
-        self._pending.setdefault(device_id, []).append(event)
-        await event.wait()
-
-    def resolve(self, device_id: str) -> None:
-        for event in self._pending.pop(device_id, []):
-            event.set()
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 def connected(device_id: str) -> DeviceEvent:
@@ -44,124 +38,108 @@ def disconnected(device_id: str) -> DeviceEvent:
     return DeviceEvent(device_id=device_id, kind=StableKind.DISCONNECTED)
 
 
+async def _emit_sink(forwarded):
+    async def emit(event):
+        forwarded.append(event)
+
+    return emit
+
+
 @pytest.mark.asyncio
-async def test_connect_withheld_until_activity_proven():
+async def test_connect_within_startup_grace_window_is_withheld():
     forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
 
     await gate.handle(connected("dev1"))
-    await asyncio.sleep(0.05)
-    assert forwarded == []  # not forwarded yet -- no activity proven
+    assert forwarded == []  # ambiguous -- could be stale carryover state
+    await gate.aclose()
 
-    detector.resolve("dev1")
-    await asyncio.sleep(0.05)
+
+@pytest.mark.asyncio
+async def test_connect_forwarded_once_grace_window_elapses_while_still_connected():
+    forwarded = []
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock)
+
+    await gate.handle(connected("dev1"))
+    assert forwarded == []
+    await asyncio.sleep(0.1)  # real sleep so the internally-scheduled wait actually elapses
     assert len(forwarded) == 1
     assert forwarded[0].device_id == "dev1"
     await gate.aclose()
 
 
 @pytest.mark.asyncio
-async def test_disconnect_before_activity_never_forwards_connect():
-    # This is the exact false-positive this exists to close: a device
-    # present-but-idle that goes away before ever being touched must never
-    # have triggered anything downstream.
+async def test_disconnect_within_grace_window_cancels_pending_and_never_forwards_connect():
     forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
 
     await gate.handle(connected("dev1"))
-    await asyncio.sleep(0.02)
     await gate.handle(disconnected("dev1"))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.02)
 
     kinds = [e.kind for e in forwarded]
     assert StableKind.CONNECTED not in kinds
-    assert StableKind.DISCONNECTED in kinds  # disconnect still flows through
+    assert StableKind.DISCONNECTED in kinds  # disconnect always flows through
     await gate.aclose()
 
 
 @pytest.mark.asyncio
-async def test_disconnect_always_forwarded_immediately_even_never_activated():
+async def test_connect_after_startup_grace_window_trusted_immediately():
+    # Direct regression test for the "power on should be enough" feedback:
+    # once the daemon has been running a while, a fresh connect must not
+    # require anything extra.
     forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
 
-    # Disconnect with no prior connect at all -- must not raise, must forward.
-    await gate.handle(disconnected("dev1"))
+    clock.advance(15.0)  # well past the startup window
+    await gate.handle(connected("dev1"))
+
     assert len(forwarded) == 1
-    assert forwarded[0].kind == StableKind.DISCONNECTED
+    assert forwarded[0].device_id == "dev1"
     await gate.aclose()
 
 
 @pytest.mark.asyncio
-async def test_once_activated_presence_alone_is_forwarded_without_regating():
+async def test_reconnect_after_witnessed_disconnect_trusted_immediately_even_within_grace_window():
+    # Once the daemon has directly seen this device disconnect, a later
+    # connect is an unambiguous, freshly-witnessed transition -- no need
+    # to wait out the startup grace window again.
     forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
 
-    await gate.handle(connected("dev1"))
-    await asyncio.sleep(0)  # let the spawned wait register before resolving it
-    detector.resolve("dev1")
-    await asyncio.sleep(0.02)
-    assert len(forwarded) == 1
+    await gate.handle(disconnected("dev1"))  # daemon witnesses it absent
+    await gate.handle(connected("dev1"))  # still within the startup window
 
-    # A second "connected" for the same, already-activated device (e.g. a
-    # redundant signal from a second detector source) must pass straight
-    # through -- lenient once active, not re-gated on every event.
-    watched_before = list(detector.watched)
-    await gate.handle(connected("dev1"))
-    assert len(forwarded) == 2
-    assert detector.watched == watched_before  # did not start watching again
-    await gate.aclose()
-
-
-@pytest.mark.asyncio
-async def test_disconnect_clears_activated_so_next_connect_is_regated():
-    forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
-
-    await gate.handle(connected("dev1"))
-    await asyncio.sleep(0)  # let the spawned wait register before resolving it
-    detector.resolve("dev1")
-    await asyncio.sleep(0.02)
-    await gate.handle(disconnected("dev1"))
-    await asyncio.sleep(0.02)
-
-    # Fresh connect after a real disconnect must prove activity again --
-    # trust doesn't persist across an actual disconnect.
-    await gate.handle(connected("dev1"))
-    await asyncio.sleep(0.02)
-    assert len([e for e in forwarded if e.kind == StableKind.CONNECTED]) == 1  # only the first one
-    detector.resolve("dev1")
-    await asyncio.sleep(0.02)
-    assert len([e for e in forwarded if e.kind == StableKind.CONNECTED]) == 2
+    connects = [e for e in forwarded if e.kind == StableKind.CONNECTED]
+    assert len(connects) == 1
     await gate.aclose()
 
 
 @pytest.mark.asyncio
 async def test_independent_devices_gated_independently():
     forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
 
-    await gate.handle(connected("dev1"))
-    await gate.handle(connected("dev2"))
-    await asyncio.sleep(0)  # let both spawned waits register before resolving one
-    detector.resolve("dev2")
-    await asyncio.sleep(0.02)
+    await gate.handle(disconnected("dev2"))  # dev2 now has witnessed history, dev1 does not
+    await gate.handle(connected("dev1"))  # no history, within grace -- withheld
+    await gate.handle(connected("dev2"))  # witnessed history -- trusted immediately
 
-    ids = [e.device_id for e in forwarded]
-    assert ids == ["dev2"]  # dev1 still withheld, dev2 forwarded
+    connect_ids = [e.device_id for e in forwarded if e.kind == StableKind.CONNECTED]
+    assert connect_ids == ["dev2"]
     await gate.aclose()
 
 
 @pytest.mark.asyncio
-async def test_aclose_cancels_all_pending_waits_without_forwarding():
+async def test_aclose_cancels_pending_waits_without_forwarding():
     forwarded = []
-    detector = FakeDetector()
-    gate = ActivityGate(lambda e: forwarded.append(e) or asyncio.sleep(0), detector)
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
 
     await gate.handle(connected("dev1"))
     await gate.aclose()
