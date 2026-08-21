@@ -30,10 +30,10 @@
 <div class="card">
   <h2>What just happened</h2>
   <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
-    <p class="muted" style="margin-top:-8px;">Newest first. Shows main events by default (controller connected, mode transitions, teardown decisions) — pick a more verbose level below to see routine detail.</p>
+    <p class="muted" style="margin-top:-8px; flex:1; min-width:0;">Newest first. Shows main events by default (controller connected, mode transitions, teardown decisions) — pick a more verbose level below to see routine detail.</p>
     <select id="event-level-select" name="level"
             hx-get="/partials/events" hx-trigger="change" hx-target="#events-list" hx-swap="innerHTML"
-            style="flex-shrink:0;">
+            style="width:auto; flex-shrink:0;">
       <option value="main" selected>Main events</option>
       <option value="info">Info</option>
       <option value="warning">Warning</option>

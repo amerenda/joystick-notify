@@ -134,7 +134,7 @@
     <h2>Launch on connect</h2>
     <p class="muted">Detected launchers: {% for name, found in launchers.items() %}{{ name }}{{ "✓" if found else "✗" }}{{ ", " if not loop.last }}{% endfor %}</p>
 
-    <div x-data="customCommands({{ custom_commands_json|tojson }})">
+    <div x-data='customCommands({{ custom_commands_json|tojson }})'>
       <label for="launch_preset">Preset or custom command</label>
       <select id="launch_preset" name="launch_preset">
         <option value="">— none —</option>
@@ -142,7 +142,7 @@
         <option value="{{ preset }}" {% if preset == config.on_connect.run %}selected{% endif %}>{{ preset }}</option>
         {% endfor %}
         <template x-for="cmd in commands" :key="cmd.command">
-          <option :value="cmd.command" :selected="cmd.command === {{ config.on_connect.run|tojson }}" x-text="cmd.name || cmd.command"></option>
+          <option :value="cmd.command" :selected='cmd.command === {{ config.on_connect.run|tojson }}' x-text="cmd.name || cmd.command"></option>
         </template>
       </select>
 

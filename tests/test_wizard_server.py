@@ -128,6 +128,40 @@ def test_configure_get_renders_all_sections(client, monkeypatch):
         assert needle in resp.text, f"missing from rendered page: {needle}"
 
 
+def test_configure_get_alpine_data_attributes_are_not_broken_by_tojson_quotes(client):
+    # Direct regression test for a real bug: Jinja's |tojson output
+    # contains literal double quotes (it's JSON), so embedding it inside
+    # a DOUBLE-quoted HTML attribute (x-data="...{{ x|tojson }}...")
+    # prematurely closes the attribute at the first embedded quote,
+    # corrupting the tag and everything the browser parses after it on
+    # the page -- reported live as "edit config does not work either."
+    # Must use single-quoted attributes instead, since JSON never
+    # contains a literal single quote.
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    # A non-empty custom command and a non-empty on_connect.run are the
+    # exact conditions that broke this -- an empty list/string happens to
+    # produce no embedded quotes and would mask the bug.
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "launch_preset": "steam-bigpicture",
+            "custom_command_name": "Play Portal 2",
+            "custom_command_value": "steam steam://rungameid/620",
+        },
+    )
+
+    resp = client.get("/configure", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "x-data='customCommands(" in resp.text
+    assert 'x-data="customCommands(' not in resp.text
+    assert ":selected='cmd.command === " in resp.text
+    assert ':selected="cmd.command === ' not in resp.text
+
+
 def test_configure_get_renders_detected_cec_topology_and_suggestion(client, monkeypatch):
     from joystick_notify.devices import cec as cec_discover
     from joystick_notify.devices.cec import TopologyDevice
