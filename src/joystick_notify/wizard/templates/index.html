@@ -26,4 +26,12 @@
   <a class="btn secondary" href="/configure">Edit configuration</a>
 </div>
 
+<div class="card">
+  <h2>What just happened</h2>
+  <p class="muted" style="margin-top:-8px;">Newest first — the same high-level steps written to the log (controller detected, waiting for input, CEC/display/audio actions), not full debug output.</p>
+  <div hx-get="/partials/events" hx-trigger="load, every 2s" hx-swap="innerHTML">
+    <p class="muted">Loading…</p>
+  </div>
+</div>
+
 {% endblock %}

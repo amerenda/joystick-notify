@@ -151,3 +151,34 @@ def test_api_status_reflects_health_registry(client, isolated_config):
     assert body["daemon_alive"] is True
     assert body["overall"] == "failed"
     assert body["components"]["deps"]["reason"] == "cec-ctl not found"
+
+
+def test_api_events_empty_when_nothing_logged_yet(client, isolated_config):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.get("/api/events", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
+    assert resp.status_code == 200
+    assert resp.json()["events"] == []
+
+
+def test_api_events_reflects_event_log(client, isolated_config):
+    import logging
+
+    from joystick_notify.event_log import EventLogHandler
+
+    logger = logging.getLogger("joystick_notify.wizard_test")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(EventLogHandler())
+    logger.info("activity_gate[DEV1]: real activity observed, forwarding connect")
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.get("/api/events", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
+    events = resp.json()["events"]
+    assert len(events) == 1
+    assert "forwarding connect" in events[0]["message"]
+
+
+def test_partials_events_renders_html(client, isolated_config):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.get("/partials/events", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
+    assert resp.status_code == 200
+    assert "No events yet" in resp.text

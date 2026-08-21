@@ -253,7 +253,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=args.log_level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    log_format = "%(asctime)s %(name)s %(levelname)s %(message)s"
+    logging.basicConfig(level=args.log_level, format=log_format)
+
+    # Always write to a fixed, discoverable location regardless of how the
+    # process is launched (systemd unit, manual shell, nohup'd background
+    # process) -- requested directly after live troubleshooting made clear
+    # that ad hoc log file locations chosen per-launch aren't discoverable.
+    from .health import default_state_dir
+
+    log_dir = default_state_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_dir / "daemon.log")
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(file_handler)
+
+    # Bounded, cross-process-readable event log (INFO+ only) for the
+    # wizard's "what just happened" view -- see event_log.py.
+    from .event_log import EventLogHandler
+
+    logging.getLogger("joystick_notify").addHandler(EventLogHandler())
 
     config_path = Path(args.config) if args.config else None
     config = config_store.load(config_path)

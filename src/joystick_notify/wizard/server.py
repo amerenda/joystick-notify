@@ -174,6 +174,30 @@ async def status_detail_fragment(request: Request):
     return templates.TemplateResponse(request, "_status_detail_fragment.html", {"snapshot": snapshot})
 
 
+async def events_fragment(request: Request):
+    """"What just happened" view — the same INFO-level events already
+    written to the log (controller detected, waiting for input, CEC
+    wake sent, display switched, ...), newest first, for troubleshooting
+    directly from the wizard instead of SSHing in to tail a log file."""
+    import datetime
+
+    from ..event_log import read_events
+
+    events = list(reversed(read_events()))[:50]
+    rows = [
+        {"time": datetime.datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S"), "message": e.message}
+        for e in events
+    ]
+    return templates.TemplateResponse(request, "_events_fragment.html", {"events": rows})
+
+
+async def api_events(request: Request):
+    from ..event_log import read_events
+
+    events = list(reversed(read_events()))[:50]
+    return JSONResponse({"events": [e.to_dict() for e in events]})
+
+
 async def api_cec_test(request: Request):
     """Live-test button backing the CEC wizard step: sends wake +
     active-source to the requested phys-addr and lets the human confirm
@@ -203,6 +227,8 @@ def create_app() -> Starlette:
         Route("/api/cec/test", api_cec_test, methods=["POST"]),
         Route("/partials/status", status_fragment, methods=["GET"]),
         Route("/partials/status-detail", status_detail_fragment, methods=["GET"]),
+        Route("/partials/events", events_fragment, methods=["GET"]),
+        Route("/api/events", api_events, methods=["GET"]),
     ]
     app = Starlette(routes=routes, middleware=[Middleware(AuthMiddleware)])
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

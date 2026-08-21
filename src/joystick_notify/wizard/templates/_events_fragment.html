@@ -1,0 +1,10 @@
+{% if not events %}
+  <p class="muted">No events yet — nothing has happened since the daemon started.</p>
+{% else %}
+  {% for e in events %}
+  <div class="component-row">
+    <span class="muted" style="font-family: monospace; font-size: 12px;">{{ e.time }}</span>
+    <span>{{ e.message }}</span>
+  </div>
+  {% endfor %}
+{% endif %}
