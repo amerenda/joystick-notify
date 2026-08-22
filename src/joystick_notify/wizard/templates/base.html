@@ -51,6 +51,20 @@
     .muted { color: var(--muted); }
     fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; }
     legend { padding: 0 6px; color: var(--muted); font-size: 13px; }
+    /* Tab bar for the configure page (added for the "look like Sunshine's
+       config" redesign) -- reused as-is by any future multi-section page,
+       not configure-page-specific, so it lives here with the rest of the
+       shared chrome rather than inline in configure.html. */
+    .tab-bar { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 22px; overflow-x: auto; }
+    .tab-bar button {
+      background: none; border: none; color: var(--muted); padding: 11px 18px; font-size: 14px;
+      font-weight: 600; cursor: pointer; margin-top: 0; border-radius: 0; white-space: nowrap;
+      border-bottom: 2px solid transparent;
+    }
+    .tab-bar button:hover { color: var(--text); }
+    .tab-bar button.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
   </style>
 </head>
 <body>

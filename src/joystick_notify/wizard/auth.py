@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -109,6 +110,81 @@ def check_basic_auth(header_value: str | None, creds: Credentials) -> bool:
     if not secrets.compare_digest(username, creds.username):
         return False
     return verify_password(creds, password)
+
+
+def default_api_token_path() -> Path:
+    return default_config_dir() / "api_token.json"
+
+
+@dataclass
+class ApiToken:
+    token_hash_hex: str
+    created_at: float
+
+
+def _hash_token(token: str) -> str:
+    # Plain SHA-256, not scrypt: unlike a human-chosen password, this is a
+    # 256-bit random token (secrets.token_urlsafe) with no brute-forceable
+    # keyspace to slow down -- a fast hash is the right tool here, same
+    # reasoning as hashing API keys/webhook secrets anywhere else.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def generate_api_token() -> tuple[str, ApiToken]:
+    """Returns (plaintext_token, ApiToken) -- the plaintext is returned
+    exactly once, by design: only its hash is ever persisted (see
+    save_api_token), matching how the admin password itself is handled.
+    """
+    token = secrets.token_urlsafe(32)
+    return token, ApiToken(token_hash_hex=_hash_token(token), created_at=time.time())
+
+
+def load_api_token(path: Path | None = None) -> ApiToken | None:
+    path = path or default_api_token_path()
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    try:
+        return ApiToken(**raw)
+    except TypeError:
+        return None
+
+
+def save_api_token(token: ApiToken, path: Path | None = None) -> None:
+    path = path or default_api_token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".apitoken-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(asdict(token), f)
+        os.replace(tmp_path, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def delete_api_token(path: Path | None = None) -> None:
+    path = path or default_api_token_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def check_bearer_token(header_value: str | None, token: ApiToken) -> bool:
+    if not header_value or not header_value.startswith("Bearer "):
+        return False
+    candidate = header_value[len("Bearer ") :]
+    return secrets.compare_digest(_hash_token(candidate), token.token_hash_hex)
 
 
 def validate_bind_address(bind_address: str, *, has_credentials: bool) -> None:

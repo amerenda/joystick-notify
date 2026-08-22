@@ -12,6 +12,22 @@
 </div>
 {% endif %}
 
+<div class="card">
+  <h2>Mode</h2>
+  <div class="component-row">
+    <span>Current mode</span>
+    <span class="badge"><span class="dot {{ 'ok' if mode else 'unreachable' }}"></span>{{ mode or "unknown" }}</span>
+  </div>
+  <div style="display:flex; gap:10px;">
+    <form method="post" action="/mode/couch" style="margin:0;">
+      <button type="submit" {% if mode == 'couch' %}disabled{% endif %}>Switch to Couch Mode</button>
+    </form>
+    <form method="post" action="/mode/desk" style="margin:0;">
+      <button type="submit" class="secondary" {% if mode == 'desk' %}disabled{% endif %}>Switch to Desk Mode</button>
+    </form>
+  </div>
+</div>
+
 <div class="card" hx-get="/partials/status-detail" hx-trigger="load, every 3s" hx-swap="innerHTML">
   <h2>Daemon health</h2>
   <p class="muted">Loading…</p>

@@ -200,6 +200,22 @@ class StateMachine:
             return
         await self._transition(Mode.DESK, device_id=self._owner)
 
+    async def force_enter_couch(self) -> None:
+        """Manual override for the wizard/API "switch to couch" action: the
+        mirror of force_exit_to_desk(), activating couch mode unconditionally
+        with no controller event involved. Falls back to a synthetic owner
+        id ("manual") when nothing already owns the session, so
+        activate_couch()/the owner-watch loop have something to key off of
+        -- the manual-exit shortcut watcher simply finds no evdev node for a
+        synthetic owner and skips itself (see ManualExitWatcher.start()),
+        it doesn't error.
+        """
+        if self.mode == Mode.COUCH:
+            return
+        if self._owner is None:
+            self._owner = "manual"
+        await self._transition(Mode.COUCH, device_id=self._owner)
+
     async def handle_device_event(self, event: DeviceEvent) -> None:
         if event.kind == StableKind.CONNECTED:
             await self._on_connect(event.device_id)

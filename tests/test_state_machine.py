@@ -717,3 +717,36 @@ async def test_concurrent_transitions_are_serialized(tmp_path):
     for i in range(0, len(order), 2):
         assert order[i].split("_")[0] == order[i + 1].split("_")[0]
     await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_force_enter_couch_activates_with_synthetic_owner(tmp_path):
+    # The wizard/API "switch to couch" action has no real controller event
+    # behind it -- force_enter_couch() must still activate couch mode,
+    # falling back to a synthetic owner id so activate_couch()/the
+    # owner-watch loop have something to key off of.
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks()
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    await sm.force_enter_couch()
+
+    assert sm.mode == Mode.COUCH
+    assert sm.owner == "manual"
+    assert calls["couch"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_force_enter_couch_is_a_noop_already_in_couch(tmp_path):
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks()
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    assert calls["couch"] == 1
+
+    await sm.force_enter_couch()
+    assert calls["couch"] == 1  # not re-activated
+    assert sm.owner == "dev1"  # real owner untouched by the synthetic fallback
+    await sm.aclose()

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}API token created — joystick-notify{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>API token created</h2>
+  <p class="muted" style="color:#e0b13c;">This is shown once. Copy it now — it's stored only as a hash, so it
+  cannot be displayed again. If you lose it, generate a new one (this invalidates the old one).</p>
+  <input type="text" readonly value="{{ token }}" onclick="this.select()"
+         style="font-family: monospace; font-size: 13px;">
+  <p class="muted">Use it as a Bearer token against the mode-switch API, e.g.:</p>
+  <pre style="background:#10131a; border:1px solid var(--border); border-radius:6px; padding:12px; overflow-x:auto; font-size:13px;"><code>curl -X POST -H "Authorization: Bearer {{ token }}" https://your-host:8642/api/mode/couch
+curl -X POST -H "Authorization: Bearer {{ token }}" https://your-host:8642/api/mode/desk</code></pre>
+  <a class="btn" href="/configure">Back to configuration</a>
+</div>
+
+{% endblock %}

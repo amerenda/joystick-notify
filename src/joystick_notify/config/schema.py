@@ -142,6 +142,11 @@ class WizardConfig:
     # password already configured.
     bind_address: str = "127.0.0.1"
     port: int = 8642
+    # Which systemd --user unit the wizard's "Restart daemon" button
+    # restarts. Configurable, not hardcoded, because a dev/test install
+    # (e.g. joystick-notify-v2-test.service, run alongside the real one
+    # during this rewrite) is a genuinely different unit than production.
+    systemd_service_name: str = "joystick-notify.service"
 
 
 @dataclass

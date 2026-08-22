@@ -7,6 +7,7 @@ auth" section.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -38,18 +39,39 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _STATIC_PREFIX = "/static/"
 _EXEMPT_PATHS = {"/setup-password"}
+# Routes a phone/automation client can hit with just the API token (see
+# auth.py's ApiToken) instead of the admin password -- deliberately just
+# the mode-switch pair, not a blanket "/api/*" allowance, since the token
+# is meant to be handed to a phone home-screen shortcut and scoped
+# narrowly to "what can this actually do if it leaks."
+_API_TOKEN_PATHS = {"/api/mode/couch", "/api/mode/desk"}
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Enforces the plan's forced first-run flow: with no credentials
     stored, /setup-password is the only reachable page. With credentials
-    stored, every non-static route requires HTTP Basic Auth.
+    stored, every non-static route requires HTTP Basic Auth -- except the
+    narrow `_API_TOKEN_PATHS` set, which also accepts a Bearer API token
+    (see auth.py's ApiToken) so a phone app doesn't need the admin
+    password.
     """
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         if path.startswith(_STATIC_PREFIX):
             return await call_next(request)
+
+        if path in _API_TOKEN_PATHS:
+            header = request.headers.get("authorization")
+            if header and header.startswith("Bearer "):
+                token = auth_module.load_api_token()
+                if token is not None and auth_module.check_bearer_token(header, token):
+                    return await call_next(request)
+                return Response(status_code=401)
+            # No bearer token presented -- fall through to normal basic-auth
+            # handling below so the wizard's own status-page buttons (which
+            # hit /mode/couch, /mode/desk, not these /api/ paths, but share
+            # this same page-load auth) keep working unaffected.
 
         creds = auth_module.load_credentials()
         if creds is None:
@@ -66,12 +88,100 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _live_state_machine(request: Request):
+    """The wizard runs embedded in the same process as the daemon (see
+    daemon.py's module docstring) and daemon.py stashes the live
+    StateMachine on app.state.sm at startup -- but the standalone
+    `python -m joystick_notify.wizard.server` entrypoint (used for
+    UI-only manual testing) never sets it, so this is None in that case
+    rather than an AttributeError.
+    """
+    return getattr(request.app.state, "sm", None)
+
+
 async def index(request: Request):
     snapshot = read_snapshot()
     config = config_store.load()
+    sm = _live_state_machine(request)
+    mode = sm.mode.value if sm is not None else None
     return templates.TemplateResponse(
-        request, "index.html", {"snapshot": snapshot, "config": config}
+        request, "index.html", {"snapshot": snapshot, "config": config, "mode": mode}
     )
+
+
+async def mode_couch(request: Request):
+    sm = _live_state_machine(request)
+    if sm is not None:
+        await sm.force_enter_couch()
+    return RedirectResponse("/", status_code=303)
+
+
+async def mode_desk(request: Request):
+    sm = _live_state_machine(request)
+    if sm is not None:
+        await sm.force_exit_to_desk()
+    return RedirectResponse("/", status_code=303)
+
+
+async def api_mode_couch(request: Request):
+    sm = _live_state_machine(request)
+    if sm is None:
+        return JSONResponse({"ok": False, "error": "daemon state machine unavailable"}, status_code=503)
+    await sm.force_enter_couch()
+    return JSONResponse({"ok": True, "mode": sm.mode.value})
+
+
+async def api_mode_desk(request: Request):
+    sm = _live_state_machine(request)
+    if sm is None:
+        return JSONResponse({"ok": False, "error": "daemon state machine unavailable"}, status_code=503)
+    await sm.force_exit_to_desk()
+    return JSONResponse({"ok": True, "mode": sm.mode.value})
+
+
+async def api_restart(request: Request):
+    """Fire-and-forget `systemctl --user restart <unit>` for the "Restart
+    daemon" button. Deliberately doesn't await the subprocess: this
+    process (the daemon, with the wizard embedded in it) IS the thing
+    being restarted, so waiting for the restart to finish would mean
+    waiting for this very request handler to be killed out from under
+    itself. The JSONResponse below only needs to reach uvicorn's write
+    buffer before systemd's SIGTERM arrives, which the launch alone
+    (before the service manager even processes the command) comfortably
+    outpaces.
+
+    Guards the configured unit name against anything other than a
+    joystick-notify service -- config.wizard.systemd_service_name is
+    user-editable (needed since a dev/test install like
+    joystick-notify-v2-test.service is a different unit than
+    production), so a typo here must not become "restart some unrelated
+    systemd unit."
+    """
+    config = config_store.load()
+    service = config.wizard.systemd_service_name
+    if not service.startswith("joystick-notify"):
+        return JSONResponse(
+            {"ok": False, "error": f"refusing to restart unexpected service name {service!r}"}, status_code=400
+        )
+    try:
+        await asyncio.create_subprocess_exec(
+            "systemctl", "--user", "restart", service,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return JSONResponse({"ok": False, "error": "systemctl not found"}, status_code=500)
+    return JSONResponse({"ok": True, "service": service})
+
+
+async def token_generate(request: Request):
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+    return templates.TemplateResponse(request, "token_created.html", {"token": token})
+
+
+async def token_revoke(request: Request):
+    auth_module.delete_api_token()
+    return RedirectResponse("/configure", status_code=303)
 
 
 async def setup_password_get(request: Request):
@@ -111,6 +221,7 @@ async def configure_get(request: Request):
     sinks = await audio_actions.list_sinks()
     detected_launchers = launchers.detect_launchers()
     cec_adapters = cec_discover.discover_adapters()
+    api_token = auth_module.load_api_token()
 
     return templates.TemplateResponse(
         request,
@@ -126,6 +237,7 @@ async def configure_get(request: Request):
             # Jinja's |tojson -- a raw list of CustomCommand dataclass
             # instances isn't JSON-serializable.
             "custom_commands_json": [asdict(c) for c in config.custom_commands],
+            "api_token": api_token,
         },
     )
 
@@ -245,6 +357,14 @@ async def configure_post(request: Request):
     config.wizard.port = _positive_int("wizard_port", config.wizard.port)
     auth_module.validate_bind_address(config.wizard.bind_address, has_credentials=True)
 
+    # Same posture as the service-name guard on /api/restart: an editable
+    # free-text field must not be able to point the "Restart daemon"
+    # button at an arbitrary systemd unit, so a malformed/unrelated value
+    # here is simply ignored rather than saved.
+    systemd_service_name = str(form.get("systemd_service_name", "")).strip()
+    if systemd_service_name.startswith("joystick-notify"):
+        config.wizard.systemd_service_name = systemd_service_name
+
     config.configured = True
     config_store.save(config)
     return RedirectResponse("/", status_code=303)
@@ -361,22 +481,37 @@ async def api_cec_topology(request: Request):
     })
 
 
-def create_app() -> Starlette:
+def create_app(sm=None) -> Starlette:
+    """`sm` is the live daemon StateMachine when the wizard runs embedded
+    in run_daemon() (see daemon.py) -- stashed on app.state so the
+    mode-switch routes below can call into it directly, one process, no
+    IPC. None for the standalone `python -m joystick_notify.wizard.server`
+    entrypoint (UI-only manual testing); those routes then report the
+    state machine as unavailable rather than erroring.
+    """
     routes = [
         Route("/", index, methods=["GET"]),
         Route("/setup-password", setup_password_get, methods=["GET"]),
         Route("/setup-password", setup_password_post, methods=["POST"]),
         Route("/configure", configure_get, methods=["GET"]),
         Route("/configure", configure_post, methods=["POST"]),
+        Route("/mode/couch", mode_couch, methods=["POST"]),
+        Route("/mode/desk", mode_desk, methods=["POST"]),
+        Route("/token/generate", token_generate, methods=["POST"]),
+        Route("/token/revoke", token_revoke, methods=["POST"]),
         Route("/api/status", api_status, methods=["GET"]),
         Route("/api/cec/test", api_cec_test, methods=["POST"]),
         Route("/api/cec/topology", api_cec_topology, methods=["POST"]),
+        Route("/api/mode/couch", api_mode_couch, methods=["POST"]),
+        Route("/api/mode/desk", api_mode_desk, methods=["POST"]),
+        Route("/api/restart", api_restart, methods=["POST"]),
         Route("/partials/status", status_fragment, methods=["GET"]),
         Route("/partials/status-detail", status_detail_fragment, methods=["GET"]),
         Route("/partials/events", events_fragment, methods=["GET"]),
         Route("/api/events", api_events, methods=["GET"]),
     ]
     app = Starlette(routes=routes, middleware=[Middleware(AuthMiddleware)])
+    app.state.sm = sm
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     return app
 

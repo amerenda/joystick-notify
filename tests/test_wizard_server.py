@@ -119,12 +119,13 @@ def test_configure_get_renders_all_sections(client, monkeypatch):
 
     assert resp.status_code == 200
     for needle in (
-        "Advanced CEC tuning", "cec_wake_delay_s", "cec_standby_targets",
-        "Advanced timing", "poll_interval_s", "debounce_default_ms",
-        "Wizard access", "wizard_lan_access", "wizard_bind_address", "wizard_port",
-        "Controller shortcut: exit couch mode", "exit_couch_hold_seconds",
-        "custom_command_name", "custom_command_value", "+ Add command",
+        "Advanced CEC Tuning", "cec_wake_delay_s", "cec_standby_targets",
+        "Advanced Timing", "poll_interval_s", "debounce_default_ms",
+        "Wizard Access", "wizard_lan_access", "wizard_bind_address", "wizard_port",
+        "Controller Shortcut: Exit Couch Mode", "exit_couch_hold_seconds",
+        "custom_command_name", "custom_command_value", "+ Add Command",
         "idle_wait_for_game", "idle_screensaver_enabled", "idle_after_s",
+        "systemd_service_name", "Restart Daemon", "API Access",
     ):
         assert needle in resp.text, f"missing from rendered page: {needle}"
 
@@ -186,7 +187,7 @@ def test_configure_get_does_not_scan_cec_topology_on_page_load(client, monkeypat
 
     assert resp.status_code == 200
     assert calls == []
-    assert "Scan for devices" in resp.text
+    assert "Scan for Devices" in resp.text
 
 
 def test_api_cec_topology_returns_devices_and_suggestion(client, monkeypatch):
@@ -673,6 +674,46 @@ def test_configure_post_saves_wizard_port(client):
     assert saved.wizard.bind_address == "127.0.0.1"  # checkbox absent -> loopback-only, the safe default
 
 
+def test_configure_post_saves_systemd_service_name(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "systemd_service_name": "joystick-notify-v2-test.service",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.wizard.systemd_service_name == "joystick-notify-v2-test.service"
+
+
+def test_configure_post_rejects_systemd_service_name_not_starting_with_joystick_notify(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "systemd_service_name": "some-other-service.service",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.wizard.systemd_service_name == "joystick-notify.service"  # schema default, unchanged
+
+
 def test_configure_post_lan_access_checkbox_binds_all_interfaces(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
     auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
@@ -810,3 +851,254 @@ def test_partials_events_renders_html(client, isolated_config):
     resp = client.get("/partials/events", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
     assert resp.status_code == 200
     assert "No events yet" in resp.text
+
+
+class _FakeStateMachine:
+    """Minimal stand-in for StateMachine -- these tests exercise the
+    wizard's HTTP wiring (app.state.sm, route dispatch, auth), not the
+    real state machine's transition logic (already covered directly in
+    test_state_machine.py)."""
+
+    def __init__(self):
+        from joystick_notify.state_machine import Mode
+
+        self.mode = Mode.DESK
+        self.couch_calls = 0
+        self.desk_calls = 0
+
+    async def force_enter_couch(self):
+        from joystick_notify.state_machine import Mode
+
+        self.couch_calls += 1
+        self.mode = Mode.COUCH
+
+    async def force_exit_to_desk(self):
+        from joystick_notify.state_machine import Mode
+
+        self.desk_calls += 1
+        self.mode = Mode.DESK
+
+
+def test_index_shows_current_mode_and_switch_buttons(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.get("/", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
+    assert resp.status_code == 200
+    assert "desk" in resp.text
+    assert 'action="/mode/couch"' in resp.text
+    assert 'action="/mode/desk"' in resp.text
+
+
+def test_mode_couch_route_calls_state_machine_and_redirects(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/mode/couch", headers=auth_headers)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+    assert sm.couch_calls == 1
+
+
+def test_mode_desk_route_calls_state_machine_and_redirects(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/mode/desk", headers=auth_headers)
+    assert resp.status_code == 303
+    assert sm.desk_calls == 1
+
+
+def test_mode_routes_require_auth(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    resp = client.post("/mode/couch")
+    assert resp.status_code == 401
+    assert sm.couch_calls == 0
+
+
+def test_api_mode_couch_without_live_state_machine_returns_503(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/mode/couch", headers=auth_headers)
+    assert resp.status_code == 503
+
+
+def test_api_mode_couch_with_basic_auth_succeeds(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/api/mode/couch", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "mode": "couch"}
+    assert sm.couch_calls == 1
+
+
+def test_api_mode_requires_some_form_of_auth(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    resp = client.post("/api/mode/couch")
+    assert resp.status_code == 401
+    assert sm.couch_calls == 0
+
+
+def test_api_mode_couch_with_valid_bearer_token_succeeds_without_password(isolated_config):
+    # The whole point of the API token: a phone client authenticates with
+    # just the token, never the admin password.
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/mode/couch", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "couch"
+    assert sm.couch_calls == 1
+
+
+def test_api_mode_desk_with_valid_bearer_token_succeeds(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/mode/desk", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert sm.desk_calls == 1
+
+
+def test_api_mode_with_wrong_bearer_token_rejected(isolated_config):
+    sm = _FakeStateMachine()
+    app = create_app(sm)
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/mode/couch", headers={"Authorization": "Bearer not-the-real-token"})
+    assert resp.status_code == 401
+    assert sm.couch_calls == 0
+
+
+def test_api_mode_bearer_token_scoped_to_mode_routes_only(isolated_config):
+    # Direct regression test for the deliberate scoping decision: a leaked
+    # API token must not double as a general admin credential -- it must
+    # not grant access to e.g. /configure.
+    app = create_app(_FakeStateMachine())
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.get("/configure", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_token_generate_shows_token_once(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/token/generate", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "API token created" in resp.text
+
+    stored = auth_module.load_api_token()
+    assert stored is not None
+
+
+def test_token_revoke_removes_stored_token(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post("/token/generate", headers=auth_headers)
+    assert auth_module.load_api_token() is not None
+
+    resp = client.post("/token/revoke", headers=auth_headers)
+    assert resp.status_code == 303
+    assert auth_module.load_api_token() is None
+
+
+def test_configure_get_reflects_token_status(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.get("/configure", headers=auth_headers)
+    assert "not configured" in resp.text
+    assert "Generate Token" in resp.text
+
+    client.post("/token/generate", headers=auth_headers)
+    resp = client.get("/configure", headers=auth_headers)
+    assert "Revoke Token" in resp.text
+
+
+def test_api_restart_rejects_unexpected_service_name(client, monkeypatch):
+    from joystick_notify.config import store as config_store
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    config = config_store.load()
+    config.wizard.systemd_service_name = "some-other-service.service"
+    config_store.save(config)
+
+    resp = client.post("/api/restart", headers=auth_headers)
+    assert resp.status_code == 400
+    assert resp.json()["ok"] is False
+
+
+def test_api_restart_launches_systemctl_for_configured_service(client, monkeypatch):
+    calls = []
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(args)
+
+        class _P:
+            returncode = 0
+
+        return _P()
+
+    import asyncio as asyncio_module
+
+    monkeypatch.setattr(asyncio_module, "create_subprocess_exec", fake_exec)
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/api/restart", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["service"] == "joystick-notify.service"
+    assert calls == [("systemctl", "--user", "restart", "joystick-notify.service")]
+
+
+def test_configure_get_renders_tab_bar(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.get("/configure", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
+    assert resp.status_code == 200
+    for tab_label in ("Display", "Audio", "CEC", "Launch", "Controllers", "Daemon Settings"):
+        assert tab_label in resp.text

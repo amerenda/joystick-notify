@@ -306,7 +306,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
         creds = wizard_auth.load_credentials()
         wizard_auth.validate_bind_address(config.wizard.bind_address, has_credentials=creds is not None)
         uvicorn_config = uvicorn.Config(
-            create_app(), host=config.wizard.bind_address, port=config.wizard.port, log_level="warning"
+            create_app(sm), host=config.wizard.bind_address, port=config.wizard.port, log_level="warning"
         )
         wizard_server = uvicorn.Server(uvicorn_config)
         wizard_server.install_signal_handlers = lambda: None  # daemon owns SIGTERM/SIGINT, not uvicorn
