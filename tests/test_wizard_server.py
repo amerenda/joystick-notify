@@ -1096,25 +1096,7 @@ def test_api_restart_launches_systemctl_for_configured_service(client, monkeypat
     assert calls == [("systemctl", "--user", "restart", "joystick-notify.service")]
 
 
-def test_configure_post_unchecking_kill_on_desk_saves_false(client):
-    # kill_on_desk defaults True -- explicitly omitting it (as an
-    # unchecked checkbox would) must persist as False, not "leave as is."
-    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
-
-    client.post(
-        "/configure",
-        headers=auth_headers,
-        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": ""},
-    )
-
-    from joystick_notify.config import store as config_store
-
-    saved = config_store.load()
-    assert saved.on_connect.kill_on_desk is False
-
-
-def test_configure_post_saves_kill_on_desk(client):
+def test_configure_post_saves_teardown_command(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
     auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
 
@@ -1123,14 +1105,37 @@ def test_configure_post_saves_kill_on_desk(client):
         headers=auth_headers,
         data={
             "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
-            "kill_on_desk": "on",
+            "teardown_command": "steam -shutdown",
         },
     )
     assert resp.status_code == 303
 
     from joystick_notify.config import store as config_store
 
-    assert config_store.load().on_connect.kill_on_desk is True
+    assert config_store.load().on_connect.teardown_command == "steam -shutdown"
+
+
+def test_configure_post_clearing_teardown_command_saves_empty(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "teardown_command": "some-command",
+        },
+    )
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": ""},
+    )
+
+    from joystick_notify.config import store as config_store
+
+    assert config_store.load().on_connect.teardown_command == ""
 
 
 def test_configure_get_renders_tab_bar(client):

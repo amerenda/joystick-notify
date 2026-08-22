@@ -252,3 +252,65 @@ def test_standby_and_verify_skips_reclaim_when_no_phys_addr_configured(tmp_path)
         assert "--give-device-power-status" in calls[1]
     finally:
         cec_control._run = orig_run
+
+
+def test_standby_and_verify_broadcasts_standby_instead_of_unicast_per_target(tmp_path):
+    # Direct regression test for the real root cause found live 2026-08-22:
+    # a real receiver on the bus Tx's-OK a unicast <Standby> addressed
+    # directly to its own logical address but silently never acts on it,
+    # while the exact same command broadcast to "all" (address 15) is
+    # honored within about a second. Standby must always be broadcast, not
+    # addressed to each target individually.
+    from joystick_notify.actions import cec_control
+
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, "pwr-state: standby"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        asyncio.run(cec_control.standby_and_verify(None, [0, 5], health, attempts=1, delay_s=0))
+
+        standby_calls = [c for c in calls if "--standby" in c]
+        assert len(standby_calls) == 1  # one broadcast, not one per target
+        assert standby_calls[0][standby_calls[0].index("--to") + 1] == "15"
+    finally:
+        cec_control._run = orig_run
+
+
+def test_standby_and_verify_checks_all_pending_targets_every_round_not_sequentially(tmp_path):
+    # Direct regression test: the old per-target loop exhausted one
+    # target's ENTIRE attempts*delay_s budget before even starting the
+    # next -- a receiver stuck "unconfirmed" for its full window meant the
+    # TV's own check didn't start until that was over. Both must be
+    # checked within the same round, and a target that confirms early
+    # must stop being polled while the other keeps retrying.
+    from joystick_notify.actions import cec_control
+
+    status_by_addr = {0: iter(["standby", "standby"]), 5: iter(["on", "on"])}
+    poll_calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        if "--give-device-power-status" in cmd:
+            addr = int(cmd[cmd.index("--to") + 1])
+            poll_calls.append(addr)
+            return 0, f"pwr-state: {next(status_by_addr[addr])}"
+        return 0, ""
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        unconfirmed = asyncio.run(
+            cec_control.standby_and_verify(None, [0, 5], health, attempts=2, delay_s=0)
+        )
+        # Both targets checked in round 1 (neither confirmed yet), then
+        # only addr 5 checked again in round 2 (0 already confirmed).
+        assert poll_calls == [0, 5, 5]
+        assert unconfirmed == [5]
+    finally:
+        cec_control._run = orig_run

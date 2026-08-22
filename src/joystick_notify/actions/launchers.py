@@ -150,25 +150,25 @@ async def run_custom_command(command: str) -> None:
     await _run_detached(["/bin/sh", "-c", command])
 
 
-async def exit_launched(preset_or_command: str) -> None:
-    """Best-effort graceful exit for desk-mode teardown
-    (ActionConfig.kill_on_desk) -- the steam-bigpicture preset gets
-    Valve's own `-shutdown`, the same nice-exit launch_steam_bigpicture()
-    already uses before its own cold restart. An unrecognized custom
-    command has no universal "graceful exit" (unlike
-    is_launch_process_alive's "can't determine, assume True" default,
-    silently doing nothing here would be misleading — a config comment
-    promising the process gets killed that actually never touches it),
-    so it's logged plainly instead of pretended to be handled.
+async def exit_launched(preset_or_command: str, teardown_command: str = "") -> None:
+    """Desk-mode teardown counterpart to launch() -- Sunshine-style paired
+    command, not a fixed on/off switch: `teardown_command` is arbitrary,
+    user-supplied, and always wins when set, for any preset or custom
+    launch command. The one built-in default is the steam-bigpicture
+    preset specifically when `teardown_command` is blank: Valve's own
+    `-shutdown`, the same nice-exit launch_steam_bigpicture() already uses
+    before its own cold restart -- we know exactly what "nicely" means for
+    it, so requiring the user to type that out is just busywork. Any
+    OTHER blank case (a custom launch command with no teardown_command
+    set) intentionally does nothing -- leaving it running across the
+    desk<->couch cycle is a valid, explicit choice, not a gap to warn
+    about.
     """
-    if preset_or_command == "steam-bigpicture":
-        if _is_steam_running():
-            await _shutdown_steam_and_wait()
+    if teardown_command:
+        await run_custom_command(teardown_command)
         return
-    if preset_or_command:
-        logger.info(
-            "launchers: no graceful exit known for custom command %r, leaving it running", preset_or_command
-        )
+    if preset_or_command == "steam-bigpicture" and _is_steam_running():
+        await _shutdown_steam_and_wait()
 
 
 async def launch(preset_or_command: str) -> None:

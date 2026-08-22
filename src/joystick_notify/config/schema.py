@@ -95,15 +95,19 @@ class ActionConfig:
     # string directly (see CustomCommand below), not a name/reference, so
     # launchers.py needs no lookup step to resolve it.
     run: str = ""
-    # On by default -- a safety/convenience default like idle.wait_for_game,
-    # not a security tradeoff like screen_lock/CEC. Gracefully exits the
-    # launched process (e.g. `steam -shutdown` for the steam-bigpicture
-    # preset) as part of switching back to desk, so a leftover Big
-    # Picture/game instance doesn't linger in the background -- and, just
-    # as importantly, doesn't still be running the next time couch mode
-    # is entered (see launchers.launch_steam_bigpicture()'s docstring for
-    # the real display-glitch bug that leaving it running caused).
-    kill_on_desk: bool = True
+    # Sunshine-style paired teardown command: an arbitrary shell command
+    # run when switching back to desk, mirroring `run`'s launch-on-connect
+    # role but for the other direction -- not a fixed on/off switch, full
+    # user control over what "tear down" means for whatever `run` starts.
+    # Empty is a real, valid choice (leave the launched process running
+    # across the desk<->couch cycle), NOT "use some hardcoded default" --
+    # the one exception is the steam-bigpicture preset specifically, which
+    # still gets a sensible built-in `steam -shutdown` when this is blank
+    # (see launchers.exit_launched()), since we know exactly what "nicely"
+    # means for it and typing that out shouldn't be required busywork. Any
+    # non-empty value here always wins over that built-in, for any preset
+    # or custom command.
+    teardown_command: str = ""
 
 
 @dataclass

@@ -199,20 +199,77 @@ async def test_exit_launched_noop_when_steam_not_running(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_exit_launched_custom_command_logs_and_does_nothing(caplog):
+async def test_exit_launched_custom_command_with_no_teardown_command_does_nothing(monkeypatch):
+    # A custom launch command with no teardown_command configured is a
+    # valid, explicit choice (leave it running across desk<->couch), not
+    # a gap to warn about -- Sunshine-style paired commands, full user
+    # control, no hardcoded assumption about what "graceful exit" means
+    # for an arbitrary command.
     from joystick_notify.actions import launchers
 
-    with caplog.at_level("INFO", logger="joystick_notify.actions.launchers"):
-        await launchers.exit_launched("my-custom-command --flag")
+    calls = []
 
-    assert any("no graceful exit known" in r.message for r in caplog.records)
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+
+    await launchers.exit_launched("my-custom-command --flag")
+
+    assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_exit_launched_empty_string_does_nothing(caplog):
+async def test_exit_launched_uses_custom_teardown_command_when_set(monkeypatch):
     from joystick_notify.actions import launchers
 
-    with caplog.at_level("INFO", logger="joystick_notify.actions.launchers"):
-        await launchers.exit_launched("")
+    calls = []
 
-    assert not any("no graceful exit" in r.message for r in caplog.records)
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+
+    await launchers.exit_launched("my-custom-command --flag", "my-custom-command --quit")
+
+    assert calls == [["/bin/sh", "-c", "my-custom-command --quit"]]
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_teardown_command_overrides_steam_bigpicture_default(monkeypatch):
+    # Any non-empty teardown_command always wins, even for the
+    # steam-bigpicture preset -- full user override, not just a fallback
+    # for unrecognized commands.
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)
+
+    await launchers.exit_launched("steam-bigpicture", "my-custom-teardown.sh")
+
+    assert calls == [["/bin/sh", "-c", "my-custom-teardown.sh"]]
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_empty_everything_does_nothing(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+
+    await launchers.exit_launched("")
+
+    assert calls == []

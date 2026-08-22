@@ -166,8 +166,8 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         # launchers.launch_steam_bigpicture()'s docstring for the full
         # root cause. Getting rid of it before the desk resolution switch
         # avoids the same race in the other direction.
-        if config.on_connect.run and config.on_connect.kill_on_desk:
-            await launchers.exit_launched(config.on_connect.run)
+        if config.on_connect.run or config.on_connect.teardown_command:
+            await launchers.exit_launched(config.on_connect.run, config.on_connect.teardown_command)
         # Display/audio/screen-lock FIRST, CEC standby LAST: CEC standby is
         # best-effort and can legitimately take a long time (up to
         # standby_verify_attempts * standby_verify_delay_s *PER TARGET* --

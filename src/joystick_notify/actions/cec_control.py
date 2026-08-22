@@ -137,24 +137,30 @@ async def standby_and_verify(
     really, a dropped CEC frame, a device that ignores broadcast standby).
     Returns the list of addresses that never confirmed.
 
-    Reclaims Active Source (Set Stream Path + Active Source, same as
-    wake_and_select_input()) immediately before every single Standby
-    attempt, not just once up front. Root-caused live 2026-08-22 against
-    the real hardware after this had been a 100%-reproducible failure for
-    days: this TV, and independently the receiver, silently no-op
-    <Standby> from a device they no longer consider the Active Source --
-    confirmed by direct A/B test, `cec-ctl --standby` alone Tx's OK at the
-    CEC bus level (frame ACKed) but produces zero power-state change even
-    after 60s of total bus silence and 5 retries, while the *exact same*
-    Standby immediately preceded by reclaiming Active Source reliably
-    transitions the target to standby within ~1s, every time. With a
-    second CEC playback device on this bus (confirmed via `cec-ctl -S`:
-    an Nvidia Shield) that can reclaim Active Source on its own at any
-    point during a session, reclaiming only once at the start of this
-    function isn't safe -- a later attempt could be sent after ownership
-    has already been stolen back. Reclaiming before every attempt is
-    cheap (~1s) relative to the several-second wait already built into the
-    retry loop, and is what actually gets this to 100%. Skipped when
+    Broadcasts Standby (to logical address 15/"all") once per attempt,
+    rather than unicasting it to each target individually -- root-caused
+    live 2026-08-22 against the real receiver on this bus: a unicast
+    <Standby> addressed directly to it Tx's OK at the CEC bus level (frame
+    ACKed) but is silently ignored at the application layer, forever,
+    while the *exact same* command broadcast to "all" was honored within
+    about a second. Broadcasting also means every target is checked every
+    round instead of exhausting one target's whole retry budget before
+    even starting the next -- previously a receiver stuck at "unconfirmed"
+    for its full attempts*delay_s window meant the TV's own check didn't
+    even start until that was over; now both progress together, and the
+    loop exits as soon as everyone still pending has confirmed rather than
+    always running every target through the full attempt count.
+
+    Also reclaims Active Source (Set Stream Path + Active Source, same as
+    wake_and_select_input()) immediately before every single broadcast,
+    not just once up front. Root-caused live 2026-08-22 against the real
+    TV after this had been a 100%-reproducible failure for days: it
+    silently no-ops <Standby> from a device it no longer considers the
+    Active Source. With a second CEC playback device on this bus
+    (confirmed via `cec-ctl -S`: an Nvidia Shield) that can reclaim Active
+    Source on its own at any point during a session, reclaiming only once
+    at the start of this function isn't safe -- a later attempt could be
+    sent after ownership has already been stolen back. Skipped when
     `phys_addr` isn't configured (matches wake_and_select_input(), which
     already tolerates no phys-addr override being set).
 
@@ -171,22 +177,29 @@ async def standby_and_verify(
     below) so it stays visible for troubleshooting "why is my TV still
     on," just not as a health alarm.
     """
-    unconfirmed: list[int] = []
-    for addr in targets:
-        status = "unknown"
-        for attempt in range(1, attempts + 1):
-            if phys_addr:
-                await set_stream_path_and_active_source(adapter, phys_addr)
-            await _run(["cec-ctl", *_adapter_args(adapter), "--to", str(addr), "--standby"])
-            await asyncio.sleep(delay_s)
+    BROADCAST_ADDR = 15
+    pending = list(dict.fromkeys(targets))  # de-duplicated, order preserved
+    for attempt in range(1, attempts + 1):
+        if not pending:
+            break
+        if phys_addr:
+            await set_stream_path_and_active_source(adapter, phys_addr)
+        await _run(["cec-ctl", *_adapter_args(adapter), "--to", str(BROADCAST_ADDR), "--standby"])
+        await asyncio.sleep(delay_s)
+        still_pending = []
+        for addr in pending:
             status = await power_status(adapter, addr)
             if status == "standby":
                 logger.info("cec: standby confirmed for logical addr %d (attempt %d/%d)", addr, attempt, attempts)
-                break
-            logger.info("cec: standby not yet confirmed for logical addr %d (attempt %d/%d, status=%s)", addr, attempt, attempts, status)
-        if status != "standby":
-            unconfirmed.append(addr)
+            else:
+                logger.info(
+                    "cec: standby not yet confirmed for logical addr %d (attempt %d/%d, status=%s)",
+                    addr, attempt, attempts, status,
+                )
+                still_pending.append(addr)
+        pending = still_pending
 
+    unconfirmed = pending
     if unconfirmed:
         # The per-attempt lines above are only ever INFO -- without this,
         # the final degraded outcome (the thing anyone troubleshooting

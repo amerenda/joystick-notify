@@ -195,11 +195,13 @@
           <button type="button" class="secondary" @click="add()">+ Add Command</button>
         </div>
 
-        <label style="margin-top:16px;"><input type="checkbox" name="kill_on_desk" {% if config.on_connect.kill_on_desk %}checked{% endif %}> Exit It When Switching Back to Desk</label>
-        <p class="muted" style="margin-top:-8px;">Gracefully exits the launched process (e.g. <code>steam -shutdown</code> for
-        Steam Big Picture) as part of switching to desk mode, instead of leaving it running in the background. Recommended:
-        leaving Big Picture running across a couch session is what caused Steam to briefly show in a window and then lose
-        signal entirely the next time couch mode was entered.</p>
+        <label for="teardown_command" style="margin-top:16px;">Teardown Command (runs when switching back to desk)</label>
+        <input type="text" id="teardown_command" name="teardown_command" value="{{ config.on_connect.teardown_command }}"
+               placeholder="e.g. steam -shutdown — leave blank to use that default for the Steam Big Picture preset">
+        <p class="muted" style="margin-top:-8px;">Paired with "Launch on Connect" above, same idea as Sunshine's per-app
+        launch/teardown commands. Leave blank with the Steam Big Picture preset selected to get a sensible built-in
+        <code>steam -shutdown</code> automatically; leave blank with a custom launch command to leave it running across
+        the desk/couch switch. Any command you enter here always overrides the built-in default.</p>
       </div>
 
       <script>

@@ -126,13 +126,13 @@ def test_forward_to_state_machine_reflects_toggle_change_on_the_very_next_event(
 
 
 @pytest.mark.asyncio
-async def test_activate_desk_exits_launched_process_when_kill_on_desk_enabled(tmp_path, monkeypatch):
+async def test_activate_desk_exits_launched_process_via_builtin_default(tmp_path, monkeypatch):
     from joystick_notify import daemon as daemon_module
 
     exit_calls = []
 
-    async def fake_exit_launched(preset_or_command):
-        exit_calls.append(preset_or_command)
+    async def fake_exit_launched(preset_or_command, teardown_command):
+        exit_calls.append((preset_or_command, teardown_command))
 
     async def _noop(*args, **kwargs):
         return None
@@ -144,24 +144,23 @@ async def test_activate_desk_exits_launched_process_when_kill_on_desk_enabled(tm
 
     config = JoystickNotifyConfig()
     config.on_connect.run = "steam-bigpicture"
-    config.on_connect.kill_on_desk = True
     health = Health(path=Path(tmp_path) / "health.json")
     watcher = ManualExitWatcher(lambda: None, health)
 
     hooks = build_hooks(config, health, watcher)
     await hooks.activate_desk()
 
-    assert exit_calls == ["steam-bigpicture"]
+    assert exit_calls == [("steam-bigpicture", "")]
 
 
 @pytest.mark.asyncio
-async def test_activate_desk_leaves_launched_process_alone_when_kill_on_desk_disabled(tmp_path, monkeypatch):
+async def test_activate_desk_uses_custom_teardown_command_when_set(tmp_path, monkeypatch):
     from joystick_notify import daemon as daemon_module
 
     exit_calls = []
 
-    async def fake_exit_launched(preset_or_command):
-        exit_calls.append(preset_or_command)
+    async def fake_exit_launched(preset_or_command, teardown_command):
+        exit_calls.append((preset_or_command, teardown_command))
 
     async def _noop(*args, **kwargs):
         return None
@@ -172,8 +171,35 @@ async def test_activate_desk_leaves_launched_process_alone_when_kill_on_desk_dis
     monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
 
     config = JoystickNotifyConfig()
-    config.on_connect.run = "steam-bigpicture"
-    config.on_connect.kill_on_desk = False
+    config.on_connect.run = "my-custom-game"
+    config.on_connect.teardown_command = "my-custom-game --quit"
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+
+    hooks = build_hooks(config, health, watcher)
+    await hooks.activate_desk()
+
+    assert exit_calls == [("my-custom-game", "my-custom-game --quit")]
+
+
+@pytest.mark.asyncio
+async def test_activate_desk_skips_exit_launched_when_nothing_configured(tmp_path, monkeypatch):
+    from joystick_notify import daemon as daemon_module
+
+    exit_calls = []
+
+    async def fake_exit_launched(preset_or_command, teardown_command):
+        exit_calls.append((preset_or_command, teardown_command))
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.launchers, "exit_launched", fake_exit_launched)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+
+    config = JoystickNotifyConfig()  # no on_connect.run, no teardown_command
     health = Health(path=Path(tmp_path) / "health.json")
     watcher = ManualExitWatcher(lambda: None, health)
 

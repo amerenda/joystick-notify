@@ -32,18 +32,18 @@ def test_auto_switch_enabled_round_trips(tmp_path):
     assert loaded.auto_switch_enabled is False
 
 
-def test_kill_on_desk_defaults_true():
-    assert JoystickNotifyConfig().on_connect.kill_on_desk is True
+def test_teardown_command_defaults_empty():
+    assert JoystickNotifyConfig().on_connect.teardown_command == ""
 
 
-def test_kill_on_desk_round_trips(tmp_path):
+def test_teardown_command_round_trips(tmp_path):
     path = Path(tmp_path) / "config.toml"
     cfg = JoystickNotifyConfig()
-    cfg.on_connect.kill_on_desk = False
+    cfg.on_connect.teardown_command = "steam -shutdown"
     save(cfg, path)
 
     loaded = load(path)
-    assert loaded.on_connect.kill_on_desk is False
+    assert loaded.on_connect.teardown_command == "steam -shutdown"
 
 
 def test_round_trip_preserves_values(tmp_path):
