@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+{% block title %}Configure — joystick-notify{% endblock %}
+{% block content %}
+
+<div x-data="{tab: (new URLSearchParams(window.location.search).get('tab')) || 'display'}">
+
+  <div class="tab-bar">
+    <button type="button" :class="{active: tab === 'display'}" @click="tab = 'display'">Display</button>
+    <button type="button" :class="{active: tab === 'audio'}" @click="tab = 'audio'">Audio</button>
+    <button type="button" :class="{active: tab === 'cec'}" @click="tab = 'cec'">CEC</button>
+    <button type="button" :class="{active: tab === 'launch'}" @click="tab = 'launch'">Launch</button>
+    <button type="button" :class="{active: tab === 'controllers'}" @click="tab = 'controllers'">Controllers</button>
+    <button type="button" :class="{active: tab === 'daemon'}" @click="tab = 'daemon'">Daemon Settings</button>
+  </div>
+
+  <form method="post" action="/configure">
+
+    <div class="tab-panel" :class="{active: tab === 'display'}">
+      <div class="card">
+        <h2>Displays</h2>
+        <p class="muted">Detected outputs (via <code>kscreen-doctor -j</code>). Pick which is your desk monitor and which is the couch/TV.</p>
+        {% if not outputs %}
+          <p class="error">No outputs detected — is kscreen-doctor installed and a display session active?</p>
+        {% endif %}
+        <label for="desk_port">Desk output</label>
+        <select id="desk_port" name="desk_port">
+          <option value="">— select —</option>
+          {% for o in outputs %}
+          <option value="{{ o.name }}" {% if o.name == config.display.desk_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }})</option>
+          {% endfor %}
+        </select>
+        <label for="desk_mode">Desk mode</label>
+        <input type="text" id="desk_mode" name="desk_mode" value="{{ config.display.desk_mode }}" placeholder="e.g. 2560x1440@144">
+
+        <label for="couch_port">Couch output</label>
+        <select id="couch_port" name="couch_port">
+          <option value="">— select —</option>
+          {% for o in outputs %}
+          <option value="{{ o.name }}" {% if o.name == config.display.couch_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }})</option>
+          {% endfor %}
+        </select>
+        <label for="couch_mode">Couch mode</label>
+        <input type="text" id="couch_mode" name="couch_mode" value="{{ config.display.couch_mode }}" placeholder="e.g. 3840x2160@60">
+      </div>
+    </div>
+
+    <div class="tab-panel" :class="{active: tab === 'audio'}">
+      <div class="card">
+        <h2>Audio</h2>
+        <p class="muted">Detected sinks (via <code>pactl</code>).</p>
+        <label for="desk_sink">Desk sink</label>
+        <select id="desk_sink" name="desk_sink">
+          <option value="">— select —</option>
+          {% for s in sinks %}
+          <option value="{{ s.name }}" {% if s.name == config.audio.desk_sink %}selected{% endif %}>{{ s.description or s.name }}</option>
+          {% endfor %}
+        </select>
+        <label for="couch_sink">Couch sink</label>
+        <select id="couch_sink" name="couch_sink">
+          <option value="">— select —</option>
+          {% for s in sinks %}
+          <option value="{{ s.name }}" {% if s.name == config.audio.couch_sink %}selected{% endif %}>{{ s.description or s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="tab-panel" :class="{active: tab === 'cec'}">
+      <div class="card" x-data="{ cecEnabled: {{ 'true' if config.cec.enabled else 'false' }} }">
+        <h2>CEC (Optional)</h2>
+        <p class="muted">Auto power-on / input-switch for your TV. Display switching and
+        controller-triggered launch work fully without this — skip it if you have no CEC hardware.</p>
+        <label><input type="checkbox" name="cec_enabled" x-model="cecEnabled" {% if config.cec.enabled %}checked{% endif %}> Enable CEC</label>
+
+        <template x-if="cecEnabled">
+          <div>
+            {% if not cec_adapters %}
+              <p class="error">No /dev/cec* adapter found. Plug in a CEC dongle or enable your GPU's native CEC, then reload this page.</p>
+            {% else %}
+            <label for="cec_adapter">Adapter</label>
+            <select id="cec_adapter" name="cec_adapter">
+              {% for a in cec_adapters %}
+              <option value="{{ a }}" {% if a == config.cec.adapter %}selected{% endif %}>{{ a }}</option>
+              {% endfor %}
+            </select>
+            <label for="cec_active_source_phys_addr">
+              Physical Address Override (leave blank to auto-use the adapter's own address — correct for most setups)
+            </label>
+            <input type="text" id="cec_active_source_phys_addr" name="cec_active_source_phys_addr"
+                   value="{{ config.cec.active_source_phys_addr }}" placeholder="e.g. 3.2.0.0 — only if CEC is on a different HDMI path than the video">
+            <button type="button" class="secondary" onclick="testCec()">Test Wake + Switch Input</button>
+            <span id="cec-test-result" class="muted"></span>
+            <script>
+              async function testCec() {
+                const adapter = document.getElementById('cec_adapter').value;
+                const phys = document.getElementById('cec_active_source_phys_addr').value;
+                const result = document.getElementById('cec-test-result');
+                result.textContent = 'sending...';
+                const resp = await fetch('/api/cec/test', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                  body: new URLSearchParams({adapter, phys_addr: phys}),
+                });
+                const data = await resp.json();
+                result.textContent = data.ok ? 'sent — did your TV switch to this PC?' : ('error: ' + (data.error || 'unknown'));
+              }
+            </script>
+            <label><input type="checkbox" name="cec_power_off_on_teardown" {% if config.cec.power_off_on_teardown %}checked{% endif %}> Power Off TV When Finished (send CEC standby on switch back to desk)</label>
+
+            <details>
+              <summary>Advanced CEC Tuning</summary>
+              <label for="cec_wake_delay_s">Wake Delay Before Input Switch (seconds)</label>
+              <input type="number" id="cec_wake_delay_s" name="cec_wake_delay_s" min="0" step="0.5"
+                     value="{{ config.cec.wake_delay_s }}">
+              <p class="muted" style="margin-top:-8px;">Pause between waking the TV and sending the input switch — raise this if your TV is slow to wake and misses the switch command.</p>
+
+              <label for="cec_active_source_retries">Active-Source Re-Assert Retries</label>
+              <input type="number" id="cec_active_source_retries" name="cec_active_source_retries" min="0" step="1"
+                     value="{{ config.cec.active_source_retries }}">
+              <label for="cec_active_source_retry_delay_s">Re-Assert Delay (seconds)</label>
+              <input type="number" id="cec_active_source_retry_delay_s" name="cec_active_source_retry_delay_s" min="0.5" step="0.5"
+                     value="{{ config.cec.active_source_retry_delay_s }}">
+              <p class="muted" style="margin-top:-8px;">Re-sends the input switch this many times, this far apart — reclaims input from another CEC device (e.g. a game console) that wakes and grabs it back.</p>
+
+              <label for="cec_standby_targets">Standby Targets on Teardown (comma-separated CEC logical addresses)</label>
+              <input type="text" id="cec_standby_targets" name="cec_standby_targets"
+                     value="{{ config.cec.standby_targets|join(',') }}" placeholder="e.g. 0,5 — 0=TV, 5=Audio System/receiver">
+              <button type="button" class="secondary" onclick="scanCecTopology()">Scan for Devices</button>
+              <span id="cec-topology-result" class="muted"></span>
+              <script>
+                async function scanCecTopology() {
+                  const adapter = document.getElementById('cec_adapter').value;
+                  const result = document.getElementById('cec-topology-result');
+                  result.textContent = 'scanning the CEC bus (can take several seconds)...';
+                  const resp = await fetch('/api/cec/topology', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: new URLSearchParams({adapter}),
+                  });
+                  const data = await resp.json();
+                  if (!data.ok) {
+                    result.textContent = 'error: ' + (data.error || 'unknown');
+                    return;
+                  }
+                  if (!data.devices.length) {
+                    result.textContent = 'no devices found on the bus';
+                    return;
+                  }
+                  const desc = data.devices.map(d => `${d.device_type} (address ${d.logical_address}${d.osd_name ? ', "' + d.osd_name + '"' : ''})`).join(', ');
+                  result.textContent = 'Detected: ' + desc;
+                  if (data.suggested_standby_targets) {
+                    document.getElementById('cec_standby_targets').value = data.suggested_standby_targets;
+                  }
+                }
+              </script>
+              <label for="cec_standby_verify_attempts">Standby Confirm Attempts</label>
+              <input type="number" id="cec_standby_verify_attempts" name="cec_standby_verify_attempts" min="1" step="1"
+                     value="{{ config.cec.standby_verify_attempts }}">
+              <label for="cec_standby_verify_delay_s">Standby Confirm Delay (seconds)</label>
+              <input type="number" id="cec_standby_verify_delay_s" name="cec_standby_verify_delay_s" min="0.5" step="0.5"
+                     value="{{ config.cec.standby_verify_delay_s }}">
+              <p class="muted" style="margin-top:-8px;">Each target gets this many standby attempts, this far apart, before being reported as "may still be on." Raise these if your TV/receiver is slow to confirm standby.</p>
+            </details>
+            {% endif %}
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="tab-panel" :class="{active: tab === 'launch'}">
+      <div class="card">
+        <h2>Launch on Connect</h2>
+        <p class="muted">Detected launchers: {% for name, found in launchers.items() %}{{ name }}{{ "✓" if found else "✗" }}{{ ", " if not loop.last }}{% endfor %}</p>
+
+        <div x-data='customCommands({{ custom_commands_json|tojson }})'>
+          <label for="launch_preset">Preset or Custom Command</label>
+          <select id="launch_preset" name="launch_preset">
+            <option value="">— none —</option>
+            {% for preset in launch_presets %}
+            <option value="{{ preset }}" {% if preset == config.on_connect.run %}selected{% endif %}>{{ preset }}</option>
+            {% endfor %}
+            <template x-for="cmd in commands" :key="cmd.command">
+              <option :value="cmd.command" :selected='cmd.command === {{ config.on_connect.run|tojson }}' x-text="cmd.name || cmd.command"></option>
+            </template>
+          </select>
+
+          <p class="muted" style="margin-top:12px;">Custom commands — define a name and the command to run, then pick it above.</p>
+          <template x-for="(cmd, index) in commands" :key="index">
+            <div class="component-row">
+              <input type="text" name="custom_command_name" x-model="cmd.name" placeholder="Name (e.g. Play Portal 2)">
+              <input type="text" name="custom_command_value" x-model="cmd.command" placeholder="Command (e.g. steam steam://rungameid/620)">
+              <button type="button" class="secondary" @click="remove(index)">Remove</button>
+            </div>
+          </template>
+          <button type="button" class="secondary" @click="add()">+ Add Command</button>
+        </div>
+      </div>
+
+      <script>
+        function customCommands(initial) {
+          return {
+            commands: initial || [],
+            add() { this.commands.push({name: '', command: ''}); },
+            remove(index) { this.commands.splice(index, 1); },
+          };
+        }
+      </script>
+
+      <div class="card">
+        <h2>Bypass Lock Screen on Connect</h2>
+        <p class="muted" style="color:#e0b13c;">Security tradeoff, not a cosmetic setting: this dismisses an
+        active lock screen and disables auto-lock for the duration of couch mode. It makes physical access to this
+        machine equivalent to being logged in while couch mode is active. Only enable this if you're comfortable
+        with that on this specific machine.</p>
+        <label><input type="checkbox" name="screen_lock_enabled" {% if config.screen_lock.enabled %}checked{% endif %}> Unlock Screen and Disable Auto-Lock During Couch Mode</label>
+        <label><input type="checkbox" name="screen_lock_hold_inhibit" {% if config.screen_lock.hold_inhibit %}checked{% endif %}> Also Hold a Screensaver Inhibit for the Whole Session (recommended if enabled above)</label>
+      </div>
+    </div>
+
+    <div class="tab-panel" :class="{active: tab === 'controllers'}">
+      <div class="card">
+        <h2>Teardown Timing</h2>
+        <p class="muted">Controls how quickly couch mode switches back to desk. Lower values react
+        faster but risk a false trigger from a brief disconnect or a slow-starting game.</p>
+        <label for="disconnect_grace_s">Controller Disconnect Grace (seconds)</label>
+        <input type="number" id="disconnect_grace_s" name="disconnect_grace_s" min="1" step="1"
+               value="{{ config.timing.disconnect_grace_s|int }}">
+        <p class="muted" style="margin-top:-8px;">How long to wait after the controller disconnects before switching back to desk (covers brief receiver flakiness).</p>
+
+        <label for="launch_startup_grace_s">Launch Startup Grace (seconds)</label>
+        <input type="number" id="launch_startup_grace_s" name="launch_startup_grace_s" min="1" step="1"
+               value="{{ config.timing.launch_startup_grace_s|int }}">
+        <p class="muted" style="margin-top:-8px;">How long a cold-started game/launcher gets before "not visible yet" starts counting as "exited."</p>
+
+        <details>
+          <summary>Advanced Timing</summary>
+          <label for="poll_interval_s">Owner/Process Poll Interval (seconds)</label>
+          <input type="number" id="poll_interval_s" name="poll_interval_s" min="0.5" step="0.5"
+                 value="{{ config.timing.poll_interval_s }}">
+          <p class="muted" style="margin-top:-8px;">How often to check whether the launched process is still alive and the controller is still present. Lower reacts faster; higher uses less CPU.</p>
+
+          <label for="debounce_default_ms">Connect/Disconnect Debounce (milliseconds)</label>
+          <input type="number" id="debounce_default_ms" name="debounce_default_ms" min="0" step="50"
+                 value="{{ config.timing.debounce_default_ms }}">
+          <p class="muted" style="margin-top:-8px;">How long a raw connect/disconnect signal must stay stable before it's trusted — raise this if a flaky receiver causes false mode switches.</p>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>Controller Disconnect While a Game Is Running</h2>
+        <p class="muted">Controls what happens if the controller disconnects (battery died, went out of
+        range) while a launched game is still running.</p>
+        <label><input type="checkbox" name="idle_wait_for_game" {% if config.idle.wait_for_game %}checked{% endif %}> Wait for a Reconnect Instead of Returning to Desk</label>
+        <p class="muted" style="margin-top:-8px;">If unchecked, any disconnect returns to desk after the grace period above, regardless of whether a game is still running (the simpler, pre-existing behavior).</p>
+
+        <label><input type="checkbox" name="idle_screensaver_enabled" {% if config.idle.screensaver_enabled %}checked{% endif %}> Engage Screensaver + Put TV to Sleep After a While</label>
+        <p class="muted" style="margin-top:-8px;">Only applies while waiting for a reconnect (above): after the controller has been gone this long, blank the screen and send the TV to CEC standby — without leaving couch mode, so reconnecting resumes instantly instead of redoing the whole switch-over.</p>
+
+        <label for="idle_after_s">Idle After (seconds)</label>
+        <input type="number" id="idle_after_s" name="idle_after_s" min="1" step="1" value="{{ config.idle.idle_after_s|int }}">
+      </div>
+
+      <div class="card">
+        <h2>Controller Shortcut: Exit Couch Mode</h2>
+        <p class="muted">Always available while couch mode is active, regardless of what Steam/the game
+        is doing. Only switches display/audio/CEC/screen-lock back to desk — never stops the game.</p>
+        <label><input type="checkbox" name="exit_couch_enabled" {% if config.shortcuts.exit_couch_enabled %}checked{% endif %}> Enable Shortcut</label>
+        <label for="exit_couch_hold_seconds">Hold Duration (seconds)</label>
+        <input type="number" id="exit_couch_hold_seconds" name="exit_couch_hold_seconds" min="1" step="0.5"
+               value="{{ config.shortcuts.exit_couch_hold_seconds }}">
+        <p class="muted" style="margin-top:-8px;">Hold L1 + R1 + B together for this long to force an exit. A
+        three-button combo is deliberately harder to trigger by accident during normal play than any single button.</p>
+      </div>
+    </div>
+
+    <div class="tab-panel" :class="{active: tab === 'daemon'}">
+      <div class="card">
+        <h2>Wizard Access</h2>
+        <p class="muted" style="color:#e0b13c;">Security-relevant, not cosmetic: LAN access means anyone on
+        your network can reach this page (they'll still need the admin password you already set — HTTP Basic
+        Auth, sent unencrypted, so treat that password as only as strong as your LAN's trust level). Takes
+        effect on the next daemon restart.</p>
+        <label><input type="checkbox" name="wizard_lan_access" {% if config.wizard.bind_address not in ("127.0.0.1", "::1", "localhost") %}checked{% endif %}> Allow LAN Access (reachable from other devices on your network, e.g. a phone or tablet)</label>
+        <p class="muted" style="margin-top:-8px;">Unchecked: only reachable from this machine (127.0.0.1). Checked: reachable on all network interfaces (0.0.0.0).</p>
+
+        <details>
+          <summary>Advanced: Specific Bind Address / Port</summary>
+          <label for="wizard_bind_address">Bind Address</label>
+          <input type="text" id="wizard_bind_address" name="wizard_bind_address" value="{{ config.wizard.bind_address }}" placeholder="127.0.0.1">
+          <p class="muted" style="margin-top:-8px;">Overrides the checkbox above if set to something other than 127.0.0.1/0.0.0.0 — e.g. to bind only a specific interface (a VPN/Tailscale IP) rather than every interface.</p>
+          <label for="wizard_port">Port</label>
+          <input type="number" id="wizard_port" name="wizard_port" min="1" max="65535" step="1" value="{{ config.wizard.port }}">
+        </details>
+
+        <label for="systemd_service_name" style="margin-top:18px;">Systemd --user Unit Name</label>
+        <input type="text" id="systemd_service_name" name="systemd_service_name" value="{{ config.wizard.systemd_service_name }}" placeholder="joystick-notify.service">
+        <p class="muted" style="margin-top:-8px;">Which unit the "Restart daemon" button below restarts — must start with "joystick-notify". Only needs changing for a dev/test install running alongside the production service.</p>
+
+        <button type="button" class="secondary" onclick="restartDaemon()" style="margin-top:14px;">Restart Daemon</button>
+        <span id="restart-result" class="muted"></span>
+        <script>
+          async function restartDaemon() {
+            if (!confirm('Restart the joystick-notify daemon now? This briefly interrupts the wizard and any active couch/desk session.')) return;
+            const result = document.getElementById('restart-result');
+            result.textContent = 'restarting...';
+            try {
+              const resp = await fetch('/api/restart', { method: 'POST' });
+              const data = await resp.json();
+              result.textContent = data.ok ? 'restart triggered — reload this page in a few seconds' : ('error: ' + (data.error || 'unknown'));
+            } catch (e) {
+              result.textContent = 'restart triggered (connection dropped, which is expected)';
+            }
+          }
+        </script>
+      </div>
+
+      <div class="card">
+        <h2>API Access</h2>
+        <p class="muted">A separate token (not your admin password) for triggering couch/desk mode from a
+        phone app, home-screen shortcut, or automation — scoped to only <code>/api/mode/couch</code> and
+        <code>/api/mode/desk</code>, nothing else.</p>
+        {% if api_token %}
+          <div class="component-row"><span>Token status</span><span class="muted">configured</span></div>
+          <button type="submit" form="token-generate-form" class="secondary">Regenerate Token</button>
+          <button type="submit" form="token-revoke-form" class="secondary">Revoke Token</button>
+        {% else %}
+          <div class="component-row"><span>Token status</span><span class="muted">not configured</span></div>
+          <button type="submit" form="token-generate-form">Generate Token</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <button type="submit">Save Configuration</button>
+  </form>
+
+  <form id="token-generate-form" method="post" action="/token/generate"></form>
+  <form id="token-revoke-form" method="post" action="/token/revoke"></form>
+
+</div>
+
+{% endblock %}

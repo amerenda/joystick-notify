@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=joystick-notify
+Comment=Start the joystick-notify daemon and tray on login
+Exec=systemctl --user start joystick-notify.service
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

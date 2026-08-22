@@ -1,0 +1,10 @@
+# Configure the CEC adapter (physical address from EDID + logical address as
+# a playback device) as soon as the kernel creates /dev/cec0. Without this,
+# the adapter has no logical/physical address and joystick-notify's CEC
+# wake/active-source/set-stream-path calls have nothing valid to send from.
+# See https://wiki.archlinux.org/title/HDMI-CEC
+#
+# Generalized from v1: no connector name is hardcoded here — jn-cec0-configure
+# (src/joystick_notify/cec0_configure.py) reads the couch output port from
+# config.toml at runtime instead.
+SUBSYSTEM=="cec", KERNEL=="cec0", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}="cec0-configure.service"

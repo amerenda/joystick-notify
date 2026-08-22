@@ -1,0 +1,15 @@
+# Installed to /etc/sudoers.d/joystick-notify (mode 0440).
+# Grants NOPASSWD sudo, scoped to exactly two commands, for the user
+# running the daemon:
+# - udevadm trigger on DRM sysfs paths only (re-probe HDMI EDID after CEC
+#   wakes a receiver — see actions/display.py's trigger_connector_rescan)
+# - cec-watchdog.sh (root-owned system-unit restarts for CEC self-heal —
+#   see devices/cec.py's ensure_adapter)
+#
+# %USER% is substituted at install time (see packaging/PKGBUILD's
+# post_install). No broader root access is granted — this is the "narrow
+# root carve-out, unchanged in shape" from plans/joystick-notify-v2.md
+# decision #3, a polkit rule is a reasonable Arch-idiomatic upgrade over
+# this sudoers rule but is not required.
+%USER% ALL=(root) NOPASSWD: /usr/bin/udevadm trigger --action=change /sys/class/drm/*
+%USER% ALL=(root) NOPASSWD: /usr/lib/joystick-notify/cec-watchdog.sh
