@@ -109,14 +109,34 @@
           <label for="cec_standby_targets">Standby targets on teardown (comma-separated CEC logical addresses)</label>
           <input type="text" id="cec_standby_targets" name="cec_standby_targets"
                  value="{{ config.cec.standby_targets|join(',') }}" placeholder="e.g. 0,5 — 0=TV, 5=Audio System/receiver">
-          {% if cec_topology %}
-          <p class="muted" style="margin-top:-8px;">Detected on the bus:
-            {% for d in cec_topology %}{{ d.device_type }} (address {{ d.logical_address }}{% if d.osd_name %}, "{{ d.osd_name }}"{% endif %}){{ ", " if not loop.last }}{% endfor %}.
-            {% if cec_suggested_standby_targets %}
-            <button type="button" class="secondary" onclick="document.getElementById('cec_standby_targets').value = '{{ cec_suggested_standby_targets }}'">Use detected ({{ cec_suggested_standby_targets }})</button>
-            {% endif %}
-          </p>
-          {% endif %}
+          <button type="button" class="secondary" onclick="scanCecTopology()">Scan for devices</button>
+          <span id="cec-topology-result" class="muted"></span>
+          <script>
+            async function scanCecTopology() {
+              const adapter = document.getElementById('cec_adapter').value;
+              const result = document.getElementById('cec-topology-result');
+              result.textContent = 'scanning the CEC bus (can take several seconds)...';
+              const resp = await fetch('/api/cec/topology', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({adapter}),
+              });
+              const data = await resp.json();
+              if (!data.ok) {
+                result.textContent = 'error: ' + (data.error || 'unknown');
+                return;
+              }
+              if (!data.devices.length) {
+                result.textContent = 'no devices found on the bus';
+                return;
+              }
+              const desc = data.devices.map(d => `${d.device_type} (address ${d.logical_address}${d.osd_name ? ', "' + d.osd_name + '"' : ''})`).join(', ');
+              result.textContent = 'Detected: ' + desc;
+              if (data.suggested_standby_targets) {
+                document.getElementById('cec_standby_targets').value = data.suggested_standby_targets;
+              }
+            }
+          </script>
           <label for="cec_standby_verify_attempts">Standby confirm attempts</label>
           <input type="number" id="cec_standby_verify_attempts" name="cec_standby_verify_attempts" min="1" step="1"
                  value="{{ config.cec.standby_verify_attempts }}">

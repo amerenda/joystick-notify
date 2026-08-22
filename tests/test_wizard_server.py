@@ -163,37 +163,20 @@ def test_configure_get_alpine_data_attributes_are_not_broken_by_tojson_quotes(cl
     assert ':selected="cmd.command === ' not in resp.text
 
 
-def test_configure_get_renders_detected_cec_topology_and_suggestion(client, monkeypatch):
-    from joystick_notify.devices import cec as cec_discover
-    from joystick_notify.devices.cec import TopologyDevice
-
-    monkeypatch.setattr(cec_discover, "discover_adapters", lambda: ["/dev/cec0"])
-
-    async def fake_get_topology(adapter):
-        return [
-            TopologyDevice(logical_address=0, device_type="TV", osd_name="LG OLED"),
-            TopologyDevice(logical_address=5, device_type="Audio System", osd_name="Receiver"),
-        ]
-
-    monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
-
-    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
-    resp = client.get("/configure", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
-
-    assert resp.status_code == 200
-    assert "LG OLED" in resp.text
-    assert "Audio System" in resp.text
-    assert "Use detected (0,5)" in resp.text
-
-
-def test_configure_get_no_topology_section_when_get_topology_returns_empty(client, monkeypatch):
-    # get_topology() failing/returning [] (no cec-ctl, timeout, adapter
-    # unreachable) must not crash the page or show a bogus suggestion.
+def test_configure_get_does_not_scan_cec_topology_on_page_load(client, monkeypatch):
+    # Direct regression test: get_topology() (which shells out to
+    # `cec-ctl -S`, confirmed live 2026-08-22 to take ~7s on its own) used
+    # to run synchronously on every /configure GET, making the whole page
+    # hang that long every single load. It must now only run on-demand,
+    # from the "Scan for devices" button's /api/cec/topology call -- never
+    # as a side effect of just loading the page.
     from joystick_notify.devices import cec as cec_discover
 
     monkeypatch.setattr(cec_discover, "discover_adapters", lambda: ["/dev/cec0"])
+    calls = []
 
     async def fake_get_topology(adapter):
+        calls.append(adapter)
         return []
 
     monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
@@ -202,7 +185,83 @@ def test_configure_get_no_topology_section_when_get_topology_returns_empty(clien
     resp = client.get("/configure", headers=_basic(auth_module.ADMIN_USERNAME, "longenough1"))
 
     assert resp.status_code == 200
-    assert "Use detected" not in resp.text
+    assert calls == []
+    assert "Scan for devices" in resp.text
+
+
+def test_api_cec_topology_returns_devices_and_suggestion(client, monkeypatch):
+    from joystick_notify.devices import cec as cec_discover
+    from joystick_notify.devices.cec import TopologyDevice
+
+    async def fake_get_topology(adapter):
+        assert adapter == "/dev/cec0"
+        return [
+            TopologyDevice(logical_address=0, device_type="TV", osd_name="LG OLED"),
+            TopologyDevice(logical_address=5, device_type="Audio System", osd_name="Receiver"),
+        ]
+
+    monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/cec/topology", headers=auth_headers, data={"adapter": "/dev/cec0"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["suggested_standby_targets"] == "0,5"
+    assert body["devices"][0]["osd_name"] == "LG OLED"
+
+
+def test_api_cec_topology_falls_back_to_config_adapter_when_not_specified(client, monkeypatch):
+    from joystick_notify.devices import cec as cec_discover
+
+    monkeypatch.setattr(cec_discover, "discover_adapters", lambda: ["/dev/cec0"])
+    seen = []
+
+    async def fake_get_topology(adapter):
+        seen.append(adapter)
+        return []
+
+    monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/cec/topology", headers=auth_headers, data={})
+
+    assert resp.status_code == 200
+    assert seen == ["/dev/cec0"]
+
+
+def test_api_cec_topology_no_adapter_available_returns_error(client, monkeypatch):
+    from joystick_notify.devices import cec as cec_discover
+
+    monkeypatch.setattr(cec_discover, "discover_adapters", lambda: [])
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/cec/topology", headers=auth_headers, data={})
+
+    assert resp.status_code == 400
+    assert resp.json()["ok"] is False
+
+
+def test_api_cec_topology_no_devices_found(client, monkeypatch):
+    from joystick_notify.devices import cec as cec_discover
+
+    async def fake_get_topology(adapter):
+        return []
+
+    monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/cec/topology", headers=auth_headers, data={"adapter": "/dev/cec0"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["devices"] == []
+    assert body["suggested_standby_targets"] == ""
 
 
 def test_configure_get_renders_existing_custom_commands_into_the_alpine_data(client):

@@ -128,6 +128,19 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         if resources.cec_retry_task is not None:
             resources.cec_retry_task.cancel()
             resources.cec_retry_task = None
+        # Display/audio/screen-lock FIRST, CEC standby LAST: CEC standby is
+        # best-effort and can legitimately take a long time (up to
+        # standby_verify_attempts * standby_verify_delay_s *PER TARGET* --
+        # confirmed live 2026-08-22, ~30s across two targets when the TV
+        # simply wasn't responding to standby at all). It used to run
+        # first, which meant a slow or failing CEC negotiation held the
+        # user's actual monitor/audio switch hostage behind it. The switch
+        # that matters every time should never wait on the part that's
+        # allowed to fail.
+        await display_actions.activate_desk(config.display, health)
+        await audio_actions.activate_desk(config.audio, health)
+        await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
+        resources.screen_lock_cookie = None
         if config.cec.enabled and config.cec.power_off_on_teardown:
             adapter = await _cec_adapter()
             if adapter is not None:
@@ -138,10 +151,6 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                     attempts=config.cec.standby_verify_attempts,
                     delay_s=config.cec.standby_verify_delay_s,
                 )
-        await display_actions.activate_desk(config.display, health)
-        await audio_actions.activate_desk(config.audio, health)
-        await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
-        resources.screen_lock_cookie = None
 
     async def launch() -> None:
         if config.on_connect.run:

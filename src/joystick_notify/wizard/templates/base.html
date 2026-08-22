@@ -38,7 +38,15 @@
     .dot.degraded { background: var(--degraded); }
     .dot.failed { background: var(--failed); }
     .dot.unreachable { background: var(--muted); }
-    .component-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+    /* flex-wrap + min-width:0 on children: a long status message (e.g. a
+       CEC "standby unconfirmed for address(es) [0, 5] -- device(s) may
+       still be on" reason) must wrap onto its own line instead of forcing
+       the row wider than its container -- same class of bug fixed once
+       already for the events panel; .component-row is reused in enough
+       places (status list, current-config, custom commands) that the fix
+       belongs here once, not per usage. */
+    .component-row { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+    .component-row > * { min-width: 0; }
     .component-row:last-child { border-bottom: none; }
     .muted { color: var(--muted); }
     fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; }

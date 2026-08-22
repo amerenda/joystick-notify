@@ -112,21 +112,6 @@ async def configure_get(request: Request):
     detected_launchers = launchers.detect_launchers()
     cec_adapters = cec_discover.discover_adapters()
 
-    # Best-effort topology auto-detect: only worth attempting once an
-    # adapter actually exists, and never blocks the page on failure (see
-    # get_topology()'s own docstring -- it returns [] rather than raising).
-    cec_topology = []
-    cec_suggested_standby_targets = ""
-    if cec_adapters:
-        adapter = config.cec.adapter or cec_adapters[0]
-        cec_topology = await cec_discover.get_topology(adapter)
-        if cec_topology:
-            suggested = {0}  # TV is always logical address 0
-            audio_target = cec_discover.find_audio_system_target(cec_topology)
-            if audio_target is not None:
-                suggested.add(audio_target.logical_address)
-            cec_suggested_standby_targets = ",".join(str(a) for a in sorted(suggested))
-
     return templates.TemplateResponse(
         request,
         "configure.html",
@@ -136,8 +121,6 @@ async def configure_get(request: Request):
             "sinks": sinks,
             "launchers": detected_launchers,
             "cec_adapters": cec_adapters,
-            "cec_topology": cec_topology,
-            "cec_suggested_standby_targets": cec_suggested_standby_targets,
             "launch_presets": list(launchers.LAUNCH_PRESETS.keys()),
             # Alpine's x-data needs plain dicts to JSON-serialize via
             # Jinja's |tojson -- a raw list of CustomCommand dataclass
@@ -339,6 +322,45 @@ async def api_cec_test(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def api_cec_topology(request: Request):
+    """On-demand CEC topology scan for the wizard's "Scan for devices"
+    button. Deliberately NOT run automatically on every /configure page
+    load -- confirmed live 2026-08-22 that `cec-ctl -S` alone takes ~7s,
+    which made the whole page hang that long on every single load. A
+    real bus scan belongs behind an explicit action, same as the existing
+    "Test wake + switch input" button, not blocking page render.
+    """
+    from ..config import store as config_store
+    from ..devices import cec as cec_discover
+
+    form = await request.form()
+    adapter = str(form.get("adapter", "")) or None
+    if not adapter:
+        adapters = cec_discover.discover_adapters()
+        if not adapters:
+            return JSONResponse({"ok": False, "error": "no CEC adapter found"}, status_code=400)
+        config = config_store.load()
+        adapter = config.cec.adapter or adapters[0]
+
+    topology = await cec_discover.get_topology(adapter)
+    suggested = ""
+    if topology:
+        targets = {0}  # TV is always logical address 0
+        audio_target = cec_discover.find_audio_system_target(topology)
+        if audio_target is not None:
+            targets.add(audio_target.logical_address)
+        suggested = ",".join(str(a) for a in sorted(targets))
+
+    return JSONResponse({
+        "ok": True,
+        "devices": [
+            {"logical_address": d.logical_address, "device_type": d.device_type, "osd_name": d.osd_name}
+            for d in topology
+        ],
+        "suggested_standby_targets": suggested,
+    })
+
+
 def create_app() -> Starlette:
     routes = [
         Route("/", index, methods=["GET"]),
@@ -348,6 +370,7 @@ def create_app() -> Starlette:
         Route("/configure", configure_post, methods=["POST"]),
         Route("/api/status", api_status, methods=["GET"]),
         Route("/api/cec/test", api_cec_test, methods=["POST"]),
+        Route("/api/cec/topology", api_cec_topology, methods=["POST"]),
         Route("/partials/status", status_fragment, methods=["GET"]),
         Route("/partials/status-detail", status_detail_fragment, methods=["GET"]),
         Route("/partials/events", events_fragment, methods=["GET"]),
