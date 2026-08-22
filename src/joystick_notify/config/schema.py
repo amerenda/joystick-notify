@@ -47,8 +47,15 @@ class CecConfig:
     # on teardown. Auto-populated by the wizard's topology scan, not
     # hand-typed (generalizes v1's hardcoded CEC_STANDBY_TARGETS).
     standby_targets: list[int] = field(default_factory=lambda: [0])
-    standby_verify_attempts: int = 3
-    standby_verify_delay_s: float = 2.0
+    # 3 attempts * 2.0s (the old defaults, ~6-8s total) turned out too
+    # short: confirmed via live testing 2026-08-21 that a real TV+receiver
+    # both correctly report pwr-state=standby when queried directly, but
+    # the daemon's own verify window gave up first every time, logging a
+    # false "unconfirmed, may still be on" — the devices just take longer
+    # than 6-8s to actually finish powering down after ACK'ing the CEC
+    # standby command. 5 * 3.0s (~15s) gives real hardware room to finish.
+    standby_verify_attempts: int = 5
+    standby_verify_delay_s: float = 3.0
 
 
 @dataclass
