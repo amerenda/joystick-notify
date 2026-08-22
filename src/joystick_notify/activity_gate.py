@@ -32,6 +32,23 @@ The actual fix only needs to distinguish two things:
   nothing left to be suspicious of. Trust it immediately, same as v1
   always did for any event arriving after its (unconditional) startup
   scan.
+
+A second real incident, 2026-08-22, showed the "wait out the grace window,
+then trust it anyway" fallback below was itself a bug, not just a
+best-effort compromise: restarting the daemon (e.g. to deploy a fix) while
+a controller genuinely happened to still be connected from an earlier,
+unrelated session trusted it once the window passed and fired couch mode
+for nobody touching it — same root shape as the original bug, just via
+the timeout path instead of the startup-scan path. There's no way to
+distinguish "already connected when we started watching" from "connected
+in the first few seconds by coincidence" other than time, so a device
+whose first-ever signal arrives inside the ambiguous window is now held
+*indefinitely* — not just until the window passes. Only a genuinely
+witnessed disconnect (a real power-cycle) re-arms trust for that device's
+next connect. This does mean an unexpected daemon restart mid-session
+won't auto-resume couch mode on its own; see state_machine.py's
+stale-session recovery watch (keyed off the launched game's own lifecycle,
+not the controller) for how that gap gets closed instead.
 """
 from __future__ import annotations
 
@@ -89,20 +106,28 @@ class ActivityGate:
 
         # Still within the startup grace window and this device_id has
         # never been seen disconnect under this daemon run -- could be
-        # genuinely fresh, could be the stale-carryover case. Hold it
-        # until either the grace window passes or it disconnects.
+        # genuinely fresh, could be the stale-carryover case. Hold it; see
+        # _wait_for_grace_then_give_up for what happens once the window
+        # passes (not a "trust it anyway" fallback -- see module docstring).
         logger.info(
-            "activity_gate[%s]: connected during startup grace window with no known prior state, holding briefly",
+            "activity_gate[%s]: connected during startup grace window with no known prior state, holding",
             event.device_id,
         )
         self._cancel(event.device_id)
-        coro = self._wait_for_grace_then_forward(event)
+        coro = self._wait_for_grace_then_give_up(event)
         if self._health is not None:
             self._pending[event.device_id] = supervise(f"activity_gate:{event.device_id}", coro, self._health)
         else:
             self._pending[event.device_id] = asyncio.ensure_future(coro)
 
-    async def _wait_for_grace_then_forward(self, event: DeviceEvent) -> None:
+    async def _wait_for_grace_then_give_up(self, event: DeviceEvent) -> None:
+        """Once the ambiguous startup window passes, a still-connected,
+        never-witnessed-disconnected device stays untrusted indefinitely --
+        this task's only job is to stop holding a reference once that
+        point is reached (there's nothing left to wait for). Trust is
+        re-armed only by handle() itself, the next time this device_id
+        actually disconnects.
+        """
         remaining = self._startup_grace_s - (self._clock() - self._started_at)
         try:
             if remaining > 0:
@@ -111,8 +136,11 @@ class ActivityGate:
             logger.info("activity_gate[%s]: disconnected during startup grace window, never forwarded", event.device_id)
             return
         self._pending.pop(event.device_id, None)
-        logger.info("activity_gate[%s]: startup grace window passed while still connected, forwarding", event.device_id)
-        await self._emit(event)
+        logger.info(
+            "activity_gate[%s]: still connected after startup grace window with no witnessed disconnect -- "
+            "treating as a stale carryover, not forwarding. Power-cycle the controller to start couch mode.",
+            event.device_id,
+        )
 
     def _cancel(self, device_id: str) -> None:
         task = self._pending.pop(device_id, None)

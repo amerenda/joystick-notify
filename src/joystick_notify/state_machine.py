@@ -134,6 +134,57 @@ class StateMachine:
     def owner(self) -> str | None:
         return self._owner
 
+    async def check_for_stale_session_at_startup(self) -> None:
+        """Call once, right after construction, before the daemon starts
+        processing any device events. If the configured game is ALREADY
+        running at this exact moment, that's strong, direct evidence
+        we're recovering from a restart mid-session (nothing else would
+        have launched it) — arms a background watch that resyncs the
+        hardware to desk once that game exits, since self.mode already
+        says "desk" but the display/audio/CEC may still be set for couch
+        from before the restart.
+
+        Deliberately keyed off the game's own lifecycle, not the
+        controller's connection state: activity_gate.py's 2026-08-22 fix
+        means a controller that's still connected at startup is (now,
+        correctly) never auto-trusted, so it can't be used to infer
+        anything here — but a process that's demonstrably alive right now
+        couldn't have started itself.
+        """
+        if self._hooks.has_launch_target is None or self._hooks.is_launch_process_alive is None:
+            return
+        if not await self._hooks.has_launch_target():
+            return
+        if not await self._hooks.is_launch_process_alive():
+            return
+        logger.info(
+            "state_machine: configured game already running at daemon startup -- "
+            "likely resuming after a restart mid-session, arming a desk-resync watch"
+        )
+        self._spawn_task("stale_session_recovery", self._stale_session_recovery_watch())
+
+    async def _stale_session_recovery_watch(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._poll_interval_s)
+                if self.mode != Mode.DESK:
+                    # A real, witnessed connect already brought the
+                    # daemon's tracking back in sync (see _on_connect) --
+                    # this watch's job is done.
+                    return
+                if self._hooks.is_launch_process_alive is None:
+                    return
+                if not await self._hooks.is_launch_process_alive():
+                    headline(
+                        logger,
+                        "state_machine: launched game exited after a mid-session daemon restart -- "
+                        "forcing a desk resync (display/audio/CEC may still have been set for couch)",
+                    )
+                    await self._teardown_from("stale_session_recovery", None, force=True)
+                    return
+        except asyncio.CancelledError:
+            return
+
     async def force_exit_to_desk(self) -> None:
         """Manual override for the controller-shortcut exit path: tears down
         to desk unconditionally, regardless of owner/disconnect/process
@@ -217,20 +268,27 @@ class StateMachine:
             return False
         return await self._hooks.is_launch_process_alive()
 
-    async def _teardown_from(self, task_name: str, device_id: str | None) -> None:
+    async def _teardown_from(self, task_name: str, device_id: str | None, *, force: bool = False) -> None:
         """Every teardown trigger that runs *as* a named, cancellable task
-        in self._tasks (disconnect_grace, owner_watch) must call this,
-        never `_transition` directly — deregistering `task_name` first is
-        what stops `_transition`'s unconditional `_cancel_task("owner_watch")`
-        from being a self-cancellation when the caller IS that task, and
-        stops an unrelated event (a reconnect calling
-        `_cancel_task("disconnect_grace")`) from cancelling this same task
-        mid-flight once it's already committed to tearing down. Both are
-        real incidents from 2026-08-21 live testing, not hypothetical: a
-        self-cancellation silently aborted activate_desk() partway through
-        (logged "tearing down to desk", then nothing else for over a
-        minute), and a reconnect racing an in-flight disconnect-grace
-        teardown cut its CEC standby retry loop off mid-sequence.
+        in self._tasks (disconnect_grace, owner_watch, stale_session_recovery)
+        must call this, never `_transition` directly — deregistering
+        `task_name` first is what stops `_transition`'s unconditional
+        `_cancel_task("owner_watch")` from being a self-cancellation when
+        the caller IS that task, and stops an unrelated event (a reconnect
+        calling `_cancel_task("disconnect_grace")`) from cancelling this
+        same task mid-flight once it's already committed to tearing down.
+        Both are real incidents from 2026-08-21 live testing, not
+        hypothetical: a self-cancellation silently aborted activate_desk()
+        partway through (logged "tearing down to desk", then nothing else
+        for over a minute), and a reconnect racing an in-flight
+        disconnect-grace teardown cut its CEC standby retry loop off
+        mid-sequence.
+
+        `force=True` is for _stale_session_recovery_watch: self.mode
+        already says "desk" (the daemon never actually entered couch mode
+        this lifetime), so the normal same-mode no-op guard in
+        _transition() would otherwise skip running activate_desk() at all
+        — force bypasses that guard to actually resync the hardware.
 
         This MUST happen here, synchronously, with no `await` in between —
         moving it inside `_transition()` itself (e.g. under the lock) was
@@ -239,14 +297,15 @@ class StateMachine:
         where the same race reopens.
         """
         self._tasks.pop(task_name, None)
-        await self._transition(Mode.DESK, device_id=device_id)
+        await self._transition(Mode.DESK, device_id=device_id, force=force)
 
-    async def _transition(self, target: Mode, *, device_id: str | None = None) -> None:
+    async def _transition(self, target: Mode, *, device_id: str | None = None, force: bool = False) -> None:
         tag = device_id or self._owner or "-"
         async with self._lock:
-            if self.mode == target:
+            if self.mode == target and not force:
                 return
             self._cancel_task("owner_watch")
+            self._cancel_task("stale_session_recovery")
             if target == Mode.COUCH:
                 try:
                     await self._hooks.activate_couch(self._owner)

@@ -447,6 +447,126 @@ async def test_screensaver_enabled_false_never_enters_idle(tmp_path):
     await sm.aclose()
 
 
+# --- Stale-session recovery after a mid-session daemon restart ---
+# Direct regression coverage for the 2026-08-22 incident: restarting the
+# daemon while a game was already running (and the controller happened to
+# still be connected, now correctly never auto-trusted per
+# activity_gate.py's fix) left the daemon with mode=desk internally while
+# the hardware was still actually set for couch, with no path back to a
+# real desk sync through normal use.
+
+@pytest.mark.asyncio
+async def test_stale_session_detected_at_startup_arms_recovery_watch(tmp_path):
+    health = make_health(tmp_path)
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return True  # game already running the moment we check
+
+    hooks, calls = make_hooks(has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive)
+    sm = StateMachine(hooks, health, poll_interval_s=0.01)
+
+    await sm.check_for_stale_session_at_startup()
+
+    assert "stale_session_recovery" in sm._tasks
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_no_stale_session_when_nothing_configured_to_launch(tmp_path):
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks()  # no has_launch_target/is_launch_process_alive hooks
+    sm = StateMachine(hooks, health, poll_interval_s=0.01)
+
+    await sm.check_for_stale_session_at_startup()
+
+    assert "stale_session_recovery" not in sm._tasks
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_no_stale_session_when_game_not_actually_running(tmp_path):
+    health = make_health(tmp_path)
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return False  # configured, but not currently running
+
+    hooks, calls = make_hooks(has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive)
+    sm = StateMachine(hooks, health, poll_interval_s=0.01)
+
+    await sm.check_for_stale_session_at_startup()
+
+    assert "stale_session_recovery" not in sm._tasks
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stale_session_watch_forces_desk_resync_when_game_exits(tmp_path):
+    health = make_health(tmp_path)
+    alive_flag = {"alive": True}
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return alive_flag["alive"]
+
+    hooks, calls = make_hooks(has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive)
+    sm = StateMachine(hooks, health, poll_interval_s=0.01)
+
+    await sm.check_for_stale_session_at_startup()
+    assert sm.mode == Mode.DESK  # never claimed to be in couch mode
+    assert calls["desk"] == 0  # not yet resynced -- game is still "running"
+
+    alive_flag["alive"] = False  # the game exits
+    await asyncio.sleep(0.05)
+
+    # activate_desk() actually ran this time, unlike the internal belief
+    # alone -- this is the force=True path bypassing the same-mode no-op.
+    assert calls["desk"] == 1
+    assert sm.mode == Mode.DESK
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stale_session_watch_stands_down_on_real_reconnect(tmp_path):
+    # If the controller does a genuine, witnessed power-cycle while the
+    # recovery watch is still waiting, the resulting real couch activation
+    # must win -- the stale-session watch should quietly stand down rather
+    # than fight it or double-fire later.
+    health = make_health(tmp_path)
+
+    async def has_launch_target():
+        return True
+
+    async def is_launch_process_alive():
+        return True
+
+    hooks, calls = make_hooks(has_launch_target=has_launch_target, is_launch_process_alive=is_launch_process_alive)
+    sm = StateMachine(hooks, health, disconnect_grace_s=10, poll_interval_s=0.01)
+
+    await sm.check_for_stale_session_at_startup()
+    assert "stale_session_recovery" in sm._tasks
+
+    # A real, trusted connect arrives (as if ActivityGate witnessed a
+    # disconnect+reconnect) -- state_machine has no notion of "owner" yet,
+    # so this is a normal fresh desk->couch activation.
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+
+    assert sm.mode == Mode.COUCH
+    assert calls["couch"] == 1
+    assert "stale_session_recovery" not in sm._tasks
+
+    await asyncio.sleep(0.05)  # let any stray poll tick happen, if it could
+    assert calls["desk"] == 0  # recovery watch never force-resynced
+    await sm.aclose()
+
+
 @pytest.mark.asyncio
 async def test_activation_error_reports_health_failed_and_stays_desk(tmp_path):
     health = make_health(tmp_path)

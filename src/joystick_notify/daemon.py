@@ -250,6 +250,11 @@ async def run_daemon(config_path: Path | None = None) -> None:
         screensaver_enabled=config.idle.screensaver_enabled,
     )
 
+    # If the configured game is already running right now, that's direct
+    # evidence of a restart mid-session (see StateMachine's docstring) --
+    # arm a resync watch before any device events start flowing.
+    await sm.check_for_stale_session_at_startup()
+
     async def to_state_machine(event: DeviceEvent) -> None:
         await sm.handle_device_event(event)
 

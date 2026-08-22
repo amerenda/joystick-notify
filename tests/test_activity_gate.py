@@ -1,15 +1,22 @@
-"""Direct regression coverage for two rounds of live-testing findings on
-2026-08-21:
+"""Direct regression coverage for three rounds of live-testing findings:
 
-1. A controller already producing idle presence data at daemon startup
-   triggered couch mode with nobody touching it -- the startup grace
-   window must withhold that.
-2. A first attempt required a genuine evdev button press before trusting
-   ANY connect, for the device's whole lifetime under the daemon -- live
-   testing showed that's stricter than wanted: a deliberate power-on
-   after the startup window (or any reconnect the daemon has directly
-   witnessed a prior disconnect for) must be trusted immediately, no
-   button press required.
+1. (2026-08-21) A controller already producing idle presence data at
+   daemon startup triggered couch mode with nobody touching it -- the
+   startup grace window must withhold that.
+2. (2026-08-21) A first attempt required a genuine evdev button press
+   before trusting ANY connect, for the device's whole lifetime under the
+   daemon -- live testing showed that's stricter than wanted: a
+   deliberate power-on after the startup window (or any reconnect the
+   daemon has directly witnessed a prior disconnect for) must be trusted
+   immediately, no button press required.
+3. (2026-08-22) The original fix's "wait out the grace window, then trust
+   it anyway" fallback was itself the same bug via a different path:
+   restarting the daemon while a controller happened to still be
+   connected from an unrelated earlier session fired couch mode once the
+   window elapsed. A device whose first-ever signal arrives inside the
+   ambiguous window must now stay untrusted indefinitely, not just until
+   the window passes -- only a genuinely witnessed disconnect re-arms
+   trust.
 """
 import asyncio
 
@@ -57,7 +64,12 @@ async def test_connect_within_startup_grace_window_is_withheld():
 
 
 @pytest.mark.asyncio
-async def test_connect_forwarded_once_grace_window_elapses_while_still_connected():
+async def test_connect_never_forwarded_once_grace_window_elapses_while_still_connected():
+    # Direct regression test for the 2026-08-22 incident: this used to
+    # trust the connect once the window passed ("wait and see, then trust
+    # anyway"). It must now stay withheld indefinitely -- a still-connected
+    # device with no witnessed disconnect is treated as stale carryover,
+    # not a real trigger, no matter how long the daemon's been running.
     forwarded = []
     clock = FakeClock()
     gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock)
@@ -65,8 +77,30 @@ async def test_connect_forwarded_once_grace_window_elapses_while_still_connected
     await gate.handle(connected("dev1"))
     assert forwarded == []
     await asyncio.sleep(0.1)  # real sleep so the internally-scheduled wait actually elapses
-    assert len(forwarded) == 1
-    assert forwarded[0].device_id == "dev1"
+    assert forwarded == []
+    assert "dev1" not in gate._pending
+    await gate.aclose()
+
+
+@pytest.mark.asyncio
+async def test_witnessed_disconnect_after_grace_window_elapsed_re_arms_trust():
+    # The recovery path: even after a device has been given up on as
+    # stale, a genuinely witnessed disconnect (a real power-cycle) must
+    # still unlock trust for its next connect -- the "give up" is about
+    # the specific held connect, not a permanent ban on the device_id.
+    forwarded = []
+    clock = FakeClock()
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock)
+
+    await gate.handle(connected("dev1"))
+    await asyncio.sleep(0.1)  # grace window elapses, connect given up on
+    assert forwarded == []
+
+    await gate.handle(disconnected("dev1"))  # genuine power-cycle, witnessed
+    await gate.handle(connected("dev1"))
+
+    connects = [e for e in forwarded if e.kind == StableKind.CONNECTED]
+    assert len(connects) == 1
     await gate.aclose()
 
 
