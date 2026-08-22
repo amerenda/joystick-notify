@@ -28,6 +28,25 @@
   </div>
 </div>
 
+<div class="card">
+  <h2>Auto-Switch</h2>
+  <p class="muted" style="margin-top:-8px;">Whether the daemon reacts to controller connect/disconnect at all.
+  The daemon and this wizard stay running either way — this only controls automatic mode switching. Also
+  toggleable from the tray icon's right-click menu.</p>
+  <div class="component-row">
+    <span>Auto-switch</span>
+    <span class="badge"><span class="dot {{ 'ok' if auto_switch_enabled else 'unreachable' }}"></span>{{ "enabled" if auto_switch_enabled else "disabled" }}</span>
+  </div>
+  <div style="display:flex; gap:10px;">
+    <form method="post" action="/autoswitch/enable" style="margin:0;">
+      <button type="submit" {% if auto_switch_enabled %}disabled{% endif %}>Enable Auto-Switch</button>
+    </form>
+    <form method="post" action="/autoswitch/disable" style="margin:0;">
+      <button type="submit" class="secondary" {% if not auto_switch_enabled %}disabled{% endif %}>Disable Auto-Switch</button>
+    </form>
+  </div>
+</div>
+
 <div class="card" hx-get="/partials/status-detail" hx-trigger="load, every 3s" hx-swap="innerHTML">
   <h2>Daemon health</h2>
   <p class="muted">Loading…</p>

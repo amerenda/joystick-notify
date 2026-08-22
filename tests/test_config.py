@@ -16,6 +16,20 @@ def test_missing_config_returns_defaults_unconfigured(tmp_path):
     # convenience defaults, not security tradeoffs -- on by default.
     assert cfg.idle.wait_for_game is True
     assert cfg.idle.screensaver_enabled is True
+    # Auto-switch is on by default -- unlike screen-lock bypass, reacting
+    # to the controller is the whole point of the app, not a security
+    # tradeoff that needs opt-in.
+    assert cfg.auto_switch_enabled is True
+
+
+def test_auto_switch_enabled_round_trips(tmp_path):
+    path = Path(tmp_path) / "config.toml"
+    cfg = JoystickNotifyConfig()
+    cfg.auto_switch_enabled = False
+    save(cfg, path)
+
+    loaded = load(path)
+    assert loaded.auto_switch_enabled is False
 
 
 def test_round_trip_preserves_values(tmp_path):

@@ -26,20 +26,27 @@ POLL_INTERVAL_MS = 2000
 class TrayState(str, Enum):
     UNCONFIGURED = "unconfigured"
     OK = "ok"
+    AUTO_SWITCH_DISABLED = "auto_switch_disabled"
     DEGRADED = "degraded"
     BROKEN = "broken"
     DAEMON_UNREACHABLE = "daemon_unreachable"
 
 
-def tray_state(snapshot: HealthSnapshot | None, configured: bool) -> TrayState:
+def tray_state(
+    snapshot: HealthSnapshot | None, configured: bool, auto_switch_enabled: bool = True
+) -> TrayState:
     """The exact mapping from plans/joystick-notify-v2.md's tray table:
     - No snapshot at all, or a stale heartbeat -> DAEMON_UNREACHABLE. Never
       silently shown as whatever the last real status happened to be.
     - Not yet configured -> UNCONFIGURED takes priority over health detail
       (there's nothing meaningful to report yet).
-    - Otherwise: any FAILED component -> BROKEN, any DEGRADED -> DEGRADED,
-      else OK (idle-with-nothing-connected is OK, not broken — see
-      devices/detect.py's is_candidate_hid / Health docstring).
+    - Any FAILED component -> BROKEN, any DEGRADED -> DEGRADED, regardless
+      of the auto-switch toggle -- a real health problem always outranks
+      it, so disabling auto-switch can never mask a genuine failure.
+    - Otherwise (fully healthy, configured): OK (green) if auto-switch is
+      on, AUTO_SWITCH_DISABLED (black) if the daemon is up and healthy but
+      not currently reacting to the controller -- the distinction the
+      right-click toggle exists to make visible at a glance.
     """
     if snapshot is None or not snapshot.daemon_alive:
         return TrayState.DAEMON_UNREACHABLE
@@ -50,7 +57,7 @@ def tray_state(snapshot: HealthSnapshot | None, configured: bool) -> TrayState:
         return TrayState.BROKEN
     if overall == Status.DEGRADED:
         return TrayState.DEGRADED
-    return TrayState.OK
+    return TrayState.OK if auto_switch_enabled else TrayState.AUTO_SWITCH_DISABLED
 
 
 def _systemctl_user(*args: str) -> subprocess.CompletedProcess:
@@ -89,6 +96,7 @@ def main() -> int:
 
     COLORS = {
         TrayState.OK: (62, 207, 108),
+        TrayState.AUTO_SWITCH_DISABLED: (15, 15, 15),
         TrayState.DEGRADED: (224, 177, 60),
         TrayState.BROKEN: (224, 92, 92),
         TrayState.UNCONFIGURED: (150, 150, 150),
@@ -118,7 +126,14 @@ def main() -> int:
 
         # Thumbstick/D-pad detail: two small darker dots on the body, just
         # enough to read as "controller" rather than an abstract blob.
-        detail = QColor(*COLORS[state]).darker(140)
+        # AUTO_SWITCH_DISABLED's near-black body would make a *darker*
+        # detail dot invisible, so it lightens instead -- every other
+        # state stays on the original darker() treatment.
+        detail = (
+            QColor(*COLORS[state]).lighter(400)
+            if state == TrayState.AUTO_SWITCH_DISABLED
+            else QColor(*COLORS[state]).darker(140)
+        )
         p.setBrush(detail)
         p.drawEllipse(20, 28, 8, 8)
         p.drawEllipse(36, 28, 8, 8)
@@ -150,22 +165,35 @@ def main() -> int:
     menu.addSeparator()
 
     open_wizard_action = QAction("Open wizard")
-    start_action = QAction("Start joystick-notify")
-    stop_action = QAction("Stop joystick-notify")
-    restart_action = QAction("Restart joystick-notify")
-    quit_action = QAction("Quit tray")
-
     menu.addAction(open_wizard_action)
     menu.addSeparator()
+
+    # Checkable, not a plain button: the checkmark itself shows current
+    # state without needing to read the tooltip, and it's the same single
+    # config.toml field (auto_switch_enabled) the wizard's status page
+    # reads/writes -- toggling here or there has identical effect, see
+    # daemon.py's _forward_to_state_machine for why a shared file (not
+    # shared memory) is what keeps two separate processes in sync.
+    autoswitch_action = QAction("Auto-switch enabled")
+    autoswitch_action.setCheckable(True)
+    menu.addAction(autoswitch_action)
+    menu.addSeparator()
+
+    start_action = QAction("Start joystick-notify")
+    restart_action = QAction("Restart joystick-notify")
+    exit_action = QAction("Exit")
+    quit_action = QAction("Quit tray")
+
     menu.addAction(start_action)
-    menu.addAction(stop_action)
     menu.addAction(restart_action)
+    menu.addAction(exit_action)
     menu.addSeparator()
     menu.addAction(quit_action)
     tray.setContextMenu(menu)
 
     LABELS = {
         TrayState.OK: "Running",
+        TrayState.AUTO_SWITCH_DISABLED: "Running (auto-switch off)",
         TrayState.DEGRADED: "Running (degraded)",
         TrayState.BROKEN: "Running (broken)",
         TrayState.UNCONFIGURED: "Not configured",
@@ -175,7 +203,7 @@ def main() -> int:
     def refresh() -> None:
         snapshot = read_snapshot()
         config = config_store.load()
-        state = tray_state(snapshot, config.configured)
+        state = tray_state(snapshot, config.configured, config.auto_switch_enabled)
 
         tray.setIcon(ICONS[state])
         label = LABELS[state]
@@ -187,13 +215,40 @@ def main() -> int:
         tray.setToolTip(tip)
         status_action.setText(f"Status: {label}")
 
+        # blockSignals: this runs on every 2s poll tick, not just after a
+        # user click -- without it, programmatically syncing the checkbox
+        # to config would itself re-fire `toggled`, calling
+        # toggle_auto_switch() right back and re-saving the config every
+        # single tick.
+        autoswitch_action.blockSignals(True)
+        autoswitch_action.setChecked(config.auto_switch_enabled)
+        autoswitch_action.blockSignals(False)
+
     def open_wizard() -> None:
         webbrowser.open(_wizard_url())
 
+    def toggle_auto_switch(checked: bool) -> None:
+        config = config_store.load()
+        config.auto_switch_enabled = checked
+        config_store.save(config)
+        refresh()
+
+    def exit_everything() -> None:
+        # "Exit" means the whole app is gone -- tray icon, daemon, wizard,
+        # nothing left running -- as distinct from "Stop"/"Start", which
+        # only ever affected the daemon service. Stop the service first
+        # so the daemon/wizard actually go down, then quit this process
+        # so the tray icon disappears too, rather than sitting there
+        # showing DAEMON_UNREACHABLE forever with no way back except a
+        # terminal.
+        _systemctl_user("stop")
+        app.quit()
+
     open_wizard_action.triggered.connect(open_wizard)
+    autoswitch_action.toggled.connect(toggle_auto_switch)
     start_action.triggered.connect(lambda: (_systemctl_user("start"), refresh()))
-    stop_action.triggered.connect(lambda: (_systemctl_user("stop"), refresh()))
     restart_action.triggered.connect(lambda: (_systemctl_user("restart"), refresh()))
+    exit_action.triggered.connect(exit_everything)
     quit_action.triggered.connect(app.quit)
 
     refresh()

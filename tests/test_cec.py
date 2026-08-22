@@ -191,3 +191,64 @@ def test_standby_and_verify_reports_ok_on_separate_component_when_confirmed(tmp_
         assert "confirmed" in status.reason
     finally:
         cec_control._run = orig_run
+
+
+def test_standby_and_verify_reclaims_active_source_before_every_attempt_when_phys_addr_set(tmp_path):
+    # Direct regression test for the real root cause found live 2026-08-22:
+    # this TV (and independently the receiver) silently no-op <Standby>
+    # from a device they no longer consider the Active Source -- a plain
+    # `--standby` Tx's OK at the bus level but produces zero power-state
+    # change, while the exact same Standby immediately preceded by
+    # reclaiming Active Source (Set Stream Path + Active Source) reliably
+    # works. Reclaiming must happen before EVERY attempt, not just once,
+    # since another CEC device on the bus (an Nvidia Shield here) can
+    # reclaim Active Source again mid-session.
+    from joystick_notify.actions import cec_control
+
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, "pwr-state: on"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        asyncio.run(
+            cec_control.standby_and_verify(
+                None, [0], health, phys_addr="3.2.0.0", attempts=2, delay_s=0
+            )
+        )
+        # Each attempt: set-stream-path, active-source, standby, then the
+        # power-status poll -- 4 commands per attempt, 2 attempts = 8.
+        assert len(calls) == 8
+        opcodes = [next(a for a in cmd if a.startswith("--") and a != "--to") for cmd in calls]
+        assert opcodes == [
+            "--set-stream-path", "--active-source", "--standby", "--give-device-power-status",
+            "--set-stream-path", "--active-source", "--standby", "--give-device-power-status",
+        ]
+    finally:
+        cec_control._run = orig_run
+
+
+def test_standby_and_verify_skips_reclaim_when_no_phys_addr_configured(tmp_path):
+    from joystick_notify.actions import cec_control
+
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, "pwr-state: standby"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        asyncio.run(cec_control.standby_and_verify(None, [0], health, attempts=1, delay_s=0))
+        # Just --standby then the power-status poll -- no reclaim commands.
+        assert len(calls) == 2
+        assert "--standby" in calls[0]
+        assert "--give-device-power-status" in calls[1]
+    finally:
+        cec_control._run = orig_run

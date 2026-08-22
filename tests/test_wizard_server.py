@@ -1102,3 +1102,82 @@ def test_configure_get_renders_tab_bar(client):
     assert resp.status_code == 200
     for tab_label in ("Display", "Audio", "CEC", "Launch", "Controllers", "Daemon Settings"):
         assert tab_label in resp.text
+
+
+def test_index_shows_auto_switch_state_and_toggle_buttons(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.get("/", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "Auto-Switch" in resp.text
+    assert 'action="/autoswitch/enable"' in resp.text
+    assert 'action="/autoswitch/disable"' in resp.text
+
+
+def test_autoswitch_disable_route_persists_and_redirects(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/autoswitch/disable", headers=auth_headers)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/"
+
+    from joystick_notify.config import store as config_store
+
+    assert config_store.load().auto_switch_enabled is False
+
+
+def test_autoswitch_enable_route_persists_and_redirects(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post("/autoswitch/disable", headers=auth_headers)
+    resp = client.post("/autoswitch/enable", headers=auth_headers)
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    assert config_store.load().auto_switch_enabled is True
+
+
+def test_autoswitch_routes_require_auth(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    resp = client.post("/autoswitch/disable")
+    assert resp.status_code == 401
+
+
+def test_api_autoswitch_get_reflects_current_config(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.get("/api/autoswitch", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "enabled": True}
+
+
+def test_api_autoswitch_set_persists_change(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post("/api/autoswitch", headers=auth_headers, json={"enabled": False})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "enabled": False}
+
+    from joystick_notify.config import store as config_store
+
+    assert config_store.load().auto_switch_enabled is False
+
+
+def test_api_autoswitch_not_in_bearer_token_scope(isolated_config):
+    # The API token is deliberately scoped to just mode/couch and
+    # mode/desk (see _API_TOKEN_PATHS) -- it must not also unlock the
+    # auto-switch toggle.
+    app = create_app()
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/autoswitch", headers={"Authorization": f"Bearer {token}"}, json={"enabled": False})
+    assert resp.status_code == 401

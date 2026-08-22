@@ -53,3 +53,30 @@ def test_failed_takes_priority_over_degraded():
         }
     )
     assert tray_state(snap, configured=True) == TrayState.BROKEN
+
+
+def test_healthy_and_auto_switch_enabled_is_ok():
+    snap = _snapshot({"devices": ComponentStatus(Status.OK)})
+    assert tray_state(snap, configured=True, auto_switch_enabled=True) == TrayState.OK
+
+
+def test_healthy_but_auto_switch_disabled_is_its_own_state():
+    snap = _snapshot({"devices": ComponentStatus(Status.OK)})
+    assert tray_state(snap, configured=True, auto_switch_enabled=False) == TrayState.AUTO_SWITCH_DISABLED
+
+
+def test_auto_switch_enabled_defaults_true_for_backward_compatible_callers():
+    snap = _snapshot({"devices": ComponentStatus(Status.OK)})
+    assert tray_state(snap, configured=True) == TrayState.OK
+
+
+def test_degraded_outranks_auto_switch_disabled():
+    # A real health problem must always be visible, regardless of the
+    # auto-switch toggle -- disabling auto-switch can never mask it.
+    snap = _snapshot({"cec": ComponentStatus(Status.DEGRADED, reason="unconfirmed")})
+    assert tray_state(snap, configured=True, auto_switch_enabled=False) == TrayState.DEGRADED
+
+
+def test_broken_outranks_auto_switch_disabled():
+    snap = _snapshot({"display": ComponentStatus(Status.FAILED, reason="couch output gone")})
+    assert tray_state(snap, configured=True, auto_switch_enabled=False) == TrayState.BROKEN

@@ -72,6 +72,36 @@ def check_startup_health(config: JoystickNotifyConfig, health: Health) -> bool:
     return ok
 
 
+async def _forward_to_state_machine(
+    sm: StateMachine, event: DeviceEvent, config_path: Path | None
+) -> None:
+    """Auto-switch gate between the debounced/trusted device event stream
+    and the state machine: re-reads config.auto_switch_enabled fresh from
+    disk on every single event, rather than trusting a value cached at
+    daemon startup. This is deliberate, not an oversight -- the daemon and
+    wizard are separate concerns sharing one process, but the tray (a
+    genuinely separate OS process) has no shared memory with either one,
+    and toggling "auto-switch" needs to work identically from both the
+    tray's right-click menu and the wizard's status page. Both already
+    only ever talk to each other through config.toml, so re-reading it
+    here (a small, cheap TOML parse) gets a toggle from either source
+    applied on the very next controller event, with no IPC/socket needed.
+
+    Disabling auto-switch only ever gates whether a NEW connect/disconnect
+    event reaches the state machine -- it deliberately does not touch a
+    couch session already in progress (owner-watch teardown, idle
+    timeout, the manual-exit shortcut, or the wizard's manual mode-switch
+    buttons all keep working exactly as before). "Stop reacting to the
+    controller" is the whole and only meaning of the toggle.
+    """
+    if not config_store.load(config_path).auto_switch_enabled:
+        logger.info(
+            "daemon: auto-switch disabled, ignoring %s event for %s", event.kind.value, event.device_id
+        )
+        return
+    await sm.handle_device_event(event)
+
+
 class CouchSessionResources:
     """Owns state that's scoped to a single couch-mode session and needs a
     matching teardown when it ends: the CEC active-source retry task, the
@@ -148,6 +178,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                     adapter,
                     config.cec.standby_targets,
                     health,
+                    phys_addr=config.cec.active_source_phys_addr or None,
                     attempts=config.cec.standby_verify_attempts,
                     delay_s=config.cec.standby_verify_delay_s,
                 )
@@ -189,6 +220,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                     adapter,
                     config.cec.standby_targets,
                     health,
+                    phys_addr=config.cec.active_source_phys_addr or None,
                     attempts=config.cec.standby_verify_attempts,
                     delay_s=config.cec.standby_verify_delay_s,
                 )
@@ -265,7 +297,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
     await sm.check_for_stale_session_at_startup()
 
     async def to_state_machine(event: DeviceEvent) -> None:
-        await sm.handle_device_event(event)
+        await _forward_to_state_machine(sm, event, config_path)
 
     # Debounce says a signal is stable; the gate says whether it's
     # trustworthy — a device present at startup (or plugged in only to

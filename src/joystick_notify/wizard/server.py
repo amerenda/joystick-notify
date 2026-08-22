@@ -105,7 +105,9 @@ async def index(request: Request):
     sm = _live_state_machine(request)
     mode = sm.mode.value if sm is not None else None
     return templates.TemplateResponse(
-        request, "index.html", {"snapshot": snapshot, "config": config, "mode": mode}
+        request,
+        "index.html",
+        {"snapshot": snapshot, "config": config, "mode": mode, "auto_switch_enabled": config.auto_switch_enabled},
     )
 
 
@@ -171,6 +173,39 @@ async def api_restart(request: Request):
     except FileNotFoundError:
         return JSONResponse({"ok": False, "error": "systemctl not found"}, status_code=500)
     return JSONResponse({"ok": True, "service": service})
+
+
+async def autoswitch_enable(request: Request):
+    config = config_store.load()
+    config.auto_switch_enabled = True
+    config_store.save(config)
+    return RedirectResponse("/", status_code=303)
+
+
+async def autoswitch_disable(request: Request):
+    config = config_store.load()
+    config.auto_switch_enabled = False
+    config_store.save(config)
+    return RedirectResponse("/", status_code=303)
+
+
+async def api_autoswitch_get(request: Request):
+    config = config_store.load()
+    return JSONResponse({"ok": True, "enabled": config.auto_switch_enabled})
+
+
+async def api_autoswitch_set(request: Request):
+    """Same config.toml read-modify-write the tray's right-click toggle
+    uses directly (see daemon.py's _forward_to_state_machine docstring for
+    why config.toml, not a shared in-memory flag, is the single source of
+    truth both processes converge on) -- this just gives the wizard/a
+    script an HTTP path to the same effect.
+    """
+    config = config_store.load()
+    body = await request.json()
+    config.auto_switch_enabled = bool(body.get("enabled"))
+    config_store.save(config)
+    return JSONResponse({"ok": True, "enabled": config.auto_switch_enabled})
 
 
 async def token_generate(request: Request):
@@ -497,6 +532,8 @@ def create_app(sm=None) -> Starlette:
         Route("/configure", configure_post, methods=["POST"]),
         Route("/mode/couch", mode_couch, methods=["POST"]),
         Route("/mode/desk", mode_desk, methods=["POST"]),
+        Route("/autoswitch/enable", autoswitch_enable, methods=["POST"]),
+        Route("/autoswitch/disable", autoswitch_disable, methods=["POST"]),
         Route("/token/generate", token_generate, methods=["POST"]),
         Route("/token/revoke", token_revoke, methods=["POST"]),
         Route("/api/status", api_status, methods=["GET"]),
@@ -504,6 +541,8 @@ def create_app(sm=None) -> Starlette:
         Route("/api/cec/topology", api_cec_topology, methods=["POST"]),
         Route("/api/mode/couch", api_mode_couch, methods=["POST"]),
         Route("/api/mode/desk", api_mode_desk, methods=["POST"]),
+        Route("/api/autoswitch", api_autoswitch_get, methods=["GET"]),
+        Route("/api/autoswitch", api_autoswitch_set, methods=["POST"]),
         Route("/api/restart", api_restart, methods=["POST"]),
         Route("/partials/status", status_fragment, methods=["GET"]),
         Route("/partials/status-detail", status_detail_fragment, methods=["GET"]),

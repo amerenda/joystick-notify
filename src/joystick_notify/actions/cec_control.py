@@ -127,6 +127,7 @@ async def standby_and_verify(
     targets: list[int],
     health: Health,
     *,
+    phys_addr: str | None = None,
     attempts: int = 3,
     delay_s: float = 2.0,
 ) -> list[int]:
@@ -135,6 +136,27 @@ async def standby_and_verify(
     silently no-op (v1's rationale, unchanged: a receiver asleep-but-not-
     really, a dropped CEC frame, a device that ignores broadcast standby).
     Returns the list of addresses that never confirmed.
+
+    Reclaims Active Source (Set Stream Path + Active Source, same as
+    wake_and_select_input()) immediately before every single Standby
+    attempt, not just once up front. Root-caused live 2026-08-22 against
+    the real hardware after this had been a 100%-reproducible failure for
+    days: this TV, and independently the receiver, silently no-op
+    <Standby> from a device they no longer consider the Active Source --
+    confirmed by direct A/B test, `cec-ctl --standby` alone Tx's OK at the
+    CEC bus level (frame ACKed) but produces zero power-state change even
+    after 60s of total bus silence and 5 retries, while the *exact same*
+    Standby immediately preceded by reclaiming Active Source reliably
+    transitions the target to standby within ~1s, every time. With a
+    second CEC playback device on this bus (confirmed via `cec-ctl -S`:
+    an Nvidia Shield) that can reclaim Active Source on its own at any
+    point during a session, reclaiming only once at the start of this
+    function isn't safe -- a later attempt could be sent after ownership
+    has already been stolen back. Reclaiming before every attempt is
+    cheap (~1s) relative to the several-second wait already built into the
+    retry loop, and is what actually gets this to 100%. Skipped when
+    `phys_addr` isn't configured (matches wake_and_select_input(), which
+    already tolerates no phys-addr override being set).
 
     Reports to a SEPARATE "cec_standby" Health component, not "cec" --
     confirmed live 2026-08-22 that a TV simply not responding to standby
@@ -153,6 +175,8 @@ async def standby_and_verify(
     for addr in targets:
         status = "unknown"
         for attempt in range(1, attempts + 1):
+            if phys_addr:
+                await set_stream_path_and_active_source(adapter, phys_addr)
             await _run(["cec-ctl", *_adapter_args(adapter), "--to", str(addr), "--standby"])
             await asyncio.sleep(delay_s)
             status = await power_status(adapter, addr)

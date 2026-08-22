@@ -99,6 +99,7 @@ def _from_dict(raw: dict) -> JoystickNotifyConfig:
     return JoystickNotifyConfig(
         version=raw.get("version", defaults.version),
         configured=raw.get("configured", defaults.configured),
+        auto_switch_enabled=raw.get("auto_switch_enabled", defaults.auto_switch_enabled),
         display=_section(DisplayConfig, defaults.display, raw.get("display", {})),
         audio=_section(AudioConfig, defaults.audio, raw.get("audio", {})),
         cec=_section(CecConfig, defaults.cec, raw.get("cec", {})),

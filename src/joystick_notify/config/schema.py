@@ -156,6 +156,16 @@ class JoystickNotifyConfig:
     # UNCONFIGURED while this is False — the tray reflects that distinctly
     # from "configured but broken."
     configured: bool = False
+    # Whether the daemon acts on controller connect/disconnect events at
+    # all -- distinct from the daemon/wizard process being up, which is
+    # meant to run 24/7 regardless. Toggled from the tray (right-click) or
+    # the status page without restarting anything: the daemon re-reads
+    # this fresh from config.toml on every device event rather than
+    # trusting a value cached at startup, so a toggle from either the tray
+    # or the wizard (two separate processes, no shared memory) takes
+    # effect on the very next event with no IPC needed -- see daemon.py's
+    # _forward_to_state_machine().
+    auto_switch_enabled: bool = True
     display: DisplayConfig = field(default_factory=DisplayConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     cec: CecConfig = field(default_factory=CecConfig)
