@@ -95,6 +95,15 @@ class ActionConfig:
     # string directly (see CustomCommand below), not a name/reference, so
     # launchers.py needs no lookup step to resolve it.
     run: str = ""
+    # On by default -- a safety/convenience default like idle.wait_for_game,
+    # not a security tradeoff like screen_lock/CEC. Gracefully exits the
+    # launched process (e.g. `steam -shutdown` for the steam-bigpicture
+    # preset) as part of switching back to desk, so a leftover Big
+    # Picture/game instance doesn't linger in the background -- and, just
+    # as importantly, doesn't still be running the next time couch mode
+    # is entered (see launchers.launch_steam_bigpicture()'s docstring for
+    # the real display-glitch bug that leaving it running caused).
+    kill_on_desk: bool = True
 
 
 @dataclass

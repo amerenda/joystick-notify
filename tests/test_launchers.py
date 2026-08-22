@@ -83,3 +83,136 @@ async def test_run_detached_does_not_block_on_long_running_command():
     await _run_detached(["/bin/sh", "-c", "sleep 2"])
     elapsed = asyncio.get_event_loop().time() - start
     assert elapsed < 1.0
+
+
+# --- launch_steam_bigpicture / exit_launched ---
+# Direct regression tests for the real 2026-08-22 bug: switching to couch
+# mode while Big Picture was already running (left over from a previous
+# session) reused it via the old `-ifrunning` deep link *after* the couch
+# display's resolution switch had already happened underneath its still-
+# live window -- it briefly showed Big Picture in a floating window, then
+# the output lost signal entirely. Fixed by always fully shutting Steam
+# down first and cold-starting fresh, which can't inherit a stale
+# swapchain from before a mode switch.
+
+
+@pytest.mark.asyncio
+async def test_launch_steam_bigpicture_cold_starts_directly_when_not_running(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: False)
+
+    await launchers.launch_steam_bigpicture()
+
+    assert calls == [["steam", "-gamepadui"]]
+
+
+@pytest.mark.asyncio
+async def test_launch_steam_bigpicture_shuts_down_before_cold_starting_when_already_running(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+
+    seen = {"n": 0}
+
+    def fake_is_steam_running():
+        seen["n"] += 1
+        return seen["n"] == 1  # running once (triggers shutdown), then confirmed gone
+
+    monkeypatch.setattr(launchers, "_is_steam_running", fake_is_steam_running)
+
+    await launchers.launch_steam_bigpicture()
+
+    assert calls == [["steam", "-shutdown"], ["steam", "-gamepadui"]]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_steam_and_wait_gives_up_after_timeout_and_logs_warning(monkeypatch, caplog):
+    from joystick_notify.actions import launchers
+
+    async def fake_run_detached(cmd):
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)  # never actually exits
+
+    with caplog.at_level("WARNING", logger="joystick_notify.actions.launchers"):
+        await launchers._shutdown_steam_and_wait(poll_s=0, timeout_s=0.02)
+
+    assert any("still running" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_shuts_down_steam_when_running(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+
+    seen = {"n": 0}
+
+    def fake_is_steam_running():
+        seen["n"] += 1
+        return seen["n"] == 1
+
+    monkeypatch.setattr(launchers, "_is_steam_running", fake_is_steam_running)
+
+    await launchers.exit_launched("steam-bigpicture")
+
+    assert calls == [["steam", "-shutdown"]]
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_noop_when_steam_not_running(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: False)
+
+    await launchers.exit_launched("steam-bigpicture")
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_custom_command_logs_and_does_nothing(caplog):
+    from joystick_notify.actions import launchers
+
+    with caplog.at_level("INFO", logger="joystick_notify.actions.launchers"):
+        await launchers.exit_launched("my-custom-command --flag")
+
+    assert any("no graceful exit known" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_empty_string_does_nothing(caplog):
+    from joystick_notify.actions import launchers
+
+    with caplog.at_level("INFO", logger="joystick_notify.actions.launchers"):
+        await launchers.exit_launched("")
+
+    assert not any("no graceful exit" in r.message for r in caplog.records)

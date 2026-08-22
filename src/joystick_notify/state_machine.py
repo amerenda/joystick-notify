@@ -116,6 +116,17 @@ class StateMachine:
     ) -> None:
         self.mode = Mode.DESK
         self._owner: str | None = None
+        # Whether `self._owner` is a real, presence-trackable device --
+        # False for a synthetic owner assigned by a non-controller trigger
+        # (currently just force_enter_couch()'s "manual", but this is
+        # deliberately a general concept, not a magic-string check, so any
+        # future non-controller trigger -- e.g. a scheduled/rule-engine
+        # entry -- gets the same correct behavior for free: see
+        # _owner_watch_loop()'s docstring for why a synthetic owner must
+        # never drive the absence/idle-timeout logic, and _on_connect()'s
+        # promotion logic for what happens when a real controller connects
+        # into a synthetically-owned session.
+        self._owner_is_real_device = False
         self._lock = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task] = {}
         self._hooks = hooks
@@ -203,17 +214,27 @@ class StateMachine:
     async def force_enter_couch(self) -> None:
         """Manual override for the wizard/API "switch to couch" action: the
         mirror of force_exit_to_desk(), activating couch mode unconditionally
-        with no controller event involved. Falls back to a synthetic owner
-        id ("manual") when nothing already owns the session, so
-        activate_couch()/the owner-watch loop have something to key off of
-        -- the manual-exit shortcut watcher simply finds no evdev node for a
-        synthetic owner and skips itself (see ManualExitWatcher.start()),
-        it doesn't error.
+        with no controller event involved. Assigns the synthetic owner id
+        "manual" so activate_couch()/the owner-watch loop have something to
+        key off of, and marks it explicitly non-real (`_owner_is_real_device
+        = False`) -- this is what tells _owner_watch_loop() to skip the
+        absence/idle-timeout logic entirely (a synthetic id is never
+        "present," so without this a manually-triggered session would
+        silently go couch-idle, powering everything back off, the moment
+        idle_after_s elapsed -- confirmed live 2026-08-22). The manual-exit
+        shortcut watcher also finds no evdev node for "manual" and skips
+        itself for now (see ManualExitWatcher.start()) -- but if a real
+        controller connects later in this same session, _on_connect()
+        promotes it to real ownership, which turns both of these back on.
+
+        self.mode == Mode.DESK here always means self._owner is None (see
+        _transition()'s DESK branch), so there's no existing owner to
+        preserve.
         """
         if self.mode == Mode.COUCH:
             return
-        if self._owner is None:
-            self._owner = "manual"
+        self._owner = "manual"
+        self._owner_is_real_device = False
         await self._transition(Mode.COUCH, device_id=self._owner)
 
     async def handle_device_event(self, event: DeviceEvent) -> None:
@@ -226,7 +247,25 @@ class StateMachine:
         self._cancel_task("disconnect_grace")
         if self._owner is None:
             self._owner = device_id
+            self._owner_is_real_device = True
             headline(logger, "state_machine[%s]: is now the owning controller", device_id)
+        elif not self._owner_is_real_device and self._owner != device_id:
+            # A real controller connecting into a synthetically-owned
+            # session (started via force_enter_couch(), e.g. the wizard's
+            # "Switch to Couch Mode" button) adopts real ownership from
+            # here on -- this is what turns on presence-based idle
+            # tracking and the manual-exit shortcut watcher for a session
+            # that started with neither. Never displaces an EXISTING real
+            # owner (guarded by `not self._owner_is_real_device`); a
+            # second real controller connecting still just gets ignored
+            # below, same single-owner lock semantics as always.
+            headline(
+                logger,
+                "state_machine[%s]: adopting real ownership of a synthetically-started session (was %s)",
+                device_id, self._owner,
+            )
+            self._owner = device_id
+            self._owner_is_real_device = True
         if self._owner != device_id:
             # A second controller connecting doesn't change mode ownership —
             # matches v1's single-owner lock semantics.
@@ -344,6 +383,7 @@ class StateMachine:
                     logger.error("state_machine[%s]: desk activation failed (%s: %s)", tag, e.component, e.reason)
                 self.mode = Mode.DESK
                 self._owner = None
+                self._owner_is_real_device = False
                 self._launch_ts = None
                 self._no_controller_since = None
                 self._idle = False
@@ -366,6 +406,16 @@ class StateMachine:
         to desk -- see the note on that branch below for why staying in
         Mode.COUCH matters (an instant resume on reconnect, not a redo of
         the whole desk->couch activation).
+
+        That whole absence/idle branch is gated on `_owner_is_real_device`
+        -- a synthetic owner (force_enter_couch()'s "manual") is never
+        "present" to begin with, so without this gate a manually-triggered
+        session would silently go couch-idle (powering the TV back off)
+        the moment idle_after_s elapsed, even with someone sitting right
+        there -- confirmed live 2026-08-22. The process-exit teardown
+        check above this is NOT gated -- if the launched game exits, that
+        should still tear down to desk regardless of how the session
+        started.
         """
         owner = self._owner
         try:
@@ -384,7 +434,11 @@ class StateMachine:
                         await self._teardown_from("owner_watch", owner)
                         return
 
-                if self._hooks.is_owner_present is not None and self._owner is not None:
+                if (
+                    self._owner_is_real_device
+                    and self._hooks.is_owner_present is not None
+                    and self._owner is not None
+                ):
                     present = await self._hooks.is_owner_present(self._owner)
                     now = time.monotonic()
                     if present:

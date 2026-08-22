@@ -351,6 +351,7 @@ async def configure_post(request: Request):
     )
 
     config.on_connect.run = str(form.get("launch_preset", ""))
+    config.on_connect.kill_on_desk = form.get("kill_on_desk") == "on"
 
     names = form.getlist("custom_command_name") if hasattr(form, "getlist") else []
     values = form.getlist("custom_command_value") if hasattr(form, "getlist") else []

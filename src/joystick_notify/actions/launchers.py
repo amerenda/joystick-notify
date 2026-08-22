@@ -99,15 +99,46 @@ async def _log_outcome(cmd: list[str], proc: asyncio.subprocess.Process) -> None
         logger.debug("launchers: %s exited 0", cmd[0])
 
 
+STEAM_SHUTDOWN_POLL_S = 1.0
+STEAM_SHUTDOWN_TIMEOUT_S = 10.0
+
+
+async def _shutdown_steam_and_wait(
+    poll_s: float = STEAM_SHUTDOWN_POLL_S, timeout_s: float = STEAM_SHUTDOWN_TIMEOUT_S
+) -> None:
+    await _run_detached(["steam", "-shutdown"])
+    # Elapsed time is tracked against the clock, not by accumulating
+    # poll_s -- accumulation makes poll_s=0 (as tests use, for a fast
+    # deterministic timeout case) loop forever, since 0 never advances
+    # "elapsed" no matter how many iterations run.
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(poll_s)
+        if not _is_steam_running():
+            return
+    logger.warning(
+        "launchers: steam still running %.0fs after -shutdown, proceeding anyway", timeout_s
+    )
+
+
 async def launch_steam_bigpicture() -> None:
-    """Direct port of launch-bigpicture.sh's core logic: reuse an existing
-    Steam client if running (steam:// deep link avoids a second instance),
-    otherwise cold-start straight into Big Picture / gamepadui mode.
+    """Always ends in a FRESH cold start into gamepadui -- never reuses an
+    already-running instance via the old `-ifrunning` deep link. Root-
+    caused live 2026-08-22: switching to couch mode while Big Picture was
+    already running (left over from a previous session) sent a redundant
+    `-ifrunning steam://open/bigpicture` deep link AFTER the couch
+    display's resolution switch had already happened underneath Steam's
+    still-live window -- it briefly showed Big Picture in a floating
+    window, then the output lost signal entirely (a GPU/compositor race
+    recreating a fullscreen-exclusive swapchain mid-modeset). A fresh
+    cold start always queries the CURRENT display mode at its own
+    startup, so it can never inherit a stale swapchain from before a mode
+    switch -- reliable > fast, matching launch_startup_grace_s already
+    tolerating a slower cold boot.
     """
     if _is_steam_running():
-        await _run_detached(["steam", "-ifrunning", "steam://open/bigpicture"])
-    else:
-        await _run_detached(["steam", "-gamepadui"])
+        await _shutdown_steam_and_wait()
+    await _run_detached(["steam", "-gamepadui"])
 
 
 LAUNCH_PRESETS: dict[str, Callable[[], Awaitable[None]]] = {
@@ -117,6 +148,27 @@ LAUNCH_PRESETS: dict[str, Callable[[], Awaitable[None]]] = {
 
 async def run_custom_command(command: str) -> None:
     await _run_detached(["/bin/sh", "-c", command])
+
+
+async def exit_launched(preset_or_command: str) -> None:
+    """Best-effort graceful exit for desk-mode teardown
+    (ActionConfig.kill_on_desk) -- the steam-bigpicture preset gets
+    Valve's own `-shutdown`, the same nice-exit launch_steam_bigpicture()
+    already uses before its own cold restart. An unrecognized custom
+    command has no universal "graceful exit" (unlike
+    is_launch_process_alive's "can't determine, assume True" default,
+    silently doing nothing here would be misleading — a config comment
+    promising the process gets killed that actually never touches it),
+    so it's logged plainly instead of pretended to be handled.
+    """
+    if preset_or_command == "steam-bigpicture":
+        if _is_steam_running():
+            await _shutdown_steam_and_wait()
+        return
+    if preset_or_command:
+        logger.info(
+            "launchers: no graceful exit known for custom command %r, leaving it running", preset_or_command
+        )
 
 
 async def launch(preset_or_command: str) -> None:

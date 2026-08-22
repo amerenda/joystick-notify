@@ -750,3 +750,123 @@ async def test_force_enter_couch_is_a_noop_already_in_couch(tmp_path):
     assert calls["couch"] == 1  # not re-activated
     assert sm.owner == "dev1"  # real owner untouched by the synthetic fallback
     await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_manually_entered_couch_never_goes_idle_with_no_real_controller(tmp_path):
+    # Direct regression test for the real 2026-08-22 bug: switching to
+    # couch mode manually (no controller ever connected) silently went
+    # couch-idle -- powering the TV/receiver back off -- the moment
+    # idle_after_s elapsed, because the synthetic "manual" owner was
+    # checked for presence exactly like a real controller and was of
+    # course never "present." A synthetic owner must never drive the
+    # absence/idle-timeout branch at all.
+    health = make_health(tmp_path)
+    idle_calls = {"enter": 0}
+
+    async def is_owner_present(device_id):
+        return False  # a synthetic id is never present
+
+    async def enter_couch_idle():
+        idle_calls["enter"] += 1
+
+    hooks, calls = make_hooks(is_owner_present=is_owner_present, enter_couch_idle=enter_couch_idle)
+    sm = StateMachine(
+        hooks,
+        health,
+        disconnect_grace_s=0.05,
+        poll_interval_s=0.01,
+        # Low, not default (10s): this test must actually reach the
+        # presence-check branch within its sleep window, or it'd pass
+        # trivially (idle never firing just because the grace period
+        # hadn't elapsed yet) without proving the real fix works -- see
+        # the sibling test below, which sets the same low grace and DOES
+        # expect idle to fire once a real device is the owner.
+        launch_startup_grace_s=0.01,
+        idle_after_s=0.03,
+        screensaver_enabled=True,
+    )
+
+    await sm.force_enter_couch()
+    await asyncio.sleep(0.15)  # well past idle_after_s
+
+    assert idle_calls["enter"] == 0
+    assert sm.mode == Mode.COUCH
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_controller_connecting_into_manual_session_adopts_ownership(tmp_path):
+    # The other half of the fix: a real controller connecting into a
+    # manually-started session should be adopted as the real owner --
+    # turning presence-based idle tracking (and the manual-exit shortcut
+    # watcher, via on_reconnect_while_couch) on for a session that started
+    # with neither.
+    health = make_health(tmp_path)
+    reconnect_calls = []
+
+    async def on_reconnect_while_couch(device_id):
+        reconnect_calls.append(device_id)
+
+    hooks, calls = make_hooks(on_reconnect_while_couch=on_reconnect_while_couch)
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    await sm.force_enter_couch()
+    assert sm.owner == "manual"
+    assert calls["couch"] == 1
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+
+    assert sm.owner == "dev1"
+    assert calls["couch"] == 1  # not re-activated -- already in couch
+    assert reconnect_calls == ["dev1"]
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_idle_tracking_applies_after_real_controller_adopts_a_manual_session(tmp_path):
+    health = make_health(tmp_path)
+    idle_calls = {"enter": 0}
+
+    async def is_owner_present(device_id):
+        return False  # dev1 has disconnected/gone quiet
+
+    async def enter_couch_idle():
+        idle_calls["enter"] += 1
+
+    hooks, calls = make_hooks(is_owner_present=is_owner_present, enter_couch_idle=enter_couch_idle)
+    sm = StateMachine(
+        hooks,
+        health,
+        disconnect_grace_s=0.05,
+        poll_interval_s=0.01,
+        launch_startup_grace_s=0.01,
+        idle_after_s=0.03,
+        screensaver_enabled=True,
+    )
+
+    await sm.force_enter_couch()
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    assert sm.owner == "dev1"
+
+    await asyncio.sleep(0.15)
+
+    assert idle_calls["enter"] == 1
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_second_real_controller_does_not_displace_an_existing_real_owner(tmp_path):
+    # The promotion path must only ever apply when the CURRENT owner is
+    # synthetic -- a second real controller connecting while a real owner
+    # already holds the session must still just be ignored (unchanged
+    # single-owner lock semantics).
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks()
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    await sm.handle_device_event(DeviceEvent(device_id="dev1", kind=StableKind.CONNECTED))
+    await sm.handle_device_event(DeviceEvent(device_id="dev2", kind=StableKind.CONNECTED))
+
+    assert sm.owner == "dev1"
+    await sm.aclose()

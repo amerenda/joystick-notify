@@ -158,6 +158,16 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         if resources.cec_retry_task is not None:
             resources.cec_retry_task.cancel()
             resources.cec_retry_task = None
+        # Exit the launched process BEFORE the display switch, not after:
+        # confirmed live 2026-08-22 that leaving Big Picture running
+        # across a display-mode change (even just until the *next* couch
+        # entry) is what caused a fullscreen-exclusive Steam window to
+        # lose HDMI signal entirely -- see
+        # launchers.launch_steam_bigpicture()'s docstring for the full
+        # root cause. Getting rid of it before the desk resolution switch
+        # avoids the same race in the other direction.
+        if config.on_connect.run and config.on_connect.kill_on_desk:
+            await launchers.exit_launched(config.on_connect.run)
         # Display/audio/screen-lock FIRST, CEC standby LAST: CEC standby is
         # best-effort and can legitimately take a long time (up to
         # standby_verify_attempts * standby_verify_delay_s *PER TARGET* --

@@ -1,11 +1,14 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from joystick_notify.config import store as config_store
 from joystick_notify.config.schema import JoystickNotifyConfig
-from joystick_notify.daemon import _forward_to_state_machine, check_startup_health, run_doctor
+from joystick_notify.daemon import _forward_to_state_machine, build_hooks, check_startup_health, run_doctor
 from joystick_notify.debounce import DeviceEvent, StableKind
 from joystick_notify.health import Health, Status
+from joystick_notify.manual_exit import ManualExitWatcher
 
 
 def test_check_startup_health_fails_when_binaries_missing(tmp_path, monkeypatch):
@@ -120,3 +123,61 @@ def test_forward_to_state_machine_reflects_toggle_change_on_the_very_next_event(
     config_store.save(config, config_path)
     asyncio.run(_forward_to_state_machine(sm, event, config_path))
     assert len(sm.events) == 1  # not forwarded the second time
+
+
+@pytest.mark.asyncio
+async def test_activate_desk_exits_launched_process_when_kill_on_desk_enabled(tmp_path, monkeypatch):
+    from joystick_notify import daemon as daemon_module
+
+    exit_calls = []
+
+    async def fake_exit_launched(preset_or_command):
+        exit_calls.append(preset_or_command)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.launchers, "exit_launched", fake_exit_launched)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+
+    config = JoystickNotifyConfig()
+    config.on_connect.run = "steam-bigpicture"
+    config.on_connect.kill_on_desk = True
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+
+    hooks = build_hooks(config, health, watcher)
+    await hooks.activate_desk()
+
+    assert exit_calls == ["steam-bigpicture"]
+
+
+@pytest.mark.asyncio
+async def test_activate_desk_leaves_launched_process_alone_when_kill_on_desk_disabled(tmp_path, monkeypatch):
+    from joystick_notify import daemon as daemon_module
+
+    exit_calls = []
+
+    async def fake_exit_launched(preset_or_command):
+        exit_calls.append(preset_or_command)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.launchers, "exit_launched", fake_exit_launched)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+
+    config = JoystickNotifyConfig()
+    config.on_connect.run = "steam-bigpicture"
+    config.on_connect.kill_on_desk = False
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+
+    hooks = build_hooks(config, health, watcher)
+    await hooks.activate_desk()
+
+    assert exit_calls == []
