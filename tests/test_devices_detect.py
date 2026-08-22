@@ -5,6 +5,7 @@ from joystick_notify.debounce import RawEvent, RawKind
 from joystick_notify.devices.detect import (
     HidrawLivenessWatcher,
     UdevWatcher,
+    _is_status_only_report,
     device_name,
     find_evdev_path_for_device,
     is_candidate_hid,
@@ -341,6 +342,83 @@ def test_hidraw_liveness_watcher_add_tracks_device_class():
 
     assert fed and fed[0].device_class == "bitdo_dongle"
     assert watcher._device_class_by_id["950F5726DC"] == "bitdo_dongle"
+
+
+# --- Steam Controller Puck dock-status filtering ---
+# Direct regression coverage for the 2026-08-22 live-testing finding:
+# docking a Steam Controller to its charging puck (with the controller
+# itself still powered off) fired a bare 2-byte 0x79 status report on the
+# puck's hidraw interface, which the old code treated identically to real
+# controller activity -- false-triggering couch mode just from charging.
+# Confirmed via a live captured hidraw dump (see devices/detect.py's
+# _is_status_only_report docstring for the exact evidence and byte shapes).
+
+def test_is_status_only_report_true_for_steam_puck_dock_toggle():
+    assert _is_status_only_report(bytes.fromhex("7901"), "steam_puck") is True
+    assert _is_status_only_report(bytes.fromhex("7902"), "steam_puck") is True
+
+
+def test_is_status_only_report_false_for_real_steam_puck_telemetry():
+    # The captured header report (0x7b) and per-frame IMU reports (0x42)
+    # that arrive during genuine power-on -- both must still count as
+    # real activity.
+    assert _is_status_only_report(bytes.fromhex("7b070002000000a307c3024eff"), "steam_puck") is False
+    assert _is_status_only_report(bytes.fromhex("4200000000000000ff0f23031302"), "steam_puck") is False
+
+
+def test_is_status_only_report_false_for_other_device_classes():
+    # Scoped specifically to steam_puck -- a coincidental 2-byte 0x79
+    # report from an unrelated controller class must not be filtered
+    # (no evidence it means the same thing there).
+    assert _is_status_only_report(bytes.fromhex("7901"), "bitdo_dongle") is False
+    assert _is_status_only_report(bytes.fromhex("7901"), "generic") is False
+
+
+def test_is_status_only_report_false_for_wrong_length():
+    # Only the exact 2-byte shape observed live counts -- a longer report
+    # that happens to start with 0x79 is not the dock-status pattern.
+    assert _is_status_only_report(bytes.fromhex("790102030405"), "steam_puck") is False
+
+
+def test_hidraw_liveness_watcher_ignores_dock_status_report_from_undocking(monkeypatch):
+    # The actual reported bug, reproduced directly: a bare 0x79 report
+    # from an otherwise-unseen device_id must not fire an ADD (couch mode
+    # trigger) and must not update _last_seen.
+    fed = []
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
+    read_fd, write_fd = os.pipe()
+    try:
+        watcher._fds[read_fd] = ("/dev/hidraw10", "FXB99617010AC", "steam_puck")
+        os.write(write_fd, bytes.fromhex("7901"))
+        watcher._on_readable(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert fed == []
+    assert "FXB99617010AC" not in watcher._reported_live
+    assert "FXB99617010AC" not in watcher._last_seen
+
+
+def test_hidraw_liveness_watcher_real_activity_still_fires_after_dock_status(monkeypatch):
+    # A genuine power-on's real telemetry (arriving on the same or a
+    # different hidraw node right after the dock-status blip) must still
+    # trigger the ADD normally.
+    fed = []
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
+    read_fd, write_fd = os.pipe()
+    try:
+        watcher._fds[read_fd] = ("/dev/hidraw6", "FXB99617010AC", "steam_puck")
+        os.write(write_fd, bytes.fromhex("4200000000000000ff0f23031302"))
+        watcher._on_readable(read_fd)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert len(fed) == 1
+    assert fed[0].device_id == "FXB99617010AC"
+    assert fed[0].kind == RawKind.ADD
+    assert "FXB99617010AC" in watcher._reported_live
 
 
 def test_hidraw_liveness_watcher_remove_event_carries_correct_device_class():

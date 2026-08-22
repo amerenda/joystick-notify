@@ -348,6 +348,29 @@ class UdevWatcher:
             self._observer = None
 
 
+# Confirmed via a live captured hidraw dump 2026-08-22 on a Steam
+# Controller Puck: a bare 2-byte report (0x79 + a toggling status byte)
+# fires on the dock's hidraw interface every time the controller is
+# placed in or removed from the charging cradle -- completely independent
+# of whether it's actually powered on. Docking to charge alone was enough
+# to false-trigger couch mode before this filter existed (reported live
+# 2026-08-22: "steam controller was offline, I connected it to the puck
+# to charge it, and it triggered couch mode"). The same report ID also
+# appears once at the very start of a REAL power-on, but in the same
+# capture it was immediately followed (same instant) by the actual
+# telemetry stream on different report IDs -- so filtering out 0x79
+# specifically costs no perceptible responsiveness for a real connect, it
+# just stops a bare dock-status blip from being mistaken for one on its
+# own.
+_STEAM_PUCK_STATUS_ONLY_REPORT_IDS = frozenset({0x79})
+
+
+def _is_status_only_report(data: bytes, device_class: str) -> bool:
+    if device_class != "steam_puck":
+        return False
+    return len(data) == 2 and data[0] in _STEAM_PUCK_STATUS_ONLY_REPORT_IDS
+
+
 class HidrawLivenessWatcher:
     """Direct port of v1's controller-liveness-watch.py: watches actual HID
     report data flow on /dev/hidraw* for receivers that produce no uevents
@@ -469,6 +492,12 @@ class HidrawLivenessWatcher:
         except OSError:
             return
         if not data:
+            return
+        if _is_status_only_report(data, device_class):
+            logger.debug(
+                "devices[%s]: ignoring status-only report %s (dock presence/charge toggle, not real activity)",
+                device_id, data.hex(),
+            )
             return
         self._last_seen[device_id] = time.monotonic()
         if device_id not in self._reported_live:
