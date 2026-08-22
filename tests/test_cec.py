@@ -138,7 +138,15 @@ def test_standby_and_verify_logs_warning_when_unconfirmed(tmp_path, caplog):
         cec_control._run = orig_run
 
 
-def test_standby_and_verify_reports_degraded_when_unconfirmed(tmp_path):
+def test_standby_and_verify_reports_ok_on_separate_component_when_unconfirmed(tmp_path):
+    # Direct regression test: this used to report health.degraded("cec", ...)
+    # -- the SAME component name check_startup_health()/ensure_adapter()
+    # use for "is the adapter/driver present" -- so a TV simply not
+    # responding to standby (a real, common CEC quirk, not a daemon
+    # problem) made the whole daemon look unhealthy. It's now a separate
+    # "cec_standby" component, reported ok() rather than degraded() per
+    # explicit feedback: this isn't the kind of thing that should read as
+    # "unhealthy" the way a missing adapter/driver is.
     from joystick_notify.actions import cec_control
 
     async def fake_run(cmd, timeout=5.0):
@@ -153,6 +161,33 @@ def test_standby_and_verify_reports_degraded_when_unconfirmed(tmp_path):
             cec_control.standby_and_verify(None, [0, 5], health, attempts=1, delay_s=0)
         )
         assert unconfirmed == [0, 5]
-        assert health.get("cec").status == Status.DEGRADED
+        assert health.get("cec") is None  # adapter-presence component untouched
+        status = health.get("cec_standby")
+        assert status is not None
+        assert status.status == Status.OK
+        assert "unconfirmed" in status.reason
+    finally:
+        cec_control._run = orig_run
+
+
+def test_standby_and_verify_reports_ok_on_separate_component_when_confirmed(tmp_path):
+    from joystick_notify.actions import cec_control
+
+    async def fake_run(cmd, timeout=5.0):
+        return 0, "pwr-state: standby"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        unconfirmed = asyncio.run(
+            cec_control.standby_and_verify(None, [0, 5], health, attempts=1, delay_s=0)
+        )
+        assert unconfirmed == []
+        assert health.get("cec") is None
+        status = health.get("cec_standby")
+        assert status is not None
+        assert status.status == Status.OK
+        assert "confirmed" in status.reason
     finally:
         cec_control._run = orig_run

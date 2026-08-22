@@ -134,9 +134,20 @@ async def standby_and_verify(
     standby before returning — a fire-and-forget standby command can
     silently no-op (v1's rationale, unchanged: a receiver asleep-but-not-
     really, a dropped CEC frame, a device that ignores broadcast standby).
-    Returns the list of addresses that never confirmed; reports Health
-    degraded (not failed — teardown still completes) so it's visible
-    without blocking the mode switch.
+    Returns the list of addresses that never confirmed.
+
+    Reports to a SEPARATE "cec_standby" Health component, not "cec" --
+    confirmed live 2026-08-22 that a TV simply not responding to standby
+    (a real, fairly common CEC quirk, not a sign anything's broken) was
+    overwriting the SAME "cec" component check_startup_health()/
+    ensure_adapter() use for "is the adapter/driver actually present,"
+    making the daemon look unhealthy overall for a downstream device
+    being uncooperative. Reported as ok(), not degraded() -- per
+    feedback, this isn't a daemon health problem the way a missing
+    adapter or driver is, so it shouldn't read as "unhealthy" in the
+    aggregate status/tray/doctor picture. Still logged at WARNING (see
+    below) so it stays visible for troubleshooting "why is my TV still
+    on," just not as a health alarm.
     """
     unconfirmed: list[int] = []
     for addr in targets:
@@ -159,7 +170,11 @@ async def standby_and_verify(
         # its own at all, only a Health.degraded() call with no matching
         # entry in the event log.
         logger.warning("cec: standby unconfirmed for address(es) %s, device(s) may still be on", unconfirmed)
-        health.degraded("cec", f"standby unconfirmed for address(es) {unconfirmed}", "device(s) may still be on")
+        health.ok(
+            "cec_standby",
+            f"standby sent but unconfirmed for address(es) {unconfirmed} "
+            "(device(s) may still be on -- not treated as a daemon health issue)",
+        )
     else:
-        health.ok("cec", "standby confirmed for all targets")
+        health.ok("cec_standby", "standby confirmed for all targets")
     return unconfirmed
