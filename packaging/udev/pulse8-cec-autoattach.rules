@@ -1,0 +1,17 @@
+# Auto-attach the Pulse-Eight CEC line discipline when its ttyACM serial
+# device appears, so the kernel pulse8_cec driver takes over and creates
+# /dev/cec0. See https://wiki.archlinux.org/title/HDMI-CEC
+# Already generic to any Pulse-Eight-protocol adapter (manufacturer/product
+# string match, not one specific unit) — no per-install changes needed.
+
+# Make sure that power/persist is and stays off, in case
+# CONFIG_USB_DEFAULT_PERSIST enables it by default.
+SUBSYSTEM=="usb", ATTR{manufacturer}=="Pulse-Eight", ATTR{product}=="CEC Adapter", ATTR{power/persist}="0"
+
+SUBSYSTEM=="tty", ACTION=="add", ATTRS{manufacturer}=="Pulse-Eight", ATTRS{product}=="CEC Adapter", TAG+="systemd", ENV{SYSTEMD_WANTS}="pulse8-cec-attach@$devnode.service"
+
+# Force device to be reconfigured when reset after suspend, otherwise the ttyACM link is
+# lost but udev will not notice. A usb_dev_uevent with DEVNUM=000 is a sign that the
+# device is being reset before enumeration. Re-configuring causes ttyACM to be removed
+# and re-added instead, which re-triggers the SUBSYSTEM=="tty" rule above.
+SUBSYSTEM=="usb", ACTION=="change", ATTR{manufacturer}=="Pulse-Eight", ATTR{product}=="CEC Adapter", ENV{DEVNUM}=="000", ATTR{bConfigurationValue}=="1", ATTR{bConfigurationValue}="1"

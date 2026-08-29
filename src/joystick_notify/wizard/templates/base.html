@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}joystick-notify{% endblock %}</title>
+  <script src="/static/vendor/htmx.min.js"></script>
+  <script defer src="/static/vendor/alpine.min.js"></script>
+  <style>
+    :root {
+      --bg: #14161a; --panel: #1d2026; --text: #e7e9ee; --muted: #9aa1ad;
+      --accent: #5b8def; --ok: #3ecf6c; --degraded: #e0b13c; --failed: #e05c5c; --border: #2b2f38;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; border-bottom: 1px solid var(--border); }
+    header h1 { font-size: 17px; margin: 0; }
+    header nav a { color: var(--muted); text-decoration: none; margin-left: 18px; font-size: 14px; }
+    header nav a:hover { color: var(--text); }
+    main { max-width: 780px; margin: 0 auto; padding: 28px 24px 60px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; }
+    .card h2 { font-size: 15px; margin: 0 0 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+    input[type=text], input[type=password], select {
+      width: 100%; padding: 8px 10px; background: #10131a; border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 14px;
+    }
+    input[type=checkbox] { margin-right: 6px; }
+    button, .btn {
+      background: var(--accent); color: white; border: none; border-radius: 6px;
+      padding: 9px 16px; font-size: 14px; cursor: pointer; margin-top: 14px;
+    }
+    button.secondary { background: #2b2f38; }
+    .error { color: var(--failed); font-size: 14px; margin-top: 10px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 4px 10px; border-radius: 999px; background: #10131a; border: 1px solid var(--border); }
+    .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .dot.ok { background: var(--ok); }
+    .dot.degraded { background: var(--degraded); }
+    .dot.failed { background: var(--failed); }
+    .dot.unreachable { background: var(--muted); }
+    /* flex-wrap + min-width:0 on children: a long status message (e.g. a
+       CEC "standby unconfirmed for address(es) [0, 5] -- device(s) may
+       still be on" reason) must wrap onto its own line instead of forcing
+       the row wider than its container -- same class of bug fixed once
+       already for the events panel; .component-row is reused in enough
+       places (status list, current-config, custom commands) that the fix
+       belongs here once, not per usage. */
+    .component-row { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+    .component-row > * { min-width: 0; }
+    .component-row:last-child { border-bottom: none; }
+    .muted { color: var(--muted); }
+    fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; }
+    legend { padding: 0 6px; color: var(--muted); font-size: 13px; }
+    /* Tab bar for the configure page (added for the "look like Sunshine's
+       config" redesign) -- reused as-is by any future multi-section page,
+       not configure-page-specific, so it lives here with the rest of the
+       shared chrome rather than inline in configure.html. */
+    .tab-bar { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 22px; overflow-x: auto; }
+    .tab-bar button {
+      background: none; border: none; color: var(--muted); padding: 11px 18px; font-size: 14px;
+      font-weight: 600; cursor: pointer; margin-top: 0; border-radius: 0; white-space: nowrap;
+      border-bottom: 2px solid transparent;
+    }
+    .tab-bar button:hover { color: var(--text); }
+    .tab-bar button.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>joystick-notify</h1>
+    <div style="display:flex; align-items:center; gap:18px;">
+      <div id="status-badge" hx-get="/partials/status" hx-trigger="load, every 3s" hx-swap="innerHTML"></div>
+      <nav>
+        <a href="/">Status</a>
+        <a href="/configure">Configure</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

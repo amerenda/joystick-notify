@@ -1,0 +1,81 @@
+# Maintainer: Alex Merenda <alex@amer.dev>
+#
+# Development PKGBUILD — `makepkg -si` from a repo checkout is the intended
+# day-to-day install/test loop during this rewrite (see
+# plans/joystick-notify-v2.md decision #4). AUR submission waits until
+# after the dogfooding period in decision #5.
+#
+# Run from the repo root (this file lives in packaging/, so:
+#   makepkg -p packaging/PKGBUILD -si
+
+pkgname=joystick-notify
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Controller-triggered couch/desk mode switcher: display, audio, CEC, and game launch automation"
+arch=('x86_64' 'aarch64')
+url="https://github.com/amerenda/joystick-notify"
+license=('MIT')
+depends=(
+  'python'
+  'python-pyudev'
+  'python-evdev'
+  'python-uvicorn'
+  'python-starlette'
+  'python-jinja'
+  'python-multipart'
+  'python-tomli-w'
+  'kscreen'
+  'pipewire-pulse'
+  'v4l-utils'
+)
+optdepends=(
+  'python-pyqt6: tray icon'
+  'libcec: cec-client fallback if cec-ctl/kernel CEC is unavailable'
+)
+makedepends=('python-build' 'python-installer' 'python-wheel' 'gcc')
+install=joystick-notify.install
+source=()
+sha256sums=()
+
+_repo_root() {
+  cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
+}
+
+build() {
+  cd "$(_repo_root)"
+  python -m build --wheel --no-isolation --outdir "$srcdir/dist"
+  gcc -O2 -o "$srcdir/usbreset" packaging/bin/usbreset.c
+}
+
+package() {
+  local repo; repo="$(_repo_root)"
+  cd "$repo"
+
+  python -m installer --destdir="$pkgdir" "$srcdir"/dist/*.whl
+
+  install -Dm0755 "$srcdir/usbreset" "$pkgdir/usr/lib/joystick-notify/usbreset"
+  install -Dm0755 packaging/bin/cec-watchdog.sh "$pkgdir/usr/lib/joystick-notify/cec-watchdog.sh"
+  install -Dm0755 packaging/bin/cec-fixup.sh "$pkgdir/usr/lib/joystick-notify/cec-fixup.sh"
+  install -Dm0755 packaging/bin/jn-setup-root-carveout.sh "$pkgdir/usr/bin/jn-setup-root-carveout.sh"
+
+  install -Dm0644 packaging/systemd/joystick-notify.service "$pkgdir/usr/lib/systemd/user/joystick-notify.service"
+  install -Dm0644 packaging/systemd/joystick-notify-tray.service "$pkgdir/usr/lib/systemd/user/joystick-notify-tray.service"
+
+  install -Dm0644 packaging/systemd-system/cec0-configure.service "$pkgdir/usr/lib/systemd/system/cec0-configure.service"
+  install -Dm0644 "packaging/systemd-system/pulse8-cec-attach@.service" "$pkgdir/usr/lib/systemd/system/pulse8-cec-attach@.service"
+  install -Dm0644 packaging/systemd-system/cec-watchdog.service "$pkgdir/usr/lib/systemd/system/cec-watchdog.service"
+  install -Dm0644 packaging/systemd-system/cec-watchdog.timer "$pkgdir/usr/lib/systemd/system/cec-watchdog.timer"
+  install -Dm0644 packaging/systemd-system/cec-fixup.service "$pkgdir/usr/lib/systemd/system/cec-fixup.service"
+
+  install -Dm0644 packaging/udev/pulse8-cec-autoattach.rules "$pkgdir/usr/lib/udev/rules.d/70-joystick-notify-pulse8-cec-autoattach.rules"
+  install -Dm0644 packaging/udev/cec-configure-autostart.rules "$pkgdir/usr/lib/udev/rules.d/70-joystick-notify-cec-configure-autostart.rules"
+  install -Dm0644 packaging/udev/98-cec-fixup.rules "$pkgdir/usr/lib/udev/rules.d/98-joystick-notify-cec-fixup.rules"
+
+  install -Dm0644 packaging/xdg-autostart/joystick-notify.desktop "$pkgdir/etc/xdg/autostart/joystick-notify.desktop"
+  install -Dm0644 packaging/applications/joystick-notify-tray.desktop "$pkgdir/usr/share/applications/joystick-notify-tray.desktop"
+
+  # Sudoers template (%USER% placeholder) — instantiated by
+  # jn-setup-root-carveout.sh, not installed directly to /etc/sudoers.d by
+  # the package itself. See that script's header comment for why.
+  install -Dm0644 packaging/joystick-notify.sudoers "$pkgdir/usr/share/joystick-notify/joystick-notify.sudoers"
+}

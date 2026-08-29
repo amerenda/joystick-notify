@@ -1,0 +1,22 @@
+[Unit]
+# Instantiated as "pulse8-cec-attach@-dev-ttyACM0.service" or similar by
+# pulse8-cec-autoattach.rules (udev's $devnode substitution).
+Description=Attach pulse8-cec line discipline to USB Pulse-Eight serial device at %I
+ConditionPathExists=%I
+
+[Service]
+Type=forking
+# inputattach is built without systemd daemon support by default, so systemd
+# has to guess the PID. See:
+# https://sourceforge.net/p/linuxconsole/code/ci/a3366c0d5f82485e6aae7b005ec7a2d9a93bf458/tree/utils/inputattach.c#l1233
+ExecStart=/usr/bin/inputattach --daemon --pulse8-cec %I
+
+# The daemonized inputattach process has been observed to exit cleanly
+# (status=0) minutes after a clean attach, silently dropping the line
+# discipline (and therefore /dev/cec0) with no kernel log trace and no USB
+# re-enumeration event, so pulse8-cec-autoattach.rules never re-fires.
+# Restart=always (not on-failure: the exit is clean/status 0) so systemd
+# reattaches automatically instead of leaving CEC dead until next boot.
+Restart=always
+RestartSec=2
+StartLimitIntervalSec=0

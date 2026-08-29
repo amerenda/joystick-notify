@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "joystick-notify"
+version = "0.1.0"
+description = "Controller-triggered couch/desk mode switcher: display, audio, CEC, and game launch automation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "pyudev>=0.24",
+  "evdev>=1.6",
+  "tomli-w>=1.0",
+  "starlette>=0.37",
+  "uvicorn>=0.29",
+  "jinja2>=3.1",
+  "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+tray = ["PyQt6>=6.6"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.scripts]
+jn-daemon = "joystick_notify.daemon:main"
+jn-tray = "joystick_notify.tray.tray:main"
+jn-cec0-configure = "joystick_notify.cec0_configure:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"joystick_notify.wizard" = ["static/**/*", "templates/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

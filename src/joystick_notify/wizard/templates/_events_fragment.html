@@ -1,0 +1,13 @@
+{% if not events %}
+  <p class="muted">No events yet at this level — try a more verbose option above.</p>
+{% else %}
+  {% for e in events %}
+  <div class="component-row">
+    <span class="muted" style="font-family: monospace; font-size: 12px;">{{ e.time }}</span>
+    {% if e.level in ("WARNING", "ERROR") %}
+    <span class="muted" style="font-size: 11px; text-transform: uppercase;">[{{ e.level }}]</span>
+    {% endif %}
+    <span>{{ e.message }}</span>
+  </div>
+  {% endfor %}
+{% endif %}

@@ -1,0 +1,13 @@
+[Unit]
+Description=joystick-notify tray icon
+After=graphical-session.target joystick-notify.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/jn-tray
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

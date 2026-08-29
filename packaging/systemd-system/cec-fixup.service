@@ -1,0 +1,11 @@
+[Unit]
+Description=Work around pulse8-cec probe race (USB bus reset if /dev/cec0 missing/wedged)
+After=local-fs.target systemd-udevd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/joystick-notify/cec-fixup.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

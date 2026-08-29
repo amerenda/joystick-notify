@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=joystick-notify
+Comment=Controller-triggered couch/desk mode switcher — tray status
+Exec=/usr/bin/jn-tray
+Icon=input-gaming
+Terminal=false
+Categories=Utility;
+NoDisplay=true
