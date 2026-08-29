@@ -314,3 +314,61 @@ def test_standby_and_verify_checks_all_pending_targets_every_round_not_sequentia
         assert unconfirmed == [5]
     finally:
         cec_control._run = orig_run
+
+
+def test_wake_non_tv_targets_sends_system_audio_mode_request_skips_tv():
+    # Direct regression test for the real root cause found live 2026-08-29:
+    # a receiver put into standby by standby_and_verify() never woke back
+    # up from Active Source/Set Stream Path alone -- nothing ever sent it
+    # an explicit wake. <System Audio Mode Request> is the spec-correct
+    # message an Audio System device must power on in response to; the TV
+    # (address 0) is skipped here since image_view_on() already covers it.
+    from joystick_notify.actions import cec_control
+
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, ""
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        asyncio.run(cec_control.wake_non_tv_targets(None, "3.2.0.0", [0, 5]))
+        sysaud_calls = [c for c in calls if "--system-audio-mode-request" in c]
+        assert len(sysaud_calls) == 1
+        assert sysaud_calls[0][sysaud_calls[0].index("--to") + 1] == "5"
+        assert "phys-addr=3.2.0.0" in sysaud_calls[0]
+    finally:
+        cec_control._run = orig_run
+
+
+def test_wake_and_select_input_wakes_non_tv_targets_before_active_source():
+    from joystick_notify.actions import cec_control
+    from joystick_notify.health import Health
+
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, ""
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path("/tmp") / "wake_test_health.json")
+        asyncio.run(
+            cec_control.wake_and_select_input(
+                None, "3.2.0.0", health, retries=0, wake_targets=[0, 5]
+            )
+        )
+        opcodes = [
+            "--system-audio-mode-request" if "--system-audio-mode-request" in c else
+            "--active-source" if "--active-source" in c else
+            "--set-stream-path" if "--set-stream-path" in c else
+            "--image-view-on" if "--image-view-on" in c else "?"
+            for c in calls
+        ]
+        assert opcodes.index("--system-audio-mode-request") < opcodes.index("--active-source")
+    finally:
+        cec_control._run = orig_run
