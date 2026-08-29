@@ -146,6 +146,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                     wake_delay_s=config.cec.wake_delay_s,
                     retries=config.cec.active_source_retries,
                     retry_delay_s=config.cec.active_source_retry_delay_s,
+                    wake_targets=config.cec.standby_targets,
                 )
                 health.ok("cec", "wake + active-source sent")
         await display_actions.activate_couch(config.display, health)
@@ -254,6 +255,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                     wake_delay_s=config.cec.wake_delay_s,
                     retries=config.cec.active_source_retries,
                     retry_delay_s=config.cec.active_source_retry_delay_s,
+                    wake_targets=config.cec.standby_targets,
                 )
         await screen_lock_actions.deactivate_screensaver(health)
 

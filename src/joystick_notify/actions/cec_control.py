@@ -60,6 +60,27 @@ async def set_stream_path_and_active_source(adapter: str | None, phys_addr: str)
     await _run(["cec-ctl", *args, "--to", "0", "--active-source", f"phys-addr={phys_addr}"])
 
 
+async def wake_non_tv_targets(adapter: str | None, phys_addr: str, targets: list[int]) -> None:
+    """Explicitly wakes any non-TV standby target (e.g. an AVR/receiver at
+    logical address 5) via <System Audio Mode Request>, which — unlike
+    <Active Source>/<Set Stream Path> — a powered-down Audio System device
+    is spec-required to power on in response to. <Image View On> only
+    targets the TV (logical address 0); before this, nothing ever
+    explicitly asked a receiver to wake, it was just assumed to infer a
+    wake from seeing Active Source broadcasts. Confirmed live 2026-08-29:
+    a real receiver, put into standby by our own standby_and_verify(),
+    never came back on its own from Active Source/Set Stream Path alone.
+    Mirrors standby_and_verify()'s already-configurable `targets` list
+    (config.cec.standby_targets) so the same wizard-populated topology
+    drives both directions instead of wake staying TV-only forever.
+    """
+    args = _adapter_args(adapter)
+    for target in targets:
+        if target == 0:
+            continue  # TV already handled by image_view_on()
+        await _run(["cec-ctl", *args, "--to", str(target), "--system-audio-mode-request", f"phys-addr={phys_addr}"])
+
+
 async def wake_and_select_input(
     adapter: str | None,
     phys_addr: str | None,
@@ -68,6 +89,7 @@ async def wake_and_select_input(
     wake_delay_s: float = 0.0,
     retries: int = 2,
     retry_delay_s: float = 4.0,
+    wake_targets: list[int] | None = None,
 ) -> asyncio.Task | None:
     """Sends the initial wake + input select synchronously, then spawns and
     returns a Task running the re-assert retry loop (reclaims input from
@@ -83,6 +105,8 @@ async def wake_and_select_input(
     if not phys_addr:
         logger.info("cec: input switch skipped (no physical address configured)")
         return None
+    if wake_targets:
+        await wake_non_tv_targets(adapter, phys_addr, wake_targets)
     await set_stream_path_and_active_source(adapter, phys_addr)
 
     if retries <= 0:
