@@ -19,7 +19,7 @@ depends=(
   'python'
   'python-pyudev'
   'python-evdev'
-  'python-uvicorn'
+  'uvicorn'
   'python-starlette'
   'python-jinja'
   'python-multipart'
