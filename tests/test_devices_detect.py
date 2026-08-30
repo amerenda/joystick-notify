@@ -186,6 +186,81 @@ def test_udev_watcher_hands_off_via_call_soon_threadsafe_not_direct_call(tmp_pat
     assert fed[0].device_class == "bitdo_dongle"
 
 
+def test_udev_watcher_change_action_never_fires_a_connect(tmp_path):
+    # Regression test for a real incident, 2026-08-30: pacman's own
+    # 35-systemd-udev-reload.hook runs `udevadm trigger -c change` -- a
+    # system-wide "change" event for every device -- as a PostTransaction
+    # hook on ANY package install/upgrade/remove shipping files under
+    # /usr/lib/udev/rules.d/* (this package's own reinstall included, but
+    # not exclusively). With "change" previously treated as a fresh
+    # connect, an already-connected, never-touched controller was
+    # reported as a brand new physical connect, firing a real couch-mode
+    # activation (screen unlock + CEC wake) with nobody having touched it.
+    fed = []
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(lambda e: fed.append(e), health)
+    fake_loop = _FakeLoop()
+    watcher._loop = fake_loop
+
+    device = _FakeDevice(
+        {
+            "SUBSYSTEM": "hid",
+            "ID_INPUT_JOYSTICK": "1",
+            "HID_UNIQ": "950F5726DC",
+            "ACTION": "change",
+            "HID_NAME": "8BitDo Ultimate 2",
+            "ID_VENDOR_ID": "2dc8",
+        }
+    )
+    watcher._on_udev_event(device)
+
+    assert fake_loop.calls == []
+
+
+def test_udev_watcher_change_action_does_not_refire_a_cached_device_either(tmp_path):
+    # Same bug, but for the more common real shape: a controller that's
+    # been connected long enough to already have a devpath cache entry
+    # (from its own earlier real "add") must not have that cache hit
+    # reinterpreted as a fresh connect just because a later event happens
+    # to carry ACTION=change -- the identity-cache path and the action ->
+    # RawKind mapping are independent, and the old code applied the
+    # add/change equivalence unconditionally after either path.
+    fed = []
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = UdevWatcher(lambda e: fed.append(e), health)
+    fake_loop = _FakeLoop()
+    watcher._loop = fake_loop
+
+    devpath = "/devices/.../3-2/3-2:1.0/0003:2DC8:6012.0030/input/input88"
+    add_event = _FakeDevice(
+        {
+            "SUBSYSTEM": "hid",
+            "ID_INPUT_JOYSTICK": "1",
+            "HID_UNIQ": "950F5726DC",
+            "ACTION": "add",
+            "HID_NAME": "8BitDo Ultimate 2",
+            "ID_VENDOR_ID": "2dc8",
+            "DEVPATH": devpath,
+        }
+    )
+    watcher._on_udev_event(add_event)
+    assert len(fake_loop.calls) == 1
+
+    change_event = _FakeDevice(
+        {
+            "SUBSYSTEM": "hid",
+            "ACTION": "change",
+            "DEVPATH": devpath,
+        }
+    )
+    watcher._on_udev_event(change_event)
+
+    # Only the original "add" was ever scheduled -- the later system-wide
+    # "change" retrigger for the same, already-cached devpath produced no
+    # second event.
+    assert len(fake_loop.calls) == 1
+
+
 def test_udev_watcher_no_op_when_loop_not_set(tmp_path):
     fed = []
     health = Health(path=Path(tmp_path) / "health.json")

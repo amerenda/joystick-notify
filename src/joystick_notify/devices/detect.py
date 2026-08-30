@@ -325,11 +325,32 @@ class UdevWatcher:
                 return
             device_class = profile_for(properties).device_class
 
-        if action in ("add", "change"):
+        if action == "add":
             kind = RawKind.ADD
         elif action == "remove":
             kind = RawKind.REMOVE
         else:
+            # "change" deliberately does NOT count as a connect. Root
+            # cause of a real incident 2026-08-30: pacman's own
+            # 35-systemd-udev-reload.hook fires `udevadm trigger -c
+            # change` -- a SYSTEM-WIDE "change" event for every device on
+            # the box -- as a PostTransaction hook on ANY package install/
+            # upgrade/remove that ships files under
+            # /usr/lib/udev/rules.d/* (this package included, but not
+            # exclusively -- any such package on the system, ansible-
+            # deployed or not). With "change" treated as a fresh connect,
+            # this handler saw the udev retrigger for an already-connected
+            # controller (HID_UNIQ 950F5726DC, an 8BitDo pad -- the same
+            # device this file's own test fixtures already use, from the
+            # unrelated two-devpaths-one-controller fix) and reported it
+            # as a brand new physical connect, firing a full couch-mode
+            # activation -- screen unlock + real CEC wake to the TV --
+            # with no controller having actually been touched. No test in
+            # this file ever exercised the "change" branch and no comment
+            # justified it; it was carried unchanged from the very first
+            # v2 prototype commit. Genuine connects reliably fire "add"
+            # (every existing test here uses "add"); only that should ever
+            # start a new device's identity resolution.
             return
 
         if devpath:
