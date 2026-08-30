@@ -32,6 +32,24 @@ def test_auto_switch_enabled_round_trips(tmp_path):
     assert loaded.auto_switch_enabled is False
 
 
+def test_cursor_config_round_trips(tmp_path):
+    # Regression test: _from_dict() originally omitted `cursor=` when
+    # reconstructing JoystickNotifyConfig, so the dataclass default
+    # silently won every load regardless of what was actually saved to
+    # disk -- caught before deploy, not by this test failing first.
+    path = Path(tmp_path) / "config.toml"
+    cfg = JoystickNotifyConfig()
+    cfg.cursor.enabled = True
+    cfg.cursor.hide_theme = "invisible"
+    cfg.cursor.normal_theme = "breeze_cursors"
+    save(cfg, path)
+
+    loaded = load(path)
+    assert loaded.cursor.enabled is True
+    assert loaded.cursor.hide_theme == "invisible"
+    assert loaded.cursor.normal_theme == "breeze_cursors"
+
+
 def test_teardown_command_defaults_empty():
     assert JoystickNotifyConfig().on_connect.teardown_command == ""
 
