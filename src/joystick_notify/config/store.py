@@ -16,6 +16,7 @@ from .schema import (
     ActionConfig,
     AudioConfig,
     CecConfig,
+    CursorConfig,
     CustomCommand,
     DisplayConfig,
     IdleConfig,
@@ -108,6 +109,7 @@ def _from_dict(raw: dict) -> JoystickNotifyConfig:
         on_connect=_section(ActionConfig, defaults.on_connect, raw.get("on_connect", {})),
         custom_commands=_custom_commands(raw.get("custom_commands", [])),
         screen_lock=_section(ScreenLockConfig, defaults.screen_lock, raw.get("screen_lock", {})),
+        cursor=_section(CursorConfig, defaults.cursor, raw.get("cursor", {})),
         shortcuts=_section(ShortcutConfig, defaults.shortcuts, raw.get("shortcuts", {})),
         wizard=_section(WizardConfig, defaults.wizard, raw.get("wizard", {})),
     )

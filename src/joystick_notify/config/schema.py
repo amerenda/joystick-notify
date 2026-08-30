@@ -133,6 +133,21 @@ class ScreenLockConfig:
 
 
 @dataclass
+class CursorConfig:
+    # Off by default, matching screen_lock's explicit-opt-in treatment --
+    # this depends on the "invisible" Xcursor theme already existing on
+    # the host (ansible-playbooks roles/mouse-hide), so a fresh/
+    # undeployed host must not silently no-op switching to a theme that
+    # was never installed. See actions/cursor.py's module docstring.
+    enabled: bool = False
+    hide_theme: str = "invisible"
+    # Empty = unknown/don't care what the normal theme is -- activate_desk
+    # then leaves the current cursor theme alone rather than guessing at a
+    # name that might not exist (see actions/cursor.py).
+    normal_theme: str = ""
+
+
+@dataclass
 class ShortcutConfig:
     # On by default -- unlike screen_lock, this isn't a security tradeoff,
     # it's a pure safety net: always having a way back to desk regardless
@@ -187,5 +202,6 @@ class JoystickNotifyConfig:
     on_connect: ActionConfig = field(default_factory=ActionConfig)
     custom_commands: list[CustomCommand] = field(default_factory=list)
     screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)
+    cursor: CursorConfig = field(default_factory=CursorConfig)
     shortcuts: ShortcutConfig = field(default_factory=ShortcutConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)

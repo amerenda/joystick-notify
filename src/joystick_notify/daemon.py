@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .actions import audio as audio_actions
 from .actions import cec_control
+from .actions import cursor as cursor_actions
 from .actions import display as display_actions
 from .actions import launchers
 from .actions import screen_lock as screen_lock_actions
@@ -151,6 +152,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                 health.ok("cec", "wake + active-source sent")
         await display_actions.activate_couch(config.display, health)
         await audio_actions.activate_couch(config.audio, health)
+        await cursor_actions.activate_couch(config.cursor, health)
         if config.shortcuts.exit_couch_enabled:
             await resources.manual_exit_watcher.start(device_id)
 
@@ -180,6 +182,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         # allowed to fail.
         await display_actions.activate_desk(config.display, health)
         await audio_actions.activate_desk(config.audio, health)
+        await cursor_actions.activate_desk(config.cursor, health)
         await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
         resources.screen_lock_cookie = None
         if config.cec.enabled and config.cec.power_off_on_teardown:
