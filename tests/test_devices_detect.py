@@ -496,6 +496,73 @@ def test_hidraw_liveness_watcher_real_activity_still_fires_after_dock_status(mon
     assert "FXB99617010AC" in watcher._reported_live
 
 
+# --- Flooding/misbehaving hidraw device read-rate cap ---
+# Direct regression coverage for the 2026-08-30 live incident: a hidraw
+# node that never stops being readable (level-triggered `loop.add_reader`
+# re-fires every loop iteration) drove 7.2M reads / 22.7GB in under an
+# hour with no ceiling at all. See HidrawLivenessWatcher.__init__'s
+# docstring comment for the full incident.
+
+def test_hidraw_liveness_watcher_flood_threshold_backs_off_and_stops_reading():
+    fed = []
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e), flood_reads_per_s=3, flood_backoff_s=10.0)
+    backed_off = []
+    # Avoid needing a running asyncio loop in this synchronous test --
+    # _back_off_reader's own loop.remove_reader/call_later plumbing is
+    # exercised separately by the resume test below.
+    watcher._back_off_reader = lambda fd: backed_off.append(fd)
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)  # real hidraw nodes are opened O_NONBLOCK -- match that here
+    try:
+        watcher._fds[read_fd] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
+        os.write(write_fd, b"\x01")
+        for _ in range(3):
+            watcher._on_readable(read_fd)
+        assert backed_off == []
+
+        # 4th read in the same 1s window exceeds the 3 reads/s cap. The
+        # flood check runs before the actual read, so it still counts even
+        # though the pipe has no more data queued up for it by this point.
+        watcher._on_readable(read_fd)
+        assert backed_off == [read_fd]
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_hidraw_liveness_watcher_flood_window_resets_after_a_second():
+    fed = []
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e), flood_reads_per_s=2, flood_backoff_s=10.0)
+    backed_off = []
+    watcher._back_off_reader = lambda fd: backed_off.append(fd)
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    try:
+        watcher._fds[read_fd] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
+        os.write(write_fd, b"\x01")
+        watcher._on_readable(read_fd)
+        watcher._on_readable(read_fd)
+        assert backed_off == []
+
+        # Simulate the window having elapsed instead of sleeping for real.
+        watcher._read_window_start[read_fd] -= 1.5
+        watcher._on_readable(read_fd)
+        assert backed_off == []
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_hidraw_liveness_watcher_resume_reader_noop_if_device_already_gone():
+    # A device can be removed by _rescan() (which closes the real fd) while
+    # its reader is backed off -- the fd int the kernel then hands out next
+    # could belong to something else entirely, so resuming must be a no-op
+    # once _rescan() has dropped the fd from self._fds, not blindly
+    # re-arm a stale/reused fd number.
+    watcher = HidrawLivenessWatcher(lambda e: None)
+    watcher._resume_reader(999)  # never in self._fds -- must not raise
+
+
 def test_hidraw_liveness_watcher_remove_event_carries_correct_device_class():
     # The ADD path tracked device_class via self._fds, but the REMOVE path
     # (fired from the timeout loop, which only has device_id) previously
