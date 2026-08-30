@@ -407,11 +407,28 @@ class HidrawLivenessWatcher:
         *,
         rescan_interval_s: float = 5.0,
         remove_timeout_s: float = 6.0,
+        flood_reads_per_s: float = 200.0,
+        flood_backoff_s: float = 2.0,
     ) -> None:
         self._feed = feed
         self._health = health
         self._rescan_interval_s = rescan_interval_s
         self._remove_timeout_s = remove_timeout_s
+        # A real controller's HID report rate tops out in the low hundreds
+        # of Hz -- 200 reads/s is already generous headroom. Found live
+        # 2026-08-30: a misbehaving/flooding receiver (level-triggered
+        # `loop.add_reader` fires again the instant a read drains less than
+        # what's pending) drove 7.2M reads / 22.7GB in under an hour with
+        # no ceiling at all, pegging the event loop and ballooning the
+        # daemon's read-cache footprint. Exceeding the cap backs the fd off
+        # (removes it from the selector, without closing it) for
+        # `flood_backoff_s` instead of tearing down device tracking --
+        # a real device recovering from a bad burst should resume normally,
+        # not get treated as removed.
+        self._flood_reads_per_s = flood_reads_per_s
+        self._flood_backoff_s = flood_backoff_s
+        self._read_window_start: dict[int, float] = {}
+        self._read_window_count: dict[int, int] = {}
         self._task: asyncio.Task | None = None
         self._fds: dict[int, tuple[str, str, str]] = {}  # fd -> (path, device_id, device_class)
         self._last_seen: dict[str, float] = {}
@@ -508,6 +525,10 @@ class HidrawLivenessWatcher:
         path, device_id, device_class = self._fds.get(fd, (None, None, None))
         if device_id is None:
             return
+
+        if self._over_flood_threshold(fd, device_id, path):
+            return
+
         try:
             data = os.read(fd, 4096)
         except OSError:
@@ -515,16 +536,67 @@ class HidrawLivenessWatcher:
         if not data:
             return
         if _is_status_only_report(data, device_class):
-            logger.debug(
-                "devices[%s]: ignoring status-only report %s (dock presence/charge toggle, not real activity)",
-                device_id, data.hex(),
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                # data.hex() is only worth building once we know it'll
+                # actually be logged -- as a plain call argument it would
+                # otherwise be evaluated on every single report regardless
+                # of level, which is wasted work at any real report volume.
+                logger.debug(
+                    "devices[%s]: ignoring status-only report %s (dock presence/charge toggle, not real activity)",
+                    device_id, data.hex(),
+                )
             return
         self._last_seen[device_id] = time.monotonic()
         if device_id not in self._reported_live:
             self._reported_live.add(device_id)
             self._device_class_by_id[device_id] = device_class
             self._feed(RawEvent(device_id=device_id, kind=RawKind.ADD, device_class=device_class, source="hidraw_liveness"))
+
+    def _over_flood_threshold(self, fd: int, device_id: str, path: str) -> bool:
+        """Per-fd sliding-window read-rate cap -- see __init__'s docstring
+        comment for the live incident this closes. Returns True (and backs
+        the fd off) if this read should be skipped this cycle.
+        """
+        now = time.monotonic()
+        window_start = self._read_window_start.get(fd)
+        if window_start is None or now - window_start >= 1.0:
+            self._read_window_start[fd] = now
+            self._read_window_count[fd] = 0
+
+        count = self._read_window_count.get(fd, 0) + 1
+        self._read_window_count[fd] = count
+        if count <= self._flood_reads_per_s:
+            return False
+
+        logger.warning(
+            "devices[%s]: hidraw node %s exceeded %d reads/s, backing off %.1fs "
+            "(flooding or misbehaving device?)",
+            device_id, path, int(self._flood_reads_per_s), self._flood_backoff_s,
+        )
+        self._back_off_reader(fd)
+        return True
+
+    def _back_off_reader(self, fd: int) -> None:
+        loop = asyncio.get_event_loop()
+        try:
+            loop.remove_reader(fd)
+        except OSError:
+            pass
+        loop.call_later(self._flood_backoff_s, self._resume_reader, fd)
+
+    def _resume_reader(self, fd: int) -> None:
+        # The device may have gone away (and the fd been closed by a
+        # _rescan() in the meantime) while backed off -- fd is a raw OS
+        # int the kernel is free to reuse for an unrelated open() the
+        # instant it's closed, so re-adding a reader on it here would be
+        # arming the selector against whatever that fd number now points
+        # to. Only resume if _rescan() still considers this fd live.
+        if fd not in self._fds:
+            return
+        self._read_window_start.pop(fd, None)
+        self._read_window_count.pop(fd, None)
+        loop = asyncio.get_event_loop()
+        loop.add_reader(fd, self._on_readable, fd)
 
     async def stop(self) -> None:
         if self._task is not None:
