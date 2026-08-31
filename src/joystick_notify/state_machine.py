@@ -93,6 +93,11 @@ class ActionHooks:
     # instead of redoing the whole desk->couch activation.
     enter_couch_idle: Optional[Callable[[], Awaitable[None]]] = None
     exit_couch_idle: Optional[Callable[[], Awaitable[None]]] = None
+    # Startup-only: reads live display hardware state to tell reality apart
+    # from self.mode's hardcoded DESK default (see
+    # StateMachine.reconcile_startup_mode). Returns None when the live
+    # state is inconclusive.
+    detect_live_mode: Optional[Callable[[], Awaitable[Optional["Mode"]]]] = None
 
 
 DEFAULT_DISCONNECT_GRACE_S = 30
@@ -144,6 +149,49 @@ class StateMachine:
     @property
     def owner(self) -> str | None:
         return self._owner
+
+    async def reconcile_startup_mode(self) -> None:
+        """Call once, right after construction, before any other startup
+        step (including check_for_stale_session_at_startup and before the
+        wizard/health server start accepting requests). self.mode is
+        hardcoded to Mode.DESK at construction regardless of what the
+        display hardware is actually doing -- if the daemon restarts
+        mid-couch-session (crash, OOM-kill, an over-broad ansible deploy,
+        a manual `systemctl restart`), the live display stays
+        couch-configured but the wizard would confidently show "desk"
+        until the next real controller event, which may never come in an
+        unattended session. Confirmed live 2026-08-31: see
+        `notes/state-desync-and-stale-carryover-background.md`.
+
+        Deliberately does NOT run activate_couch()/activate_desk() --
+        detect_live_mode() only reports the mode the hardware is already
+        in, so replaying the full activation (CEC wake, audio switch,
+        cursor hide, manual-exit watcher) would be redundant and, for CEC,
+        actively disruptive against a receiver that's already correctly
+        configured. This only corrects self.mode and populates health.json
+        so the wizard reflects reality immediately; a real controller
+        connect/disconnect still drives the full activation machinery as
+        normal.
+        """
+        if self._hooks.detect_live_mode is None:
+            return
+        detected = await self._hooks.detect_live_mode()
+        if detected is None:
+            logger.info(
+                "state_machine: startup reconciliation inconclusive (couldn't determine live display state), "
+                "keeping default mode=%s",
+                self.mode.value,
+            )
+            return
+        if detected != self.mode:
+            headline(
+                logger,
+                "state_machine: startup reconciliation corrected mode %s -> %s "
+                "(live display state disagreed with the default)",
+                self.mode.value, detected.value,
+            )
+            self.mode = detected
+        self._health.ok("state_machine", f"mode={self.mode.value}")
 
     async def check_for_stale_session_at_startup(self) -> None:
         """Call once, right after construction, before the daemon starts

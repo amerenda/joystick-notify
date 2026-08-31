@@ -239,6 +239,9 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                     delay_s=config.cec.standby_verify_delay_s,
                 )
 
+    async def detect_live_mode():
+        return await display_actions.detect_active_mode(config.display)
+
     async def exit_couch_idle() -> None:
         # Wakes the TV back up and dismisses the screensaver -- the mirror
         # of enter_couch_idle(), fired on reconnect (see
@@ -272,6 +275,7 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         has_launch_target=has_launch_target,
         enter_couch_idle=enter_couch_idle,
         exit_couch_idle=exit_couch_idle,
+        detect_live_mode=detect_live_mode,
     )
 
 
@@ -305,6 +309,13 @@ async def run_daemon(config_path: Path | None = None) -> None:
         wait_for_game_on_disconnect=config.idle.wait_for_game,
         screensaver_enabled=config.idle.screensaver_enabled,
     )
+
+    # Correct self.mode against live display hardware before anything else
+    # runs -- self.mode defaults to DESK regardless of reality, and a
+    # daemon restart mid-couch-session must not leave the wizard
+    # confidently wrong about which mode is actually active (see
+    # StateMachine.reconcile_startup_mode's docstring).
+    await sm.reconcile_startup_mode()
 
     # If the configured game is already running right now, that's direct
     # evidence of a restart mid-session (see StateMachine's docstring) --

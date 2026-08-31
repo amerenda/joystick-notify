@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..config.schema import DisplayConfig
 from ..health import Health
-from ..state_machine import ActivationError
+from ..state_machine import ActivationError, Mode
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +172,33 @@ async def _apply_and_verify(enable_port: str, mode: str, disable_port: str, *, m
         if attempt < max_attempts:
             await asyncio.sleep(retry_delay_s)
     return False
+
+
+async def detect_active_mode(config: DisplayConfig) -> Mode | None:
+    """Startup reconciliation helper (see
+    state_machine.StateMachine.reconcile_startup_mode): reads live
+    kscreen-doctor output to determine which of the two configured ports is
+    actually enabled right now, independent of whatever state_machine.mode
+    defaulted to at construction. This is the fix for the 2026-08-31
+    incident where a daemon restart mid-couch-session left state_machine.mode
+    at its hardcoded DESK default while the TV was still plainly live and
+    the desk monitor was black.
+
+    Returns None when live state is inconclusive (kscreen-doctor
+    unreachable, or the two ports don't disagree -- neither or both
+    reporting enabled) so the caller knows not to trust a guess rather than
+    picking one arbitrarily.
+    """
+    kjson = await get_kscreen_json()
+    if kjson is None:
+        return None
+    couch_enabled = output_enabled(kjson, config.couch_port)
+    desk_enabled = output_enabled(kjson, config.desk_port)
+    if couch_enabled and not desk_enabled:
+        return Mode.COUCH
+    if desk_enabled and not couch_enabled:
+        return Mode.DESK
+    return None
 
 
 async def activate_desk(config: DisplayConfig, health: Health) -> None:

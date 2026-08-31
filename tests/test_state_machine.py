@@ -35,6 +35,7 @@ def make_hooks(**overrides):
         has_launch_target=overrides.get("has_launch_target"),
         enter_couch_idle=overrides.get("enter_couch_idle"),
         exit_couch_idle=overrides.get("exit_couch_idle"),
+        detect_live_mode=overrides.get("detect_live_mode"),
     )
     return hooks, calls
 
@@ -869,4 +870,60 @@ async def test_second_real_controller_does_not_displace_an_existing_real_owner(t
     await sm.handle_device_event(DeviceEvent(device_id="dev2", kind=StableKind.CONNECTED))
 
     assert sm.owner == "dev1"
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_startup_mode_corrects_from_live_display_state(tmp_path):
+    # Cold-start scenario: COUCH_PORT enabled / DESK_PORT disabled on the
+    # real hardware (e.g. daemon restarted mid-couch-session), but
+    # self.mode still holds its hardcoded DESK default. No controller
+    # event or wizard call is involved -- reconciliation alone must fix it.
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return Mode.COUCH
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    assert sm.mode == Mode.DESK  # the old hardcoded default, pre-reconciliation
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.COUCH
+    assert sm.owner is None  # reconciliation never assigns an owner
+    assert calls["couch"] == 0  # never replays activation -- hardware is already right
+    assert calls["desk"] == 0
+    assert health.get("state_machine").status == Status.OK
+    assert health.get("state_machine").reason == "mode=couch"
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_startup_mode_keeps_default_when_inconclusive(tmp_path):
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return None  # e.g. kscreen-doctor unreachable, or neither/both ports enabled
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK
+    assert health.get("state_machine") is None  # not populated on an inconclusive read
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_startup_mode_noop_without_detect_hook(tmp_path):
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks()  # detect_live_mode defaults to None
+    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK
+    assert health.get("state_machine") is None
     await sm.aclose()
