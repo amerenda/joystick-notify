@@ -56,7 +56,7 @@ async def _emit_sink(forwarded):
 async def test_connect_within_startup_grace_window_is_withheld():
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(connected("dev1"))
     assert forwarded == []  # ambiguous -- could be stale carryover state
@@ -72,7 +72,7 @@ async def test_connect_never_forwarded_once_grace_window_elapses_while_still_con
     # not a real trigger, no matter how long the daemon's been running.
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(connected("dev1"))
     assert forwarded == []
@@ -90,7 +90,7 @@ async def test_witnessed_disconnect_after_grace_window_elapsed_re_arms_trust():
     # the specific held connect, not a permanent ban on the device_id.
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=0.05, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(connected("dev1"))
     await asyncio.sleep(0.1)  # grace window elapses, connect given up on
@@ -108,7 +108,7 @@ async def test_witnessed_disconnect_after_grace_window_elapsed_re_arms_trust():
 async def test_disconnect_within_grace_window_cancels_pending_and_never_forwards_connect():
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(connected("dev1"))
     await gate.handle(disconnected("dev1"))
@@ -127,7 +127,7 @@ async def test_connect_after_startup_grace_window_trusted_immediately():
     # require anything extra.
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock, system_uptime_s=lambda: 99999.0)
 
     clock.advance(15.0)  # well past the startup window
     await gate.handle(connected("dev1"))
@@ -144,7 +144,7 @@ async def test_reconnect_after_witnessed_disconnect_trusted_immediately_even_wit
     # to wait out the startup grace window again.
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(disconnected("dev1"))  # daemon witnesses it absent
     await gate.handle(connected("dev1"))  # still within the startup window
@@ -158,7 +158,7 @@ async def test_reconnect_after_witnessed_disconnect_trusted_immediately_even_wit
 async def test_independent_devices_gated_independently():
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(disconnected("dev2"))  # dev2 now has witnessed history, dev1 does not
     await gate.handle(connected("dev1"))  # no history, within grace -- withheld
@@ -170,10 +170,54 @@ async def test_independent_devices_gated_independently():
 
 
 @pytest.mark.asyncio
+async def test_connect_within_startup_grace_window_trusted_immediately_on_fresh_boot():
+    # Direct regression test for the 2026-08-29 incident: a full OS
+    # reboot with the controller already powered on -- arguably the most
+    # common real way this daemon gets used -- silently did nothing,
+    # because it hit the exact same indefinite-hold path built for a
+    # DAEMON restart on an already-running system. A fresh boot has no
+    # possible stale session to protect against at all.
+    forwarded = []
+    clock = FakeClock()
+    gate = ActivityGate(
+        await _emit_sink(forwarded),
+        startup_grace_s=10.0,
+        clock=clock,
+        system_uptime_s=lambda: 5.0,  # well under the fresh-boot threshold
+    )
+
+    await gate.handle(connected("dev1"))
+
+    assert len(forwarded) == 1
+    assert forwarded[0].device_id == "dev1"
+    await gate.aclose()
+
+
+@pytest.mark.asyncio
+async def test_connect_within_startup_grace_window_still_withheld_when_system_uptime_high():
+    # The original 2026-08-21/2026-08-22 protection must be unaffected
+    # when this ISN'T a fresh boot -- i.e. the daemon itself restarted
+    # (redeploy, crash) on a system that's been running a while.
+    forwarded = []
+    clock = FakeClock()
+    gate = ActivityGate(
+        await _emit_sink(forwarded),
+        startup_grace_s=10.0,
+        clock=clock,
+        system_uptime_s=lambda: 99999.0,  # system's been up a long time
+    )
+
+    await gate.handle(connected("dev1"))
+
+    assert forwarded == []
+    await gate.aclose()
+
+
+@pytest.mark.asyncio
 async def test_aclose_cancels_pending_waits_without_forwarding():
     forwarded = []
     clock = FakeClock()
-    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock)
+    gate = ActivityGate(await _emit_sink(forwarded), startup_grace_s=10.0, clock=clock, system_uptime_s=lambda: 99999.0)
 
     await gate.handle(connected("dev1"))
     await gate.aclose()

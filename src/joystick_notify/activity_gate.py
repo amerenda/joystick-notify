@@ -49,6 +49,23 @@ next connect. This does mean an unexpected daemon restart mid-session
 won't auto-resume couch mode on its own; see state_machine.py's
 stale-session recovery watch (keyed off the launched game's own lifecycle,
 not the controller) for how that gap gets closed instead.
+
+Both 2026-08-21 and 2026-08-22 are specifically about the daemon
+restarting on an *already-running system* -- a genuine prior session
+(possibly still active) that a stale controller could falsely resume.
+Confirmed as a third, real bug 2026-08-29: the exact same indefinite-hold
+logic also swallows a full OS reboot with the controller already powered
+on -- arguably the single most common real way this daemon actually gets
+used (walk up, turn the PC on, controller's already sitting on). Unlike
+the two prior incidents, a fresh boot has no possible stale session to
+protect against at all -- nothing survives a reboot, so there is nothing
+for a carried-over controller to falsely resume. `system_uptime_s`
+disambiguates the two: below `fresh_boot_uptime_threshold_s`, this is a
+brand new boot and the ambiguous-hold path is skipped entirely (trust the
+connect immediately, same as an unambiguous one); at or above it, this is
+the daemon restarting independently of the OS (a redeploy, a crash
+restart) and the original 2026-08-21/2026-08-22 protection still applies
+unchanged.
 """
 from __future__ import annotations
 
@@ -64,6 +81,18 @@ from .supervisor import supervise
 logger = logging.getLogger(__name__)
 
 DEFAULT_STARTUP_GRACE_S = 10.0
+DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S = 120.0
+
+
+def _read_system_uptime_s() -> float:
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.readline().split()[0])
+    except (OSError, ValueError, IndexError):
+        # Unknown uptime -- assume NOT a fresh boot, the conservative
+        # default that preserves the original 2026-08-21/2026-08-22
+        # protection rather than risking a false positive.
+        return float("inf")
 
 
 class ActivityGate:
@@ -74,6 +103,8 @@ class ActivityGate:
         *,
         startup_grace_s: float = DEFAULT_STARTUP_GRACE_S,
         clock: Callable[[], float] = time.monotonic,
+        system_uptime_s: Callable[[], float] = _read_system_uptime_s,
+        fresh_boot_uptime_threshold_s: float = DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S,
     ) -> None:
         self._emit = emit
         self._health = health
@@ -85,6 +116,9 @@ class ActivityGate:
         # once -- any later connect for these is unambiguous, not
         # carryover state from before the daemon existed.
         self._witnessed_disconnect: set[str] = set()
+        # A fresh OS boot has no possible stale session to protect
+        # against -- see module docstring's 2026-08-29 addendum.
+        self._fresh_boot = system_uptime_s() < fresh_boot_uptime_threshold_s
 
     def _past_startup_grace(self) -> bool:
         return (self._clock() - self._started_at) >= self._startup_grace_s
@@ -96,11 +130,12 @@ class ActivityGate:
             await self._emit(event)
             return
 
-        if self._past_startup_grace() or event.device_id in self._witnessed_disconnect:
-            # Either well past the ambiguous startup window, or a device
-            # the daemon directly watched go absent at some point -- both
-            # mean this connect is an unambiguous, freshly-witnessed
-            # transition. Trust it immediately.
+        if self._fresh_boot or self._past_startup_grace() or event.device_id in self._witnessed_disconnect:
+            # A fresh OS boot (no possible stale session to protect
+            # against), or well past the ambiguous startup window, or a
+            # device the daemon directly watched go absent at some point
+            # -- all three mean this connect carries no risk of falsely
+            # resuming a real prior session. Trust it immediately.
             await self._emit(event)
             return
 
