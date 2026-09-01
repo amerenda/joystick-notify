@@ -16,6 +16,18 @@ ExecStart=/usr/bin/jn-daemon
 ExecStartPre=-/usr/bin/jn-daemon --doctor
 Restart=on-failure
 RestartSec=3
+# Default KillMode=control-group sends SIGTERM to every process in this
+# unit's cgroup on stop/restart -- including Steam Big Picture (or any
+# custom on_connect.run/teardown_command launch), which the daemon spawns
+# as a plain child process with no session/cgroup escape (see
+# actions/launchers.py's _run_detached). Confirmed live 2026-08-31: a
+# routine `systemctl --user restart joystick-notify.service` mid-session
+# killed a running game with it (steam exited -15). KillMode=process
+# limits stop/restart signals to the tracked main PID (the daemon itself)
+# so a launched game correctly outlives daemon restarts -- exactly what
+# is_launch_process_alive() scanning /proc by name (rather than holding a
+# subprocess handle) already assumed was true.
+KillMode=process
 
 [Install]
 WantedBy=graphical-session.target

@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from joystick_notify.actions.display import connector_status, output_enabled, parse_outputs
+import pytest
+
+from joystick_notify.actions import display as display_module
+from joystick_notify.actions.display import connector_status, detect_active_mode, output_enabled, parse_outputs
+from joystick_notify.config.schema import DisplayConfig
+from joystick_notify.state_machine import Mode
 
 KSCREEN_JSON = {
     "outputs": [
@@ -23,6 +28,13 @@ KSCREEN_JSON = {
 }
 
 
+def _fake_kscreen_json(value):
+    async def fake():
+        return value
+
+    return fake
+
+
 def test_parse_outputs_extracts_model_and_preferred_mode():
     outputs = parse_outputs(KSCREEN_JSON)
     assert outputs[0].name == "HDMI-A-1"
@@ -41,6 +53,40 @@ def test_output_enabled_false_for_disabled_port():
 
 def test_output_enabled_false_for_unknown_port():
     assert output_enabled(KSCREEN_JSON, "HDMI-A-99") is False
+
+
+@pytest.mark.asyncio
+async def test_detect_active_mode_returns_couch_when_couch_port_enabled(monkeypatch):
+    monkeypatch.setattr(display_module, "get_kscreen_json", _fake_kscreen_json(KSCREEN_JSON))
+    config = DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-1")
+    assert await detect_active_mode(config) == Mode.COUCH
+
+
+@pytest.mark.asyncio
+async def test_detect_active_mode_returns_desk_when_desk_port_enabled(monkeypatch):
+    monkeypatch.setattr(display_module, "get_kscreen_json", _fake_kscreen_json(KSCREEN_JSON))
+    config = DisplayConfig(desk_port="HDMI-A-1", couch_port="HDMI-A-2")
+    assert await detect_active_mode(config) == Mode.DESK
+
+
+@pytest.mark.asyncio
+async def test_detect_active_mode_none_when_kscreen_doctor_unreachable(monkeypatch):
+    monkeypatch.setattr(display_module, "get_kscreen_json", _fake_kscreen_json(None))
+    config = DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-1")
+    assert await detect_active_mode(config) is None
+
+
+@pytest.mark.asyncio
+async def test_detect_active_mode_none_when_neither_port_enabled(monkeypatch):
+    both_disabled = {
+        "outputs": [
+            {"name": "HDMI-A-1", "enabled": False, "connected": True},
+            {"name": "HDMI-A-2", "enabled": False, "connected": True},
+        ]
+    }
+    monkeypatch.setattr(display_module, "get_kscreen_json", _fake_kscreen_json(both_disabled))
+    config = DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-1")
+    assert await detect_active_mode(config) is None
 
 
 def test_connector_status_connected(tmp_path):
