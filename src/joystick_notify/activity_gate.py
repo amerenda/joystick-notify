@@ -74,6 +74,7 @@ import logging
 import time
 from typing import Awaitable, Callable
 
+from .boot_time import DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S, read_system_uptime_s
 from .debounce import DeviceEvent, StableKind
 from .health import Health
 from .supervisor import supervise
@@ -81,18 +82,6 @@ from .supervisor import supervise
 logger = logging.getLogger(__name__)
 
 DEFAULT_STARTUP_GRACE_S = 10.0
-DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S = 120.0
-
-
-def _read_system_uptime_s() -> float:
-    try:
-        with open("/proc/uptime") as f:
-            return float(f.readline().split()[0])
-    except (OSError, ValueError, IndexError):
-        # Unknown uptime -- assume NOT a fresh boot, the conservative
-        # default that preserves the original 2026-08-21/2026-08-22
-        # protection rather than risking a false positive.
-        return float("inf")
 
 
 class ActivityGate:
@@ -103,7 +92,7 @@ class ActivityGate:
         *,
         startup_grace_s: float = DEFAULT_STARTUP_GRACE_S,
         clock: Callable[[], float] = time.monotonic,
-        system_uptime_s: Callable[[], float] = _read_system_uptime_s,
+        system_uptime_s: Callable[[], float] = read_system_uptime_s,
         fresh_boot_uptime_threshold_s: float = DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S,
     ) -> None:
         self._emit = emit
