@@ -50,6 +50,24 @@ def test_cursor_config_round_trips(tmp_path):
     assert loaded.cursor.normal_theme == "breeze_cursors"
 
 
+def test_shutdown_config_defaults_off():
+    cfg = JoystickNotifyConfig()
+    assert cfg.shutdown.enabled is False
+    assert cfg.shutdown.teardown_timeout_s == 13.0
+
+
+def test_shutdown_config_round_trips(tmp_path):
+    path = Path(tmp_path) / "config.toml"
+    cfg = JoystickNotifyConfig()
+    cfg.shutdown.enabled = True
+    cfg.shutdown.teardown_timeout_s = 20.0
+    save(cfg, path)
+
+    loaded = load(path)
+    assert loaded.shutdown.enabled is True
+    assert loaded.shutdown.teardown_timeout_s == 20.0
+
+
 def test_teardown_command_defaults_empty():
     assert JoystickNotifyConfig().on_connect.teardown_command == ""
 

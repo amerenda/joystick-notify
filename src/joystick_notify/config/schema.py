@@ -148,6 +148,22 @@ class CursorConfig:
 
 
 @dataclass
+class ShutdownConfig:
+    # Off by default, same explicit-opt-in treatment as screen_lock/cursor
+    # -- unlike those, a bug here affects real system shutdown behavior
+    # (a held inhibitor lock, even bounded, is real user-visible impact
+    # every time the machine powers off), not just this daemon's own
+    # session state, so a fresh/undeployed host must never silently start
+    # intercepting shutdown until this is deliberately turned on. See
+    # shutdown_watcher.py's module docstring.
+    enabled: bool = False
+    # Leaves a margin under logind's InhibitDelayMaxSec (ansible-managed,
+    # see roles/joystick-notify's logind.conf.d drop-in) so the inhibitor
+    # lock is always released before logind would force it anyway.
+    teardown_timeout_s: float = 13.0
+
+
+@dataclass
 class ShortcutConfig:
     # On by default -- unlike screen_lock, this isn't a security tradeoff,
     # it's a pure safety net: always having a way back to desk regardless
@@ -205,3 +221,4 @@ class JoystickNotifyConfig:
     cursor: CursorConfig = field(default_factory=CursorConfig)
     shortcuts: ShortcutConfig = field(default_factory=ShortcutConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)
+    shutdown: ShutdownConfig = field(default_factory=ShutdownConfig)
