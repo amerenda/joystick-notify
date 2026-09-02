@@ -875,17 +875,22 @@ async def test_second_real_controller_does_not_displace_an_existing_real_owner(t
 
 @pytest.mark.asyncio
 async def test_reconcile_startup_mode_corrects_from_live_display_state(tmp_path):
-    # Cold-start scenario: COUCH_PORT enabled / DESK_PORT disabled on the
-    # real hardware (e.g. daemon restarted mid-couch-session), but
-    # self.mode still holds its hardcoded DESK default. No controller
-    # event or wizard call is involved -- reconciliation alone must fix it.
+    # Mid-session-restart scenario, NOT a fresh boot (system_uptime_s well
+    # past the fresh-boot threshold): COUCH_PORT enabled / DESK_PORT
+    # disabled on the real hardware (e.g. daemon restarted mid-couch-
+    # session), but self.mode still holds its hardcoded DESK default. No
+    # controller event or wizard call is involved -- reconciliation alone
+    # must fix it, and must NOT touch the hardware (a real session may
+    # still be in progress).
     health = make_health(tmp_path)
 
     async def detect_live_mode():
         return Mode.COUCH
 
     hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
-    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: 99999.0
+    )
 
     assert sm.mode == Mode.DESK  # the old hardcoded default, pre-reconciliation
     await sm.reconcile_startup_mode()
@@ -907,7 +912,9 @@ async def test_reconcile_startup_mode_keeps_default_when_inconclusive(tmp_path):
         return None  # e.g. kscreen-doctor unreachable, or neither/both ports enabled
 
     hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
-    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: 99999.0
+    )
 
     await sm.reconcile_startup_mode()
 
@@ -920,10 +927,83 @@ async def test_reconcile_startup_mode_keeps_default_when_inconclusive(tmp_path):
 async def test_reconcile_startup_mode_noop_without_detect_hook(tmp_path):
     health = make_health(tmp_path)
     hooks, calls = make_hooks()  # detect_live_mode defaults to None
-    sm = StateMachine(hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: 99999.0
+    )
 
     await sm.reconcile_startup_mode()
 
     assert sm.mode == Mode.DESK
+    assert health.get("state_machine") is None
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_startup_mode_forces_desk_on_fresh_boot(tmp_path):
+    # Regression test for the 2026-09-02 incident: a fresh boot with
+    # leftover couch-shaped display state (KWin/GPU driver restoring its
+    # last output layout across the reboot, not a real session) must
+    # actively force the hardware back to desk, not just quietly agree
+    # with it the way the mid-session-restart branch correctly does.
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return Mode.COUCH
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: 5.0
+    )
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK  # never flipped to couch this time
+    assert calls["desk"] == 1  # the real teardown ran -- hardware actually corrected
+    assert calls["couch"] == 0
+    assert health.get("state_machine").status == Status.OK
+    assert health.get("state_machine").reason == "mode=desk"
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_startup_mode_fresh_boot_noop_when_already_desk(tmp_path):
+    # Fresh boot, but live state already agrees with the default -- no
+    # need to replay a teardown for a display that's already correct.
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return Mode.DESK
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: 5.0
+    )
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk"] == 0
+    assert calls["couch"] == 0
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_startup_mode_fresh_boot_inconclusive_does_not_force(tmp_path):
+    # Fresh boot, but detect_live_mode couldn't determine anything -- too
+    # little signal to force a teardown against.
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return None
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: 5.0
+    )
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk"] == 0
     assert health.get("state_machine") is None
     await sm.aclose()

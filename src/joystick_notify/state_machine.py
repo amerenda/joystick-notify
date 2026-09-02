@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable, Optional
 
+from .boot_time import DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S, read_system_uptime_s
 from .debounce import DeviceEvent, StableKind
 from .event_log import headline
 from .supervisor import supervise
@@ -118,8 +119,15 @@ class StateMachine:
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         wait_for_game_on_disconnect: bool = True,
         screensaver_enabled: bool = True,
+        system_uptime_s: Callable[[], float] = read_system_uptime_s,
+        fresh_boot_uptime_threshold_s: float = DEFAULT_FRESH_BOOT_UPTIME_THRESHOLD_S,
     ) -> None:
         self.mode = Mode.DESK
+        # A fresh OS boot has no possible live couch session to preserve --
+        # see reconcile_startup_mode()'s docstring and boot_time.py's
+        # module docstring for the full reasoning (same signal
+        # activity_gate.py already uses for controller-carryover).
+        self._fresh_boot = system_uptime_s() < fresh_boot_uptime_threshold_s
         self._owner: str | None = None
         # Whether `self._owner` is a real, presence-trackable device --
         # False for a synthetic owner assigned by a non-controller trigger
@@ -155,23 +163,40 @@ class StateMachine:
         step (including check_for_stale_session_at_startup and before the
         wizard/health server start accepting requests). self.mode is
         hardcoded to Mode.DESK at construction regardless of what the
-        display hardware is actually doing -- if the daemon restarts
-        mid-couch-session (crash, OOM-kill, an over-broad ansible deploy,
-        a manual `systemctl restart`), the live display stays
-        couch-configured but the wizard would confidently show "desk"
-        until the next real controller event, which may never come in an
-        unattended session. Confirmed live 2026-08-31: see
-        `notes/state-desync-and-stale-carryover-background.md`.
+        display hardware is actually doing.
 
-        Deliberately does NOT run activate_couch()/activate_desk() --
-        detect_live_mode() only reports the mode the hardware is already
-        in, so replaying the full activation (CEC wake, audio switch,
-        cursor hide, manual-exit watcher) would be redundant and, for CEC,
-        actively disruptive against a receiver that's already correctly
-        configured. This only corrects self.mode and populates health.json
-        so the wizard reflects reality immediately; a real controller
-        connect/disconnect still drives the full activation machinery as
-        normal.
+        Two genuinely different situations both land here, and they need
+        opposite handling:
+
+        - **Daemon restart on an already-running system** (crash,
+          OOM-kill, an over-broad ansible deploy, a manual `systemctl
+          restart`) mid-couch-session: the live display stays
+          couch-configured, and that's *correct* -- a real session may
+          still be in progress. Confirmed live 2026-08-31: see
+          `notes/state-desync-and-stale-carryover-background.md`. Here we
+          only correct `self.mode` to match reality; replaying the full
+          activation (CEC wake, audio switch, cursor hide) would be
+          redundant and, for CEC, actively disruptive against a receiver
+          that's already correctly configured.
+        - **A fresh OS boot** has no possible live session to preserve --
+          nothing survives a reboot. Live display state that still looks
+          couch-configured here is just KWin/the GPU driver restoring its
+          last output layout across the reboot, not evidence of intent.
+          Confirmed live 2026-09-02: booting with couch-shaped leftover
+          display state left the desk monitor fully disabled with no
+          video signal at all -- initially mistaken for a hardware fault
+          (see `notes/joystick-notify-sunshine-reenable-background.md`).
+          Trusting that state, the way the mid-session-restart branch
+          correctly does, was the actual bug. On a fresh boot we instead
+          force a real `activate_desk()` whenever live state disagrees,
+          the same full teardown a manual desk switch runs -- self.mode
+          was already Mode.DESK by default, so there's nothing to
+          reconcile there; it's the *hardware* that needs correcting this
+          time, not the reverse.
+
+        `self._fresh_boot` (set at construction from `/proc/uptime`, same
+        signal `activity_gate.py` already uses for controller-carryover)
+        disambiguates the two.
         """
         if self._hooks.detect_live_mode is None:
             return
@@ -183,6 +208,19 @@ class StateMachine:
                 self.mode.value,
             )
             return
+
+        if self._fresh_boot:
+            if detected != self.mode:
+                headline(
+                    logger,
+                    "state_machine: fresh boot found live display state=%s disagreeing with default mode=%s, "
+                    "forcing hardware back to %s (no session survives a reboot)",
+                    detected.value, self.mode.value, self.mode.value,
+                )
+                await self._hooks.activate_desk()
+            self._health.ok("state_machine", f"mode={self.mode.value}")
+            return
+
         if detected != self.mode:
             headline(
                 logger,
