@@ -2,6 +2,15 @@
 Description=joystick-notify tray icon
 After=graphical-session.target joystick-notify.service
 PartOf=graphical-session.target
+# Backstop, not the fix: the actual fix is jn-tray waiting for a live
+# Wayland socket before touching Qt (see session_env.wait_for_wayland_socket).
+# This bounds the worst case if that wait ever times out anyway -- the
+# 2026-08-30 incident's real damage was an unbounded on-failure restart
+# loop pegging systemd --user at ~55% CPU for a full 2.5-hour session and
+# eventually breaking the user D-Bus bus, not the crash itself. 5 attempts
+# in 60s is generous for a slow login but stops well short of that.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple

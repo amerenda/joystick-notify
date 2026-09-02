@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 
 def parse_systemd_environment(output: str) -> dict[str, str]:
@@ -80,3 +81,43 @@ def ensure_session_environment() -> None:
     os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
     os.environ.setdefault("DISPLAY", ":0")
+
+
+def wait_for_wayland_socket(timeout: float = 20.0, poll_interval: float = 0.25) -> bool:
+    """Poll until the session's real Wayland compositor socket exists on
+    disk, instead of trusting a single environment read the way
+    `ensure_session_environment()` does.
+
+    KDE's session startup imports the real display-server environment into
+    the systemd --user manager as a step that happens *after*
+    `graphical-session.target` is already reported active -- so a unit
+    that starts as soon as the target activates (any `WantedBy=
+    graphical-session.target` unit, e.g. joystick-notify-tray.service) can
+    legitimately run before that import lands. When it does,
+    `ensure_session_environment()`'s hardcoded fallback ("wayland-0") is a
+    guess, not a confirmation, and code that trusts it (PyQt6's
+    QApplication) can abort hard against a socket that isn't there yet.
+    That race, not a code defect in the Qt init itself, is what froze
+    login system-wide on 2026-08-30 (see
+    plans/joystick-notify-sunshine-reenable.md's "reboot-and-verify pass"
+    incident notes) -- this closes the actual gap instead of the earlier
+    disable/re-enable mitigation.
+
+    Re-reads systemd's environment on every attempt (not just once) since
+    the import can land at any point during the poll window. Returns True
+    the first moment a real socket file is found; False if `timeout`
+    elapses first without one appearing. Never raises -- the caller
+    decides what to do with a session that never became ready.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        env = _systemd_user_environment()
+        wayland_display = env.get("WAYLAND_DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        xdg_runtime_dir = env.get("XDG_RUNTIME_DIR") or os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        if wayland_display and os.path.exists(os.path.join(xdg_runtime_dir, wayland_display)):
+            os.environ["WAYLAND_DISPLAY"] = wayland_display
+            os.environ["XDG_RUNTIME_DIR"] = xdg_runtime_dir
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll_interval)

@@ -73,9 +73,22 @@ def _wizard_url() -> str:
 
 
 def main() -> int:
-    from ..session_env import ensure_session_environment
+    from ..session_env import ensure_session_environment, wait_for_wayland_socket
 
     ensure_session_environment()
+
+    # Confirm the real compositor socket, not just an environment guess,
+    # exists before touching Qt at all -- QApplication() aborts the whole
+    # process (SIGABRT) if it can't reach a live Wayland display, which is
+    # exactly what froze login system-wide on 2026-08-30 when this unit
+    # started before KDE's session import had landed. See
+    # session_env.wait_for_wayland_socket's docstring for the full race.
+    if not wait_for_wayland_socket():
+        sys.stderr.write(
+            "joystick-notify-tray: no live Wayland compositor socket found "
+            "within the startup timeout; exiting without initializing Qt.\n"
+        )
+        return 1
 
     try:
         from PyQt6.QtCore import Qt, QTimer
