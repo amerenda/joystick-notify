@@ -23,6 +23,7 @@ from .schema import (
     JoystickNotifyConfig,
     ScreenLockConfig,
     ShortcutConfig,
+    ShutdownConfig,
     TimingConfig,
     WizardConfig,
 )
@@ -112,4 +113,5 @@ def _from_dict(raw: dict) -> JoystickNotifyConfig:
         cursor=_section(CursorConfig, defaults.cursor, raw.get("cursor", {})),
         shortcuts=_section(ShortcutConfig, defaults.shortcuts, raw.get("shortcuts", {})),
         wizard=_section(WizardConfig, defaults.wizard, raw.get("wizard", {})),
+        shutdown=_section(ShutdownConfig, defaults.shutdown, raw.get("shutdown", {})),
     )

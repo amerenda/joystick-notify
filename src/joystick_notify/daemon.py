@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import shutil
 import signal
@@ -31,8 +32,9 @@ from .event_log import headline
 from .health import HEARTBEAT_INTERVAL_SECONDS, Health
 from .manual_exit import ManualExitWatcher
 from .session_env import ensure_session_environment
+from .shutdown_watcher import ShutdownWatcher
 from .supervisor import supervise
-from .state_machine import ActionHooks, StateMachine
+from .state_machine import ActionHooks, Mode, StateMachine
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +324,22 @@ async def run_daemon(config_path: Path | None = None) -> None:
     # arm a resync watch before any device events start flowing.
     await sm.check_for_stale_session_at_startup()
 
+    # Mirror of reconcile_startup_mode() above: that one fixes a bad
+    # display state discovered on the way up after a reboot, this one
+    # prevents it from being left behind on the way down in the first
+    # place. Opt-in (config.shutdown.enabled) -- see ShutdownConfig's
+    # docstring for why a fresh/undeployed host must not silently start
+    # intercepting shutdown.
+    shutdown_watcher_task: asyncio.Task | None = None
+    if config.shutdown.enabled:
+        shutdown_watcher = ShutdownWatcher(
+            sm.force_exit_to_desk,
+            lambda: sm.mode == Mode.COUCH,
+            health,
+            teardown_timeout_s=config.shutdown.teardown_timeout_s,
+        )
+        shutdown_watcher_task = supervise("shutdown_watcher", shutdown_watcher.run(), health)
+
     async def to_state_machine(event: DeviceEvent) -> None:
         await _forward_to_state_machine(sm, event, config_path)
 
@@ -403,6 +421,10 @@ async def run_daemon(config_path: Path | None = None) -> None:
         await gate.aclose()
         await sm.aclose()
         await manual_exit_watcher.stop()
+        if shutdown_watcher_task is not None:
+            shutdown_watcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await shutdown_watcher_task
         if wizard_server is not None:
             wizard_server.should_exit = True
         if wizard_task is not None:
