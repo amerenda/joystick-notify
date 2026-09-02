@@ -90,23 +90,53 @@ async def acquire_shutdown_inhibitor() -> Optional[int]:
     return await asyncio.to_thread(_call)
 
 
+def prepare_for_shutdown_match_rule():
+    """The match rule used both to subscribe (AddMatch, sent to the bus)
+    and to locally route received messages to our queue (jeepney's own
+    client-side re-check) -- see `watch_prepare_for_shutdown`'s docstring
+    for why this must NOT include `sender=`, confirmed live 2026-09-02.
+    Factored out so it can be asserted against directly in tests without
+    a real bus connection.
+    """
+    from jeepney.bus_messages import MatchRule
+
+    return MatchRule(
+        type="signal",
+        interface=_LOGIND_INTERFACE,
+        member="PrepareForShutdown",
+        path=_LOGIND_OBJECT_PATH,
+    )
+
+
 async def watch_prepare_for_shutdown() -> AsyncIterator[bool]:
     """Real implementation: yields True/False each time logind emits
     PrepareForShutdown on the system bus (True = shutdown/reboot
     starting, False = a prior one was cancelled). Runs for as long as
     it's iterated; the caller closing the generator (breaking out of a
     `async for`) tears down this D-Bus connection.
+
+    Deliberately no `sender=` on this rule -- confirmed live 2026-09-02
+    that adding it makes this silently never fire. The system bus daemon
+    resolves a well-known name like `org.freedesktop.login1` to whichever
+    unique connection currently owns it when matching an AddMatch rule,
+    so the *subscription* itself works fine either way -- but `jeepney`'s
+    own client-side re-filtering (`MatchRule.matches()`, used to route an
+    already-received message to the right local queue) does a literal
+    string comparison against the message's actual `sender` header
+    field, which is always the unique name (e.g. `:1.4`), never the
+    well-known one. With `sender` set, every real broadcast arrives and
+    is then silently dropped by that local check -- `queue.get()` blocks
+    forever, logind's own inhibitor-timeout log is the only trace
+    ("Delay lock is active... but inhibitor timeout is reached"), and no
+    `shutdown_watcher` log line appears at all. interface+member+path is
+    already unambiguous (nothing else on the bus emits
+    `org.freedesktop.login1.Manager.PrepareForShutdown` at this path), so
+    dropping `sender` here costs nothing.
     """
-    from jeepney.bus_messages import MatchRule, message_bus
+    from jeepney.bus_messages import message_bus
     from jeepney.io.asyncio import open_dbus_router
 
-    rule = MatchRule(
-        type="signal",
-        sender=_LOGIND_BUS_NAME,
-        interface=_LOGIND_INTERFACE,
-        member="PrepareForShutdown",
-        path=_LOGIND_OBJECT_PATH,
-    )
+    rule = prepare_for_shutdown_match_rule()
     async with open_dbus_router(bus="SYSTEM") as router:
         await router.send_and_get_reply(message_bus.AddMatch(rule))
         with router.filter(rule) as queue:

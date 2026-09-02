@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from joystick_notify.health import Health, Status
-from joystick_notify.shutdown_watcher import ShutdownWatcher
+from joystick_notify.shutdown_watcher import ShutdownWatcher, prepare_for_shutdown_match_rule
 
 
 def make_health(tmp_path):
@@ -26,6 +26,33 @@ def _fixed_fd_acquirer(fd=99):
         return fd
 
     return acquire
+
+
+def test_match_rule_matches_a_real_broadcasts_unique_name_sender():
+    # Regression test for the 2026-09-02 live-reboot bug: a real
+    # PrepareForShutdown broadcast's `sender` header is logind's unique
+    # connection name (e.g. ":1.4"), never the well-known
+    # "org.freedesktop.login1". jeepney's MatchRule.matches() does a
+    # literal comparison against that header field, so a rule built with
+    # `sender="org.freedesktop.login1"` never matches a real signal --
+    # confirmed by holding the inhibitor for the full 15s timeout on a
+    # real reboot with zero shutdown_watcher log activity. This rule
+    # must therefore never carry a `sender=` constraint.
+    from jeepney import HeaderFields, new_signal
+    from jeepney.wrappers import DBusAddress
+
+    rule = prepare_for_shutdown_match_rule()
+    assert "sender" not in rule.header_fields
+
+    emitter = DBusAddress(
+        object_path="/org/freedesktop/login1",
+        bus_name="org.freedesktop.login1",
+        interface="org.freedesktop.login1.Manager",
+    )
+    msg = new_signal(emitter, "PrepareForShutdown", "b", (True,))
+    msg.header.fields[HeaderFields.sender] = ":1.4"  # a real broadcast's actual sender
+
+    assert rule.matches(msg)
 
 
 @pytest.mark.asyncio
