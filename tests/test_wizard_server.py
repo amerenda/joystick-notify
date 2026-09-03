@@ -1090,6 +1090,49 @@ def test_api_screen_unlock_twice_does_not_leak_a_second_cookie(isolated_config, 
     assert calls["couch"] == 1
 
 
+def test_api_screen_unlock_restores_dpms_off_state_across_the_pair(isolated_config, monkeypatch):
+    # Regression test for the 2026-09-03 fix: unlock/relock's own
+    # SimulateUserActivity call can wake an intentionally-off desk
+    # monitor as a side effect -- Alex was explicit this must not happen
+    # for a remote Sunshine stream. The pre-unlock DPMS-off set must be
+    # captured once and restored after BOTH the unlock and lock calls,
+    # not just the first.
+    from joystick_notify.health import Health
+    from joystick_notify.wizard import server as server_module
+
+    calls = {"dpms_off_calls": []}
+
+    async def fake_activate_couch(config, health):
+        return "cookie"
+
+    async def fake_activate_desk(config, health, cookie):
+        pass
+
+    async def fake_dpms_states():
+        return {"HDMI-A-2": "off"}
+
+    async def fake_restore_dpms_off(previously_off):
+        calls["dpms_off_calls"].append(set(previously_off))
+
+    monkeypatch.setattr(server_module.screen_lock_actions, "activate_couch", fake_activate_couch)
+    monkeypatch.setattr(server_module.screen_lock_actions, "activate_desk", fake_activate_desk)
+    monkeypatch.setattr(server_module.display_actions, "dpms_states", fake_dpms_states)
+    monkeypatch.setattr(server_module.display_actions, "restore_dpms_off", fake_restore_dpms_off)
+
+    app = create_app(health=Health())
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.post("/api/screen/unlock", headers=headers)
+    client.post("/api/screen/lock", headers=headers)
+
+    # Restored after BOTH calls, using the SAME captured "was off" set.
+    assert calls["dpms_off_calls"] == [{"HDMI-A-2"}, {"HDMI-A-2"}]
+
+
 def test_api_screen_lock_without_prior_unlock_is_a_noop(isolated_config):
     from joystick_notify.health import Health
 

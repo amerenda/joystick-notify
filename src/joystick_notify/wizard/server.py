@@ -179,15 +179,31 @@ async def api_screen_unlock(request: Request):
     Idempotent against a caller that unlocks twice without an
     intervening lock (e.g. an overlapping second stream): the second
     call is a no-op rather than acquiring and leaking a second cookie.
+
+    Also preserves an intentionally-powered-off desk display: unlock (and
+    relock, on the way out) internally calls SimulateUserActivity to
+    re-arm the idle timer (screen_lock.py), which -- confirmed live
+    2026-09-03 -- also wakes DPMS if the display was blanked, since
+    that's exactly the signal DPMS treats as "user is active." Alex was
+    explicit this must not happen: a remote stream from a Deck has no
+    reason to power on a desk monitor nobody's looking at. The DPMS
+    state captured here, before anything runs, is restored (see
+    display.dpms_off_outputs/restore_dpms_off) after both this call and
+    api_screen_lock's -- carried on app.state alongside the inhibit
+    cookie so the same "was it off before the stream" answer applies at
+    both ends, not just this one.
     """
     health = _live_health(request)
     if health is None:
         return JSONResponse({"ok": False, "error": "daemon health unavailable"}, status_code=503)
     if getattr(request.app.state, "screen_unlock_held", False):
         return JSONResponse({"ok": True, "already_unlocked": True})
+    dpms_off = {name for name, state in (await display_actions.dpms_states()).items() if state == "off"}
     config = config_store.load().screen_lock
     request.app.state.screen_unlock_cookie = await screen_lock_actions.activate_couch(config, health)
     request.app.state.screen_unlock_held = True
+    request.app.state.screen_unlock_dpms_off = dpms_off
+    await display_actions.restore_dpms_off(dpms_off)
     return JSONResponse({"ok": True})
 
 
@@ -200,8 +216,11 @@ async def api_screen_lock(request: Request):
     config = config_store.load().screen_lock
     cookie = getattr(request.app.state, "screen_unlock_cookie", None)
     await screen_lock_actions.activate_desk(config, health, cookie)
+    dpms_off = getattr(request.app.state, "screen_unlock_dpms_off", set())
+    await display_actions.restore_dpms_off(dpms_off)
     request.app.state.screen_unlock_cookie = None
     request.app.state.screen_unlock_held = False
+    request.app.state.screen_unlock_dpms_off = set()
     return JSONResponse({"ok": True})
 
 
@@ -643,6 +662,7 @@ def create_app(sm=None, health: Health | None = None) -> Starlette:
     app.state.health = health
     app.state.screen_unlock_cookie = None
     app.state.screen_unlock_held = False
+    app.state.screen_unlock_dpms_off = set()
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     return app
 
