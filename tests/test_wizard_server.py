@@ -1018,6 +1018,140 @@ def test_api_mode_bearer_token_scoped_to_mode_routes_only(isolated_config):
     assert resp.status_code == 401
 
 
+def test_api_screen_unlock_without_live_health_returns_503(client):
+    # create_app() with no health arg -- e.g. the standalone UI-testing
+    # entrypoint -- must report unavailable, not raise.
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/screen/unlock", headers=auth_headers)
+    assert resp.status_code == 503
+
+
+def test_api_screen_unlock_and_lock_call_screen_lock_actions_with_the_cookie(isolated_config, monkeypatch):
+    from joystick_notify.health import Health
+    from joystick_notify.wizard import server as server_module
+
+    calls = {"couch": 0, "desk": []}
+
+    async def fake_activate_couch(config, health):
+        calls["couch"] += 1
+        return "fake-cookie-123"
+
+    async def fake_activate_desk(config, health, cookie):
+        calls["desk"].append(cookie)
+
+    monkeypatch.setattr(server_module.screen_lock_actions, "activate_couch", fake_activate_couch)
+    monkeypatch.setattr(server_module.screen_lock_actions, "activate_desk", fake_activate_desk)
+
+    app = create_app(health=Health())
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    unlock_resp = client.post("/api/screen/unlock", headers=headers)
+    assert unlock_resp.status_code == 200
+    assert unlock_resp.json() == {"ok": True}
+    assert calls["couch"] == 1
+
+    lock_resp = client.post("/api/screen/lock", headers=headers)
+    assert lock_resp.status_code == 200
+    assert calls["desk"] == ["fake-cookie-123"]  # the couch call's own cookie, round-tripped
+
+
+def test_api_screen_unlock_twice_does_not_leak_a_second_cookie(isolated_config, monkeypatch):
+    # Regression guard: an overlapping second stream calling unlock again
+    # before the first one's lock must not acquire (and leak) a second
+    # ScreenSaver.Inhibit() cookie.
+    from joystick_notify.health import Health
+    from joystick_notify.wizard import server as server_module
+
+    calls = {"couch": 0}
+
+    async def fake_activate_couch(config, health):
+        calls["couch"] += 1
+        return "cookie"
+
+    monkeypatch.setattr(server_module.screen_lock_actions, "activate_couch", fake_activate_couch)
+
+    app = create_app(health=Health())
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    first = client.post("/api/screen/unlock", headers=headers)
+    second = client.post("/api/screen/unlock", headers=headers)
+
+    assert first.json() == {"ok": True}
+    assert second.json() == {"ok": True, "already_unlocked": True}
+    assert calls["couch"] == 1
+
+
+def test_api_screen_lock_without_prior_unlock_is_a_noop(isolated_config):
+    from joystick_notify.health import Health
+
+    app = create_app(health=Health())
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/screen/lock", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "already_locked": True}
+
+
+def test_api_screen_unlock_lock_bearer_token_scoped_correctly(isolated_config):
+    # Same scoping guarantee as the mode-switch pair -- these two are
+    # meant for Sunshine's hooks specifically, not a blanket /api/* grant.
+    from joystick_notify.health import Health
+
+    app = create_app(health=Health())
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.get("/configure", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+def test_api_launch_steam_bigpicture_calls_the_launcher_function(isolated_config, monkeypatch):
+    from joystick_notify.wizard import server as server_module
+
+    calls = {"launched": 0}
+
+    async def fake_launch():
+        calls["launched"] += 1
+
+    monkeypatch.setattr(server_module.launchers, "launch_steam_bigpicture", fake_launch)
+
+    app = create_app()
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/launch/steam-bigpicture", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert calls["launched"] == 1
+
+
+def test_api_launch_steam_bigpicture_bearer_token_scoped_correctly(isolated_config):
+    app = create_app()
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.get("/configure", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
 def test_token_generate_shows_token_once(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
     auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
