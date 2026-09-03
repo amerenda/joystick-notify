@@ -9,6 +9,7 @@ from joystick_notify.wizard.auth import (
     create_credentials,
     delete_api_token,
     generate_api_token,
+    install_api_token,
     load_api_token,
     load_credentials,
     save_api_token,
@@ -131,6 +132,36 @@ def test_api_token_round_trip_save_load(tmp_path):
 
 def test_load_missing_api_token_returns_none(tmp_path):
     assert load_api_token(Path(tmp_path) / "nope.json") is None
+
+
+def test_install_api_token_makes_externally_supplied_token_verify(tmp_path):
+    # Out-of-band provisioning path (ansible's sunshine role): the
+    # plaintext is generated outside this process, not by
+    # generate_api_token() here -- confirm the installed hash still
+    # verifies against that externally-chosen plaintext.
+    path = Path(tmp_path) / "api_token.json"
+    external_token = "not-generated-by-this-process-at-all"
+
+    install_api_token(external_token, path)
+
+    loaded = load_api_token(path)
+    assert loaded is not None
+    assert check_bearer_token(f"Bearer {external_token}", loaded) is True
+    assert check_bearer_token("Bearer wrong-token", loaded) is False
+
+
+def test_install_api_token_is_idempotent_in_effect(tmp_path):
+    # Installing the same token twice must not break verification --
+    # ansible re-runs this on every deploy.
+    path = Path(tmp_path) / "api_token.json"
+    token = "same-token-every-deploy"
+
+    install_api_token(token, path)
+    install_api_token(token, path)
+
+    loaded = load_api_token(path)
+    assert loaded is not None
+    assert check_bearer_token(f"Bearer {token}", loaded) is True
 
 
 def test_save_api_token_sets_restrictive_permissions(tmp_path):
