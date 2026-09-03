@@ -23,10 +23,11 @@ from starlette.templating import Jinja2Templates
 from ..actions import audio as audio_actions
 from ..actions import display as display_actions
 from ..actions import launchers
+from ..actions import screen_lock as screen_lock_actions
 from ..config import store as config_store
 from ..config.schema import CustomCommand
 from ..devices import cec as cec_discover
-from ..health import read_snapshot
+from ..health import Health, read_snapshot
 from . import auth as auth_module
 
 logger = logging.getLogger(__name__)
@@ -41,10 +42,17 @@ _STATIC_PREFIX = "/static/"
 _EXEMPT_PATHS = {"/setup-password"}
 # Routes a phone/automation client can hit with just the API token (see
 # auth.py's ApiToken) instead of the admin password -- deliberately just
-# the mode-switch pair, not a blanket "/api/*" allowance, since the token
-# is meant to be handed to a phone home-screen shortcut and scoped
-# narrowly to "what can this actually do if it leaks."
-_API_TOKEN_PATHS = {"/api/mode/couch", "/api/mode/desk"}
+# this narrow set, not a blanket "/api/*" allowance, since the token is
+# meant to be handed to a phone home-screen shortcut (or, for the screen/
+# pair, Sunshine's stream hooks) and scoped to "what can this actually do
+# if it leaks."
+_API_TOKEN_PATHS = {
+    "/api/mode/couch",
+    "/api/mode/desk",
+    "/api/screen/unlock",
+    "/api/screen/lock",
+    "/api/launch/steam-bigpicture",
+}
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -99,6 +107,18 @@ def _live_state_machine(request: Request):
     return getattr(request.app.state, "sm", None)
 
 
+def _live_health(request: Request) -> Health | None:
+    """Same shape as `_live_state_machine` -- daemon.py also stashes its
+    one shared Health registry on app.state.health at startup. This
+    matters specifically because Health persists by overwriting its
+    whole health.json snapshot from its own in-memory `_components`
+    (see health.py's `_persist`) -- a route that constructed its own
+    fresh `Health()` instead of reusing this one would wipe out every
+    other component's reported status the moment it called `.ok()`.
+    """
+    return getattr(request.app.state, "health", None)
+
+
 async def index(request: Request):
     snapshot = read_snapshot()
     config = config_store.load()
@@ -139,6 +159,87 @@ async def api_mode_desk(request: Request):
         return JSONResponse({"ok": False, "error": "daemon state machine unavailable"}, status_code=503)
     await sm.force_exit_to_desk()
     return JSONResponse({"ok": True, "mode": sm.mode.value})
+
+
+async def api_screen_unlock(request: Request):
+    """Screen-unlock-only counterpart to api_mode_couch, for a caller
+    (Sunshine's stream-start hook) that wants exactly screen_lock.py's
+    unlock/disable-autolock/inhibit mechanism and nothing else -- not the
+    full couch-mode transition (CEC TV/receiver wake, display output
+    switch, audio switch, cursor hide, launcher). A remote/Deck stream
+    has no reason to touch any of that; it captures the desktop and
+    streams its own audio/video regardless of what's plugged into the
+    TV. Calls screen_lock.activate_couch() directly -- the exact same
+    function daemon.py's own activate_couch hook calls, just without
+    going through the state machine's mode transition at all.
+
+    The held ScreenSaver.Inhibit() cookie lives on app.state (this
+    process is the one thing both calls share) rather than being
+    returned to the caller -- api_screen_lock looks it up the same way.
+    Idempotent against a caller that unlocks twice without an
+    intervening lock (e.g. an overlapping second stream): the second
+    call is a no-op rather than acquiring and leaking a second cookie.
+
+    Also preserves an intentionally-powered-off desk display: unlock (and
+    relock, on the way out) internally calls SimulateUserActivity to
+    re-arm the idle timer (screen_lock.py), which -- confirmed live
+    2026-09-03 -- also wakes DPMS if the display was blanked, since
+    that's exactly the signal DPMS treats as "user is active." Alex was
+    explicit this must not happen: a remote stream from a Deck has no
+    reason to power on a desk monitor nobody's looking at. The DPMS
+    state captured here, before anything runs, is restored (see
+    display.dpms_off_outputs/restore_dpms_off) after both this call and
+    api_screen_lock's -- carried on app.state alongside the inhibit
+    cookie so the same "was it off before the stream" answer applies at
+    both ends, not just this one.
+    """
+    health = _live_health(request)
+    if health is None:
+        return JSONResponse({"ok": False, "error": "daemon health unavailable"}, status_code=503)
+    if getattr(request.app.state, "screen_unlock_held", False):
+        return JSONResponse({"ok": True, "already_unlocked": True})
+    dpms_off = {name for name, state in (await display_actions.dpms_states()).items() if state == "off"}
+    config = config_store.load().screen_lock
+    request.app.state.screen_unlock_cookie = await screen_lock_actions.activate_couch(config, health)
+    request.app.state.screen_unlock_held = True
+    request.app.state.screen_unlock_dpms_off = dpms_off
+    await display_actions.restore_dpms_off(dpms_off)
+    return JSONResponse({"ok": True})
+
+
+async def api_screen_lock(request: Request):
+    health = _live_health(request)
+    if health is None:
+        return JSONResponse({"ok": False, "error": "daemon health unavailable"}, status_code=503)
+    if not getattr(request.app.state, "screen_unlock_held", False):
+        return JSONResponse({"ok": True, "already_locked": True})
+    config = config_store.load().screen_lock
+    cookie = getattr(request.app.state, "screen_unlock_cookie", None)
+    await screen_lock_actions.activate_desk(config, health, cookie)
+    dpms_off = getattr(request.app.state, "screen_unlock_dpms_off", set())
+    await display_actions.restore_dpms_off(dpms_off)
+    request.app.state.screen_unlock_cookie = None
+    request.app.state.screen_unlock_held = False
+    request.app.state.screen_unlock_dpms_off = set()
+    return JSONResponse({"ok": True})
+
+
+async def api_launch_steam_bigpicture(request: Request):
+    """One-shot counterpart used by Sunshine's "Steam Big Picture" app
+    entry specifically (not the global unlock hook -- see
+    api_screen_unlock). Calls launchers.launch_steam_bigpicture()
+    directly, the exact same function config.on_connect="steam-bigpicture"
+    calls for a controller-triggered couch entry -- deliberately reused
+    rather than having Sunshine's apps.json run `steam -gamepadui`
+    itself, which would silently drop the shutdown-existing-instance-
+    first handling that function does specifically to avoid a real,
+    already-fixed race (see its own docstring, 2026-08-22: a stale Big
+    Picture window surviving a mode switch could lose signal entirely).
+    No held state / no counterpart "undo" call needed -- this doesn't
+    hold anything across the stream's lifetime.
+    """
+    await launchers.launch_steam_bigpicture()
+    return JSONResponse({"ok": True})
 
 
 async def api_restart(request: Request):
@@ -517,13 +618,16 @@ async def api_cec_topology(request: Request):
     })
 
 
-def create_app(sm=None) -> Starlette:
+def create_app(sm=None, health: Health | None = None) -> Starlette:
     """`sm` is the live daemon StateMachine when the wizard runs embedded
     in run_daemon() (see daemon.py) -- stashed on app.state so the
     mode-switch routes below can call into it directly, one process, no
-    IPC. None for the standalone `python -m joystick_notify.wizard.server`
-    entrypoint (UI-only manual testing); those routes then report the
-    state machine as unavailable rather than erroring.
+    IPC. `health` is that same run's shared Health registry, needed by
+    api_screen_unlock/api_screen_lock (see _live_health's docstring for
+    why reusing this one specific instance matters). Both None for the
+    standalone `python -m joystick_notify.wizard.server` entrypoint
+    (UI-only manual testing); those routes then report unavailable
+    rather than erroring.
     """
     routes = [
         Route("/", index, methods=["GET"]),
@@ -542,6 +646,9 @@ def create_app(sm=None) -> Starlette:
         Route("/api/cec/topology", api_cec_topology, methods=["POST"]),
         Route("/api/mode/couch", api_mode_couch, methods=["POST"]),
         Route("/api/mode/desk", api_mode_desk, methods=["POST"]),
+        Route("/api/screen/unlock", api_screen_unlock, methods=["POST"]),
+        Route("/api/screen/lock", api_screen_lock, methods=["POST"]),
+        Route("/api/launch/steam-bigpicture", api_launch_steam_bigpicture, methods=["POST"]),
         Route("/api/autoswitch", api_autoswitch_get, methods=["GET"]),
         Route("/api/autoswitch", api_autoswitch_set, methods=["POST"]),
         Route("/api/restart", api_restart, methods=["POST"]),
@@ -552,6 +659,10 @@ def create_app(sm=None) -> Starlette:
     ]
     app = Starlette(routes=routes, middleware=[Middleware(AuthMiddleware)])
     app.state.sm = sm
+    app.state.health = health
+    app.state.screen_unlock_cookie = None
+    app.state.screen_unlock_held = False
+    app.state.screen_unlock_dpms_off = set()
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     return app
 
