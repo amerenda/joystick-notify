@@ -113,7 +113,18 @@ async def _log_outcome(cmd: list[str], proc: asyncio.subprocess.Process) -> None
 
 
 STEAM_SHUTDOWN_POLL_S = 1.0
-STEAM_SHUTDOWN_TIMEOUT_S = 10.0
+# Raised 10.0 -> 30.0 2026-09-07: the PID-tracking fix below (prior_pids)
+# correctly stopped miscounting `-shutdown`'s own bootstrap process as
+# "still running", but a live retest on archlinux's AMD RX 9070 XT /
+# Mesa-RADV stack showed the *genuine* prior-session teardown itself
+# taking ~12s+ end-to-end (GPU topology query, ProtonFixes checks, X
+# init) -- comfortably past the old 10s timeout, so `steam -gamepadui`
+# still fired while a real prior PID was legitimately still alive,
+# reproducing the same collision (two ProtonFixes bootstraps ~4s apart in
+# Steam's own console-linux.txt) even though the tracking logic itself
+# was correct. 30s gives real teardown on this hardware enough headroom
+# without making a stuck-forever case take unreasonably long to recover.
+STEAM_SHUTDOWN_TIMEOUT_S = 30.0
 
 
 async def _shutdown_steam_and_wait(
@@ -134,8 +145,16 @@ async def _shutdown_steam_and_wait(
     Big Picture. Tracking the specific prior PID(s) means a new PID
     spawned by `-shutdown` itself can never block this wait, no matter
     how long it stays alive.
+
+    Logs the exact PID sets at debug level on every poll and in the final
+    timeout warning -- added after a live retest of the above fix still
+    raced (see STEAM_SHUTDOWN_TIMEOUT_S's own comment): without this, a
+    repeat failure gives no way to tell "prior_pids genuinely didn't exit
+    in time" apart from "the tracking logic itself is wrong" other than
+    re-diagnosing from Steam's own logs from scratch.
     """
     prior_pids = _get_steam_pids()
+    logger.debug("launchers: prior steam pids before -shutdown: %s", sorted(prior_pids))
     await _run_detached(["steam", "-shutdown"])
     # Elapsed time is tracked against the clock, not by accumulating
     # poll_s -- accumulation makes poll_s=0 (as tests use, for a fast
@@ -144,10 +163,13 @@ async def _shutdown_steam_and_wait(
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(poll_s)
-        if not (prior_pids & _get_steam_pids()):
+        remaining = prior_pids & _get_steam_pids()
+        if not remaining:
             return
+        logger.debug("launchers: still waiting on prior steam pid(s) %s", sorted(remaining))
     logger.warning(
-        "launchers: steam still running %.0fs after -shutdown, proceeding anyway", timeout_s
+        "launchers: steam pid(s) %s still running %.0fs after -shutdown, proceeding anyway",
+        sorted(prior_pids & _get_steam_pids()), timeout_s,
     )
 
 

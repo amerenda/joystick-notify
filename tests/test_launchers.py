@@ -301,3 +301,28 @@ async def test_exit_launched_empty_everything_does_nothing(monkeypatch):
     await launchers.exit_launched("")
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_shutdown_steam_and_wait_logs_pid_diagnostics_on_timeout(monkeypatch, caplog):
+    # Regression test for the 2026-09-07 live retest: the PID-tracking fix
+    # (prior_pids) was correct, but a live retest still raced because the
+    # real prior-session teardown took longer than the old 10s timeout on
+    # archlinux's hardware -- with no way to tell that apart from a
+    # tracking-logic bug other than re-diagnosing from Steam's own logs.
+    # This locks in that a timeout now logs the exact PID(s) it was still
+    # waiting on, not just a generic "still running" message.
+    from joystick_notify.actions import launchers
+
+    async def fake_run_detached(cmd):
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_get_steam_pids", lambda: {"111", "222"})
+
+    with caplog.at_level("DEBUG", logger="joystick_notify.actions.launchers"):
+        await launchers._shutdown_steam_and_wait(poll_s=0, timeout_s=0.02)
+
+    assert any("prior steam pids before -shutdown" in r.message and "111" in r.message for r in caplog.records)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("111" in r.message and "222" in r.message for r in warnings)
