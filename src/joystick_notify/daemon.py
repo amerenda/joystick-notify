@@ -382,7 +382,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
         creds = wizard_auth.load_credentials()
         wizard_auth.validate_bind_address(config.wizard.bind_address, has_credentials=creds is not None)
         uvicorn_config = uvicorn.Config(
-            create_app(sm), host=config.wizard.bind_address, port=config.wizard.port, log_level="warning"
+            create_app(sm, health), host=config.wizard.bind_address, port=config.wizard.port, log_level="warning"
         )
         wizard_server = uvicorn.Server(uvicorn_config)
         wizard_server.install_signal_handlers = lambda: None  # daemon owns SIGTERM/SIGINT, not uvicorn
@@ -447,9 +447,22 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="jn-daemon")
     parser.add_argument("--doctor", action="store_true", help="one-shot self-test; exit non-zero on failure")
+    parser.add_argument(
+        "--install-api-token",
+        type=str,
+        default=None,
+        metavar="TOKEN",
+        help="persist an externally-generated API token's hash (out-of-band provisioning, e.g. ansible) and exit",
+    )
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
+
+    if args.install_api_token is not None:
+        from .wizard.auth import install_api_token
+
+        install_api_token(args.install_api_token)
+        return 0
 
     log_format = "%(asctime)s %(name)s %(levelname)s %(message)s"
     logging.basicConfig(level=args.log_level, format=log_format)

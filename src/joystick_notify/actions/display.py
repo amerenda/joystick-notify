@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,6 +124,55 @@ async def _run(cmd: list[str], timeout: float = KSCREEN_TIMEOUT_S) -> tuple[int,
         await proc.wait()
         return -1, "timeout"
     return proc.returncode, out.decode(errors="replace")
+
+
+_DPMS_LINE_RE = re.compile(r"^dpms mode for screen (\S+):\s*(\w+)\s*$")
+
+
+async def dpms_states() -> dict[str, str]:
+    """Per-output DPMS power state ("on"/"off"), via `kscreen-doctor
+    --dpms show` -- this is real physical-display-power state, distinct
+    from an output's `enabled` field in `kscreen-doctor -j` (which is
+    about the compositor's output topology/config, not backlight power,
+    and doesn't include DPMS at all -- confirmed live 2026-09-03, no
+    "dpms" key anywhere in the JSON).
+    """
+    rc, out = await _run(["kscreen-doctor", "--dpms", "show"])
+    if rc != 0:
+        return {}
+    states: dict[str, str] = {}
+    for line in out.splitlines():
+        m = _DPMS_LINE_RE.match(line.strip())
+        if m:
+            states[m.group(1)] = m.group(2)
+    return states
+
+
+async def restore_dpms_off(previously_off: set[str]) -> None:
+    """Sets DPMS back off for exactly the outputs named in
+    `previously_off`, leaving every other (already-on) output untouched.
+
+    Exists for callers like wizard/server.py's api_screen_unlock: KDE's
+    `org.freedesktop.ScreenSaver.SimulateUserActivity` (used elsewhere in
+    the couch/desk unlock/relock flow to re-arm the idle timer, see
+    screen_lock.py) resets DPMS's own idle timer too, since "simulate
+    user activity" is exactly the signal DPMS uses to decide whether to
+    wake a blanked display -- so it will likely wake an intentionally
+    powered-off desk monitor as a side effect of an otherwise-unrelated
+    unlock call. `kscreen-doctor --dpms off` is a global toggle (no
+    single-output "set this one off" command), so restoring just the
+    previously-off subset means excluding every currently-on output from
+    the blanket off via `--dpms-excluded`. No-op if `previously_off` is
+    empty -- nothing was off, nothing to restore.
+    """
+    if not previously_off:
+        return
+    current = await dpms_states()
+    keep_on = [name for name in current if name not in previously_off]
+    cmd = ["kscreen-doctor", "--dpms", "off"]
+    for name in keep_on:
+        cmd += ["--dpms-excluded", name]
+    await _run(cmd)
 
 
 async def get_kscreen_json() -> dict | None:

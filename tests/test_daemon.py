@@ -5,10 +5,24 @@ import pytest
 
 from joystick_notify.config import store as config_store
 from joystick_notify.config.schema import JoystickNotifyConfig
-from joystick_notify.daemon import _forward_to_state_machine, build_hooks, check_startup_health, run_doctor
+from joystick_notify.daemon import _forward_to_state_machine, build_hooks, check_startup_health, main, run_doctor
 from joystick_notify.debounce import DeviceEvent, StableKind
 from joystick_notify.health import Health, Status
 from joystick_notify.manual_exit import ManualExitWatcher
+from joystick_notify.wizard.auth import check_bearer_token, load_api_token
+
+
+def test_main_install_api_token_persists_hash_and_exits(tmp_path, monkeypatch):
+    # Out-of-band provisioning path used by ansible's sunshine role --
+    # must exit immediately without starting the full daemon.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    rc = main(["--install-api-token", "a-token-from-bws"])
+
+    assert rc == 0
+    loaded = load_api_token(tmp_path / "joystick-notify" / "api_token.json")
+    assert loaded is not None
+    assert check_bearer_token("Bearer a-token-from-bws", loaded) is True
 
 
 def test_check_startup_health_fails_when_binaries_missing(tmp_path, monkeypatch):

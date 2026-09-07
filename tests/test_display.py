@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -151,3 +152,64 @@ def test_parse_outputs_real_shape_falls_back_to_current_mode_when_no_preferred()
     # blank field in the wizard.
     outputs = parse_outputs(REAL_KSCREEN_JSON)
     assert outputs[1].preferred_mode == "2560x1440@60"
+
+
+def test_dpms_states_parses_kscreen_doctor_show_output(monkeypatch):
+    async def fake_run(cmd, timeout=None):
+        assert cmd == ["kscreen-doctor", "--dpms", "show"]
+        return 0, "dpms mode for screen HDMI-A-1: on\ndpms mode for screen HDMI-A-2: off\n"
+
+    monkeypatch.setattr(display_module, "_run", fake_run)
+
+    states = asyncio.run(display_module.dpms_states())
+
+    assert states == {"HDMI-A-1": "on", "HDMI-A-2": "off"}
+
+
+def test_dpms_states_returns_empty_dict_on_command_failure(monkeypatch):
+    async def fake_run(cmd, timeout=None):
+        return -1, "kscreen-doctor: command not found"
+
+    monkeypatch.setattr(display_module, "_run", fake_run)
+
+    assert asyncio.run(display_module.dpms_states()) == {}
+
+
+def test_restore_dpms_off_is_a_noop_when_nothing_was_off(monkeypatch):
+    calls = []
+
+    async def fake_run(cmd, timeout=None):
+        calls.append(cmd)
+        return 0, ""
+
+    monkeypatch.setattr(display_module, "_run", fake_run)
+
+    asyncio.run(display_module.restore_dpms_off(set()))
+
+    assert calls == []
+
+
+def test_restore_dpms_off_excludes_outputs_that_were_already_on(monkeypatch):
+    # Regression test for the 2026-09-03 fix: SimulateUserActivity (part
+    # of screen_lock.py's unlock/relock flow) resets DPMS's idle timer
+    # too, which can wake an intentionally-off desk monitor as a side
+    # effect of an otherwise unrelated screen-unlock call (Sunshine's
+    # stream-start hook, in particular). restore_dpms_off must turn only
+    # the previously-off outputs back off, leaving already-on ones alone.
+    calls = []
+
+    async def fake_run(cmd, timeout=None):
+        calls.append(cmd)
+        if cmd == ["kscreen-doctor", "--dpms", "show"]:
+            return 0, "dpms mode for screen HDMI-A-1: on\ndpms mode for screen HDMI-A-2: on\n"
+        return 0, ""
+
+    monkeypatch.setattr(display_module, "_run", fake_run)
+
+    asyncio.run(display_module.restore_dpms_off({"HDMI-A-2"}))
+
+    assert calls[0] == ["kscreen-doctor", "--dpms", "show"]
+    off_cmd = calls[1]
+    assert off_cmd[:3] == ["kscreen-doctor", "--dpms", "off"]
+    assert "--dpms-excluded" in off_cmd and "HDMI-A-1" in off_cmd
+    assert "HDMI-A-2" not in off_cmd  # the one we WANT set off is not excluded

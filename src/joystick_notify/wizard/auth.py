@@ -139,6 +139,20 @@ def generate_api_token() -> tuple[str, ApiToken]:
     return token, ApiToken(token_hash_hex=_hash_token(token), created_at=time.time())
 
 
+def install_api_token(token: str, path: Path | None = None) -> None:
+    """Persists an externally-generated plaintext token's hash, for
+    out-of-band provisioning -- e.g. `ansible-playbooks`' sunshine role
+    generates a token once, stores the plaintext in BWS, and calls
+    `jn-daemon --install-api-token <token>` on every deploy to (re)install
+    its hash here. This is the same shape as `generate_api_token()` +
+    `save_api_token()` (used by the wizard's own /token/generate route
+    for a human clicking a button), just with the plaintext supplied by
+    the caller instead of generated here -- the token itself still never
+    gets persisted anywhere in plaintext by this process.
+    """
+    save_api_token(ApiToken(token_hash_hex=_hash_token(token), created_at=time.time()), path)
+
+
 def load_api_token(path: Path | None = None) -> ApiToken | None:
     path = path or default_api_token_path()
     try:
