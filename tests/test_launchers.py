@@ -125,14 +125,15 @@ async def test_launch_steam_bigpicture_shuts_down_before_cold_starting_when_alre
         return None
 
     monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)  # outer check: shutdown needed
 
     seen = {"n": 0}
 
-    def fake_is_steam_running():
+    def fake_get_steam_pids():
         seen["n"] += 1
-        return seen["n"] == 1  # running once (triggers shutdown), then confirmed gone
+        return {"111"} if seen["n"] == 1 else set()  # prior pid, then confirmed gone
 
-    monkeypatch.setattr(launchers, "_is_steam_running", fake_is_steam_running)
+    monkeypatch.setattr(launchers, "_get_steam_pids", fake_get_steam_pids)
 
     await launchers.launch_steam_bigpicture()
 
@@ -147,12 +148,45 @@ async def test_shutdown_steam_and_wait_gives_up_after_timeout_and_logs_warning(m
         return None
 
     monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
-    monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)  # never actually exits
+    monkeypatch.setattr(launchers, "_get_steam_pids", lambda: {"111"})  # same prior pid, never exits
 
     with caplog.at_level("WARNING", logger="joystick_notify.actions.launchers"):
         await launchers._shutdown_steam_and_wait(poll_s=0, timeout_s=0.02)
 
     assert any("still running" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_steam_and_wait_ignores_shutdowns_own_bootstrap_process(monkeypatch, caplog):
+    # Regression test for the 2026-09-07 live race (see docstring on
+    # _shutdown_steam_and_wait): `steam -shutdown` spawns its own
+    # transient bootstrap process that still matches "steam" in /proc.
+    # The prior PID (111) disappears quickly, but a *different* PID (999)
+    # -- the bootstrap process `-shutdown` itself just spawned -- is still
+    # alive for the rest of the timeout window. The wait must complete as
+    # soon as the prior PID is gone, and must NOT treat the new PID as
+    # "steam still running" and time out.
+    from joystick_notify.actions import launchers
+
+    async def fake_run_detached(cmd):
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+
+    calls = {"n": 0}
+
+    def fake_get_steam_pids():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"111"}  # captured as prior_pids before -shutdown fires
+        return {"999"}  # -shutdown's own bootstrap process, unrelated pid
+
+    monkeypatch.setattr(launchers, "_get_steam_pids", fake_get_steam_pids)
+
+    with caplog.at_level("WARNING", logger="joystick_notify.actions.launchers"):
+        await launchers._shutdown_steam_and_wait(poll_s=0, timeout_s=0.05)
+
+    assert not any("still running" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -166,14 +200,8 @@ async def test_exit_launched_shuts_down_steam_when_running(monkeypatch):
         return None
 
     monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
-
-    seen = {"n": 0}
-
-    def fake_is_steam_running():
-        seen["n"] += 1
-        return seen["n"] == 1
-
-    monkeypatch.setattr(launchers, "_is_steam_running", fake_is_steam_running)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)  # outer check: shutdown needed
+    monkeypatch.setattr(launchers, "_get_steam_pids", lambda: set())  # confirmed gone immediately
 
     await launchers.exit_launched("steam-bigpicture")
 

@@ -35,18 +35,30 @@ def detect_launchers(home: Path | None = None) -> dict[str, bool]:
 
 
 def _is_steam_running(proc_root: str = "/proc") -> bool:
-    return is_process_running(["steam"], proc_root=proc_root)
+    return bool(_get_steam_pids(proc_root=proc_root))
+
+
+def _get_steam_pids(proc_root: str = "/proc") -> set[str]:
+    return get_matching_pids(["steam"], proc_root=proc_root)
 
 
 def is_process_running(name_patterns: list[str], proc_root: str = "/proc") -> bool:
-    """Scans /proc for a process whose comm or cmdline matches any of
-    `name_patterns`. `proc_root` is injectable for unit testing against a
-    fake directory tree rather than the real /proc.
+    return bool(get_matching_pids(name_patterns, proc_root=proc_root))
+
+
+def get_matching_pids(name_patterns: list[str], proc_root: str = "/proc") -> set[str]:
+    """Scans /proc for processes whose comm or cmdline matches any of
+    `name_patterns`, returning the matching PIDs themselves (not just
+    whether any matched) so a caller can tell a *specific* process apart
+    from a later, different process that happens to match the same name
+    pattern. `proc_root` is injectable for unit testing against a fake
+    directory tree rather than the real /proc.
     """
     try:
         pids = [p for p in os.listdir(proc_root) if p.isdigit()]
     except OSError:
-        return False
+        return set()
+    matched: set[str] = set()
     for pid in pids:
         comm_path = os.path.join(proc_root, pid, "comm")
         try:
@@ -55,7 +67,8 @@ def is_process_running(name_patterns: list[str], proc_root: str = "/proc") -> bo
         except OSError:
             comm = ""
         if any(pattern in comm for pattern in name_patterns):
-            return True
+            matched.add(pid)
+            continue
         cmdline_path = os.path.join(proc_root, pid, "cmdline")
         try:
             with open(cmdline_path, "rb") as f:
@@ -63,8 +76,8 @@ def is_process_running(name_patterns: list[str], proc_root: str = "/proc") -> bo
         except OSError:
             cmdline = ""
         if any(pattern in cmdline for pattern in name_patterns):
-            return True
-    return False
+            matched.add(pid)
+    return matched
 
 
 async def _run_detached(cmd: list[str]) -> None:
@@ -106,6 +119,23 @@ STEAM_SHUTDOWN_TIMEOUT_S = 10.0
 async def _shutdown_steam_and_wait(
     poll_s: float = STEAM_SHUTDOWN_POLL_S, timeout_s: float = STEAM_SHUTDOWN_TIMEOUT_S
 ) -> None:
+    """Waits only for the steam PID(s) that existed *before* `-shutdown`
+    was issued to exit -- not for "no process matching steam" in general.
+
+    Root-caused live 2026-09-07 (Sunshine Steam Big Picture launch race):
+    `steam -shutdown` itself makes Steam spawn a transient bootstrap
+    process (update-UI, install verification) before it actually exits,
+    and that bootstrap process's own comm/cmdline still matches "steam".
+    The old any-process-matching check couldn't tell that self-inflicted
+    bootstrap process apart from a genuinely stuck prior session, so on a
+    slow bootstrap it would time out, conclude steam was "still running",
+    and fire `steam -gamepadui` on top of it -- colliding with the
+    bootstrap process and crashing the GPU/compositor instead of showing
+    Big Picture. Tracking the specific prior PID(s) means a new PID
+    spawned by `-shutdown` itself can never block this wait, no matter
+    how long it stays alive.
+    """
+    prior_pids = _get_steam_pids()
     await _run_detached(["steam", "-shutdown"])
     # Elapsed time is tracked against the clock, not by accumulating
     # poll_s -- accumulation makes poll_s=0 (as tests use, for a fast
@@ -114,7 +144,7 @@ async def _shutdown_steam_and_wait(
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(poll_s)
-        if not _is_steam_running():
+        if not (prior_pids & _get_steam_pids()):
             return
     logger.warning(
         "launchers: steam still running %.0fs after -shutdown, proceeding anyway", timeout_s
