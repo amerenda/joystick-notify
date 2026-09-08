@@ -161,7 +161,7 @@ async def test_activate_desk_exits_launched_process_via_builtin_default(tmp_path
     health = Health(path=Path(tmp_path) / "health.json")
     watcher = ManualExitWatcher(lambda: None, health)
 
-    hooks = build_hooks(config, health, watcher)
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
     await hooks.activate_desk()
 
     assert exit_calls == [("steam-bigpicture", "")]
@@ -190,7 +190,7 @@ async def test_activate_desk_uses_custom_teardown_command_when_set(tmp_path, mon
     health = Health(path=Path(tmp_path) / "health.json")
     watcher = ManualExitWatcher(lambda: None, health)
 
-    hooks = build_hooks(config, health, watcher)
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
     await hooks.activate_desk()
 
     assert exit_calls == [("my-custom-game", "my-custom-game --quit")]
@@ -217,7 +217,106 @@ async def test_activate_desk_skips_exit_launched_when_nothing_configured(tmp_pat
     health = Health(path=Path(tmp_path) / "health.json")
     watcher = ManualExitWatcher(lambda: None, health)
 
-    hooks = build_hooks(config, health, watcher)
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
     await hooks.activate_desk()
 
     assert exit_calls == []
+
+
+@pytest.mark.asyncio
+async def test_activate_couch_rereads_cec_enabled_from_disk_not_startup_cache(tmp_path, monkeypatch):
+    """Regression test for the reported bug: unchecking "Enable CEC" in the
+    wizard and saving updates config.toml, but the daemon's `config` object
+    (closed over by build_hooks() at startup) used to keep the value it had
+    when the daemon started. Couch activation must reflect the config file
+    as it is *right now*, not as it was when build_hooks() was called.
+    """
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    cec_calls = []
+
+    async def fake_wake_and_select_input(*args, **kwargs):
+        cec_calls.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
+
+    config_path = tmp_path / "config.toml"
+
+    # Simulate the daemon having started with CEC enabled...
+    config = JoystickNotifyConfig()
+    config.cec.enabled = True
+    config.cec.adapter = "/dev/cec0"
+    config.shortcuts.exit_couch_enabled = False
+    config_store.save(config, config_path)
+
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+    hooks = build_hooks(config, health, watcher, config_path)
+
+    # ...then the wizard saves CEC disabled, through its own separate
+    # config object -- the daemon's in-memory `config` above is untouched.
+    disk_config = config_store.load(config_path)
+    disk_config.cec.enabled = False
+    config_store.save(disk_config, config_path)
+
+    await hooks.activate_couch("device-1")
+
+    assert cec_calls == []
+
+
+@pytest.mark.asyncio
+async def test_activate_couch_picks_up_cec_enabled_toggled_on_without_restart(tmp_path, monkeypatch):
+    """Mirror of the disable case: CEC enabled via the wizard after daemon
+    startup (in-memory config still has it disabled) must take effect on
+    the very next couch activation, matching auto_switch_enabled's reload.
+    """
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    cec_calls = []
+
+    async def fake_wake_and_select_input(*args, **kwargs):
+        cec_calls.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
+
+    config_path = tmp_path / "config.toml"
+
+    # Daemon started with CEC disabled...
+    config = JoystickNotifyConfig()
+    config.cec.enabled = False
+    config.shortcuts.exit_couch_enabled = False
+    config_store.save(config, config_path)
+
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+    hooks = build_hooks(config, health, watcher, config_path)
+
+    # ...then the wizard enables it, through its own separate config object.
+    disk_config = config_store.load(config_path)
+    disk_config.cec.enabled = True
+    disk_config.cec.adapter = "/dev/cec0"
+    disk_config.cec.active_source_phys_addr = "3.2.0.0"
+    config_store.save(disk_config, config_path)
+
+    await hooks.activate_couch("device-1")
+
+    assert len(cec_calls) == 1
+    args, kwargs = cec_calls[0]
+    assert args[0] == "/dev/cec0"
+    assert args[1] == "3.2.0.0"

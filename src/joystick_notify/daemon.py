@@ -24,7 +24,7 @@ from .actions import launchers
 from .actions import screen_lock as screen_lock_actions
 from .activity_gate import ActivityGate
 from .config import store as config_store
-from .config.schema import JoystickNotifyConfig
+from .config.schema import CecConfig, JoystickNotifyConfig
 from .debounce import Debouncer, DeviceEvent
 from .devices import cec as cec_discover
 from .devices.detect import HidrawLivenessWatcher, UdevWatcher, device_present
@@ -124,12 +124,30 @@ class CouchSessionResources:
         self.screen_lock_cookie: str | None = None
 
 
-def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watcher: ManualExitWatcher) -> ActionHooks:
+def build_hooks(
+    config: JoystickNotifyConfig,
+    health: Health,
+    manual_exit_watcher: ManualExitWatcher,
+    config_path: Path | None = None,
+) -> ActionHooks:
     resources = CouchSessionResources(manual_exit_watcher)
 
-    async def _cec_adapter() -> str | None:
-        if config.cec.adapter:
-            return config.cec.adapter
+    def _current_cec() -> CecConfig:
+        # Re-read the CEC section fresh from disk on every activation,
+        # rather than trusting `config.cec` cached at daemon startup --
+        # mirrors _forward_to_state_machine()'s auto_switch_enabled reload
+        # above for the exact same reason: the wizard saves through a
+        # completely separate config object (config_store.load() inside
+        # its own request handler), so without this, unchecking "Enable
+        # CEC" (or changing any other CEC field) updated config.toml on
+        # disk but had zero effect on the running daemon until it was
+        # restarted. One small TOML parse per couch/desk transition is
+        # cheap enough not to matter.
+        return config_store.load(config_path).cec
+
+    async def _cec_adapter(cec: CecConfig) -> str | None:
+        if cec.adapter:
+            return cec.adapter
         return await cec_discover.ensure_adapter(health)
 
     async def activate_couch(device_id: str) -> None:
@@ -137,19 +155,20 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         # screen — display/CEC/audio/launch all still proceed regardless,
         # but the user should actually be able to see the result.
         resources.screen_lock_cookie = await screen_lock_actions.activate_couch(config.screen_lock, health)
-        if config.cec.enabled:
-            adapter = await _cec_adapter()
+        cec = _current_cec()
+        if cec.enabled:
+            adapter = await _cec_adapter(cec)
             if adapter is None:
                 health.failed("cec", "CEC enabled but no adapter found at activation time")
             else:
                 resources.cec_retry_task = await cec_control.wake_and_select_input(
                     adapter,
-                    config.cec.active_source_phys_addr or None,
+                    cec.active_source_phys_addr or None,
                     health,
-                    wake_delay_s=config.cec.wake_delay_s,
-                    retries=config.cec.active_source_retries,
-                    retry_delay_s=config.cec.active_source_retry_delay_s,
-                    wake_targets=config.cec.standby_targets,
+                    wake_delay_s=cec.wake_delay_s,
+                    retries=cec.active_source_retries,
+                    retry_delay_s=cec.active_source_retry_delay_s,
+                    wake_targets=cec.standby_targets,
                 )
                 health.ok("cec", "wake + active-source sent")
         await display_actions.activate_couch(config.display, health)
@@ -187,16 +206,17 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         await cursor_actions.activate_desk(config.cursor, health)
         await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
         resources.screen_lock_cookie = None
-        if config.cec.enabled and config.cec.power_off_on_teardown:
-            adapter = await _cec_adapter()
+        cec = _current_cec()
+        if cec.enabled and cec.power_off_on_teardown:
+            adapter = await _cec_adapter(cec)
             if adapter is not None:
                 await cec_control.standby_and_verify(
                     adapter,
-                    config.cec.standby_targets,
+                    cec.standby_targets,
                     health,
-                    phys_addr=config.cec.active_source_phys_addr or None,
-                    attempts=config.cec.standby_verify_attempts,
-                    delay_s=config.cec.standby_verify_delay_s,
+                    phys_addr=cec.active_source_phys_addr or None,
+                    attempts=cec.standby_verify_attempts,
+                    delay_s=cec.standby_verify_delay_s,
                 )
 
     async def launch() -> None:
@@ -229,16 +249,17 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         # couch session stays fully set up so a reconnect resumes
         # instantly instead of redoing the whole desk->couch activation.
         await screen_lock_actions.activate_screensaver(health)
-        if config.cec.enabled and config.cec.power_off_on_teardown:
-            adapter = await _cec_adapter()
+        cec = _current_cec()
+        if cec.enabled and cec.power_off_on_teardown:
+            adapter = await _cec_adapter(cec)
             if adapter is not None:
                 await cec_control.standby_and_verify(
                     adapter,
-                    config.cec.standby_targets,
+                    cec.standby_targets,
                     health,
-                    phys_addr=config.cec.active_source_phys_addr or None,
-                    attempts=config.cec.standby_verify_attempts,
-                    delay_s=config.cec.standby_verify_delay_s,
+                    phys_addr=cec.active_source_phys_addr or None,
+                    attempts=cec.standby_verify_attempts,
+                    delay_s=cec.standby_verify_delay_s,
                 )
 
     async def detect_live_mode():
@@ -248,8 +269,9 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
         # Wakes the TV back up and dismisses the screensaver -- the mirror
         # of enter_couch_idle(), fired on reconnect (see
         # on_reconnect_while_couch's sibling handling in state_machine.py).
-        if config.cec.enabled:
-            adapter = await _cec_adapter()
+        cec = _current_cec()
+        if cec.enabled:
+            adapter = await _cec_adapter(cec)
             if adapter is not None:
                 # Store the returned retry-loop task the same way
                 # activate_couch() does, so a later activate_desk() cancels
@@ -258,12 +280,12 @@ def build_hooks(config: JoystickNotifyConfig, health: Health, manual_exit_watche
                 # bounded retries by the time an idle session wakes back up).
                 resources.cec_retry_task = await cec_control.wake_and_select_input(
                     adapter,
-                    config.cec.active_source_phys_addr or None,
+                    cec.active_source_phys_addr or None,
                     health,
-                    wake_delay_s=config.cec.wake_delay_s,
-                    retries=config.cec.active_source_retries,
-                    retry_delay_s=config.cec.active_source_retry_delay_s,
-                    wake_targets=config.cec.standby_targets,
+                    wake_delay_s=cec.wake_delay_s,
+                    retries=cec.active_source_retries,
+                    retry_delay_s=cec.active_source_retry_delay_s,
+                    wake_targets=cec.standby_targets,
                 )
         await screen_lock_actions.deactivate_screensaver(health)
 
@@ -300,7 +322,7 @@ async def run_daemon(config_path: Path | None = None) -> None:
         hold_seconds=config.shortcuts.exit_couch_hold_seconds,
     )
 
-    hooks = build_hooks(config, health, manual_exit_watcher)
+    hooks = build_hooks(config, health, manual_exit_watcher, config_path)
     sm = StateMachine(
         hooks,
         health,
