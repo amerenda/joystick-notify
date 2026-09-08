@@ -122,9 +122,20 @@ STEAM_SHUTDOWN_POLL_S = 1.0
 # still fired while a real prior PID was legitimately still alive,
 # reproducing the same collision (two ProtonFixes bootstraps ~4s apart in
 # Steam's own console-linux.txt) even though the tracking logic itself
-# was correct. 30s gives real teardown on this hardware enough headroom
-# without making a stuck-forever case take unreasonably long to recover.
-STEAM_SHUTDOWN_TIMEOUT_S = 30.0
+# was correct.
+# Raised 30.0 -> 120.0 2026-09-07: 30s isn't enough for Steam Cloud sync
+# to finish before `-shutdown`'s own exit -- observed live, the shutdown
+# reliably outlasted 30s and the wait's own "proceeding anyway" warning
+# fired both times, meaning save-sync is still running when Big Picture
+# is force-relaunched (or Sunshine's undo hook gives up and returns) on
+# top of it. Alex wants a clean shutdown over a fast one for this
+# specifically. Tradeoff: since the wizard's launch/exit endpoints await
+# this synchronously and Sunshine's apps.json prep-cmd/undo scripts
+# curl-and-block on those endpoints, a slow-to-exit Steam now holds up
+# Sunshine's own app-start/app-stop bookkeeping for up to 120s -- longer
+# than before, but bounded, and correct teardown matters more here than
+# a quick "stop" response.
+STEAM_SHUTDOWN_TIMEOUT_S = 120.0
 
 
 async def _shutdown_steam_and_wait(
