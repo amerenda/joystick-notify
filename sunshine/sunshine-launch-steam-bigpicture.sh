@@ -10,7 +10,14 @@
 # `steam -gamepadui` run directly here — see that function's own
 # docstring for the real, already-fixed race that would reintroduce.
 #
-# One-shot: no undo counterpart needed, nothing held across the stream.
+# This is the apps.json entry's "do" half only -- see
+# sunshine-exit-steam-bigpicture.sh for the "undo" half that actually
+# closes Big Picture when the client hits "stop"/disconnects. (An
+# earlier version of this comment claimed no undo was needed since
+# nothing is held across the stream -- wrong: with no `cmd` for Sunshine
+# to track and kill itself, `undo` is the only hook Sunshine runs on
+# stop, so leaving it as a no-op left Big Picture running after
+# disconnect. Confirmed live 2026-09-07.)
 set -euo pipefail
 
 TOKEN_FILE="${HOME}/.config/joystick-notify/sunshine-api-token"

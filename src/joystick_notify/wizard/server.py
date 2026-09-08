@@ -52,6 +52,7 @@ _API_TOKEN_PATHS = {
     "/api/screen/unlock",
     "/api/screen/lock",
     "/api/launch/steam-bigpicture",
+    "/api/exit/steam-bigpicture",
 }
 
 
@@ -239,6 +240,25 @@ async def api_launch_steam_bigpicture(request: Request):
     hold anything across the stream's lifetime.
     """
     await launchers.launch_steam_bigpicture()
+    return JSONResponse({"ok": True})
+
+
+async def api_exit_steam_bigpicture(request: Request):
+    """Counterpart to api_launch_steam_bigpicture -- Sunshine's "Steam Big
+    Picture" app entry has no `cmd` for Sunshine to track and kill itself,
+    only a `prep-cmd` (see apps.json), so its `undo` hook is the only thing
+    Sunshine runs when a client hits "stop app" / disconnects. Confirmed
+    live 2026-09-07: with `undo` set to a no-op (`/bin/true`, the original
+    assumption in sunshine-launch-steam-bigpicture.sh that "nothing is held
+    across the stream" turned out wrong for this one case), Big Picture
+    was simply left running on the host after the Moonlight client
+    disconnected. Reuses launchers.exit_launched("steam-bigpicture")
+    directly -- the exact same nice-exit path (`steam -shutdown`, already
+    PID-tracked to avoid the launch race) the desk/couch mode-switch
+    teardown already calls, so there's exactly one place that knows how
+    to shut Big Picture down cleanly.
+    """
+    await launchers.exit_launched("steam-bigpicture")
     return JSONResponse({"ok": True})
 
 
@@ -649,6 +669,7 @@ def create_app(sm=None, health: Health | None = None) -> Starlette:
         Route("/api/screen/unlock", api_screen_unlock, methods=["POST"]),
         Route("/api/screen/lock", api_screen_lock, methods=["POST"]),
         Route("/api/launch/steam-bigpicture", api_launch_steam_bigpicture, methods=["POST"]),
+        Route("/api/exit/steam-bigpicture", api_exit_steam_bigpicture, methods=["POST"]),
         Route("/api/autoswitch", api_autoswitch_get, methods=["GET"]),
         Route("/api/autoswitch", api_autoswitch_set, methods=["POST"]),
         Route("/api/restart", api_restart, methods=["POST"]),

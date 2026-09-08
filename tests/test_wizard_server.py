@@ -1195,6 +1195,39 @@ def test_api_launch_steam_bigpicture_bearer_token_scoped_correctly(isolated_conf
     assert resp.status_code == 401
 
 
+def test_api_exit_steam_bigpicture_calls_exit_launched(isolated_config, monkeypatch):
+    from joystick_notify.wizard import server as server_module
+
+    calls = []
+
+    async def fake_exit_launched(preset_or_command, teardown_command=""):
+        calls.append((preset_or_command, teardown_command))
+
+    monkeypatch.setattr(server_module.launchers, "exit_launched", fake_exit_launched)
+
+    app = create_app()
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.post("/api/exit/steam-bigpicture", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert calls == [("steam-bigpicture", "")]
+
+
+def test_api_exit_steam_bigpicture_bearer_token_scoped_correctly(isolated_config):
+    app = create_app()
+    client = TestClient(app, follow_redirects=False)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    token, api_token = auth_module.generate_api_token()
+    auth_module.save_api_token(api_token)
+
+    resp = client.get("/configure", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
 def test_token_generate_shows_token_once(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
     auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
