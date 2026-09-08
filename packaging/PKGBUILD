@@ -22,7 +22,16 @@ depends=(
   'uvicorn'
   'python-starlette'
   'python-jinja'
-  'python-multipart'
+  # NOT 'python-multipart' -- that Arch package wraps a different PyPI
+  # project (defnull/multipart) providing a bare `multipart` module.
+  # Starlette needs the `python_multipart` module, which Arch ships
+  # under the separate name 'python-python-multipart'. Depending on the
+  # wrong one leaves Starlette's own except-ModuleNotFoundError fallback
+  # silently degrading `request.form()` to broken (multipart = None),
+  # so EVERY form POST -- not just any one field -- fails 500 with
+  # "AssertionError: The python-multipart library must be installed to
+  # use form parsing." Confirmed live 2026-09-08.
+  'python-python-multipart'
   'python-tomli-w'
   'python-jeepney'
   'kscreen'
