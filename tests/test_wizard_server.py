@@ -214,6 +214,28 @@ def test_api_cec_topology_returns_devices_and_suggestion(client, monkeypatch):
     assert body["devices"][0]["osd_name"] == "LG OLED"
 
 
+def test_api_cec_topology_includes_phys_addr_for_active_source_picker(client, monkeypatch):
+    # The wizard's active-source picker (configure.html's device buttons)
+    # sets cec_active_source_phys_addr from this field directly -- it must
+    # be present in the response, not just logical_address.
+    from joystick_notify.devices import cec as cec_discover
+    from joystick_notify.devices.cec import TopologyDevice
+
+    async def fake_get_topology(adapter):
+        return [
+            TopologyDevice(logical_address=1, device_type="Playback", phys_addr="3.2.0.0", osd_name="PC"),
+        ]
+
+    monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/cec/topology", headers=auth_headers, data={"adapter": "/dev/cec0"})
+
+    assert resp.status_code == 200
+    assert resp.json()["devices"][0]["phys_addr"] == "3.2.0.0"
+
+
 def test_api_cec_topology_falls_back_to_config_adapter_when_not_specified(client, monkeypatch):
     from joystick_notify.devices import cec as cec_discover
 
@@ -553,6 +575,45 @@ def test_configure_post_saves_advanced_cec_tuning_fields(client):
     assert saved.cec.standby_targets == [0, 5]
     assert saved.cec.standby_verify_attempts == 5
     assert saved.cec.standby_verify_delay_s == 3.0
+
+
+def test_configure_post_disabling_cec_preserves_phys_addr_and_standby_targets(client):
+    # Regression test: Alpine's x-if="cecEnabled" removes the entire CEC
+    # sub-panel (adapter, phys addr, standby targets, tuning) from the DOM
+    # when the "Enable CEC" checkbox is unchecked, so none of those fields
+    # are present in the submitted form at all. The save handler must not
+    # read their absence as "clear these" -- unchecking and re-checking
+    # "Enable CEC" must not lose the previously-configured input.
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "cec_enabled": "on",
+            "cec_active_source_phys_addr": "3.2.0.0",
+            "cec_standby_targets": "0, 5",
+        },
+    )
+
+    # Simulate unchecking "Enable CEC" and saving -- the whole sub-panel,
+    # including cec_active_source_phys_addr and cec_standby_targets, drops
+    # out of the submitted form entirely.
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": ""},
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.cec.enabled is False
+    assert saved.cec.active_source_phys_addr == "3.2.0.0"
+    assert saved.cec.standby_targets == [0, 5]
 
 
 def test_configure_post_malformed_standby_targets_falls_back_to_existing(client):

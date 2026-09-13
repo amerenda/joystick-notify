@@ -459,28 +459,47 @@ async def configure_post(request: Request):
         return values
 
     config.cec.enabled = form.get("cec_enabled") == "on"
-    config.cec.adapter = str(form.get("cec_adapter", ""))
-    phys_addr = str(form.get("cec_active_source_phys_addr", "")).strip()
-    config.cec.active_source_phys_addr = phys_addr
+    # Text/number/list fields below live inside Alpine's x-if="cecEnabled"
+    # block (and, within that, an {% if not cec_adapters %} branch) --
+    # they're simply absent from the submitted form whenever that panel
+    # wasn't rendered, same as if the page had never mentioned them at
+    # all. Guard each on its own presence so unchecking "Enable CEC" (or
+    # a save with no CEC adapter detected) doesn't wipe previously-saved
+    # values back to their defaults. Checkboxes can't be guarded this way
+    # -- an unchecked box and a hidden one are both simply absent -- so
+    # cec_power_off_on_teardown keeps the codebase's normal
+    # absent-means-false checkbox handling.
+    if "cec_adapter" in form:
+        config.cec.adapter = str(form.get("cec_adapter", ""))
+    if "cec_active_source_phys_addr" in form:
+        config.cec.active_source_phys_addr = str(form.get("cec_active_source_phys_addr", "")).strip()
     config.cec.power_off_on_teardown = form.get("cec_power_off_on_teardown") == "on"
-    config.cec.wake_delay_s = _nonneg_float("cec_wake_delay_s", config.cec.wake_delay_s)
-    config.cec.active_source_retries = _nonneg_int("cec_active_source_retries", config.cec.active_source_retries)
-    config.cec.active_source_retry_delay_s = _positive_float(
-        "cec_active_source_retry_delay_s", config.cec.active_source_retry_delay_s
-    )
-    config.cec.standby_targets = _int_list("cec_standby_targets", config.cec.standby_targets)
-    config.cec.standby_verify_attempts = _positive_int(
-        "cec_standby_verify_attempts", config.cec.standby_verify_attempts
-    )
-    config.cec.standby_verify_delay_s = _positive_float(
-        "cec_standby_verify_delay_s", config.cec.standby_verify_delay_s
-    )
-    config.cec.wake_verify_attempts = _positive_int(
-        "cec_wake_verify_attempts", config.cec.wake_verify_attempts
-    )
-    config.cec.wake_verify_delay_s = _positive_float(
-        "cec_wake_verify_delay_s", config.cec.wake_verify_delay_s
-    )
+    if "cec_wake_delay_s" in form:
+        config.cec.wake_delay_s = _nonneg_float("cec_wake_delay_s", config.cec.wake_delay_s)
+    if "cec_active_source_retries" in form:
+        config.cec.active_source_retries = _nonneg_int("cec_active_source_retries", config.cec.active_source_retries)
+    if "cec_active_source_retry_delay_s" in form:
+        config.cec.active_source_retry_delay_s = _positive_float(
+            "cec_active_source_retry_delay_s", config.cec.active_source_retry_delay_s
+        )
+    if "cec_standby_targets" in form:
+        config.cec.standby_targets = _int_list("cec_standby_targets", config.cec.standby_targets)
+    if "cec_standby_verify_attempts" in form:
+        config.cec.standby_verify_attempts = _positive_int(
+            "cec_standby_verify_attempts", config.cec.standby_verify_attempts
+        )
+    if "cec_standby_verify_delay_s" in form:
+        config.cec.standby_verify_delay_s = _positive_float(
+            "cec_standby_verify_delay_s", config.cec.standby_verify_delay_s
+        )
+    if "cec_wake_verify_attempts" in form:
+        config.cec.wake_verify_attempts = _positive_int(
+            "cec_wake_verify_attempts", config.cec.wake_verify_attempts
+        )
+    if "cec_wake_verify_delay_s" in form:
+        config.cec.wake_verify_delay_s = _positive_float(
+            "cec_wake_verify_delay_s", config.cec.wake_verify_delay_s
+        )
 
     config.on_connect.run = str(form.get("launch_preset", ""))
     config.on_connect.teardown_command = str(form.get("teardown_command", "")).strip()
@@ -643,7 +662,12 @@ async def api_cec_topology(request: Request):
     return JSONResponse({
         "ok": True,
         "devices": [
-            {"logical_address": d.logical_address, "device_type": d.device_type, "osd_name": d.osd_name}
+            {
+                "logical_address": d.logical_address,
+                "device_type": d.device_type,
+                "osd_name": d.osd_name,
+                "phys_addr": d.phys_addr,
+            }
             for d in topology
         ],
         "suggested_standby_targets": suggested,

@@ -88,6 +88,47 @@
             </label>
             <input type="text" id="cec_active_source_phys_addr" name="cec_active_source_phys_addr"
                    value="{{ config.cec.active_source_phys_addr }}" placeholder="e.g. 3.2.0.0 — only if CEC is on a different HDMI path than the video">
+            <button type="button" class="secondary" onclick="scanCecTopology()">Scan for Devices</button>
+            <span id="cec-topology-result" class="muted"></span>
+            <div id="cec-device-picker"></div>
+            <script>
+              async function scanCecTopology() {
+                const adapter = document.getElementById('cec_adapter').value;
+                const result = document.getElementById('cec-topology-result');
+                const picker = document.getElementById('cec-device-picker');
+                picker.replaceChildren();
+                result.textContent = 'scanning the CEC bus (can take several seconds)...';
+                const resp = await fetch('/api/cec/topology', {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                  body: new URLSearchParams({adapter}),
+                });
+                const data = await resp.json();
+                if (!data.ok) {
+                  result.textContent = 'error: ' + (data.error || 'unknown');
+                  return;
+                }
+                if (!data.devices.length) {
+                  result.textContent = 'no devices found on the bus';
+                  return;
+                }
+                result.textContent = 'Detected ' + data.devices.length + ' device(s) — click one to use its address:';
+                for (const d of data.devices) {
+                  const label = `${d.osd_name || d.device_type} (${d.phys_addr || 'address ' + d.logical_address})`;
+                  const btn = document.createElement('button');
+                  btn.type = 'button';
+                  btn.className = 'secondary';
+                  btn.style.marginRight = '6px';
+                  btn.textContent = label;
+                  btn.disabled = !d.phys_addr;
+                  btn.onclick = () => { document.getElementById('cec_active_source_phys_addr').value = d.phys_addr; };
+                  picker.appendChild(btn);
+                }
+                if (data.suggested_standby_targets) {
+                  document.getElementById('cec_standby_targets').value = data.suggested_standby_targets;
+                }
+              }
+            </script>
             <button type="button" class="secondary" onclick="testCec()">Test Wake + Switch Input</button>
             <span id="cec-test-result" class="muted"></span>
             <script>
@@ -125,34 +166,7 @@
               <label for="cec_standby_targets">Standby Targets on Teardown (comma-separated CEC logical addresses)</label>
               <input type="text" id="cec_standby_targets" name="cec_standby_targets"
                      value="{{ config.cec.standby_targets|join(',') }}" placeholder="e.g. 0,5 — 0=TV, 5=Audio System/receiver">
-              <button type="button" class="secondary" onclick="scanCecTopology()">Scan for Devices</button>
-              <span id="cec-topology-result" class="muted"></span>
-              <script>
-                async function scanCecTopology() {
-                  const adapter = document.getElementById('cec_adapter').value;
-                  const result = document.getElementById('cec-topology-result');
-                  result.textContent = 'scanning the CEC bus (can take several seconds)...';
-                  const resp = await fetch('/api/cec/topology', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: new URLSearchParams({adapter}),
-                  });
-                  const data = await resp.json();
-                  if (!data.ok) {
-                    result.textContent = 'error: ' + (data.error || 'unknown');
-                    return;
-                  }
-                  if (!data.devices.length) {
-                    result.textContent = 'no devices found on the bus';
-                    return;
-                  }
-                  const desc = data.devices.map(d => `${d.device_type} (address ${d.logical_address}${d.osd_name ? ', "' + d.osd_name + '"' : ''})`).join(', ');
-                  result.textContent = 'Detected: ' + desc;
-                  if (data.suggested_standby_targets) {
-                    document.getElementById('cec_standby_targets').value = data.suggested_standby_targets;
-                  }
-                }
-              </script>
+              <p class="muted" style="margin-top:-8px;">Auto-filled by "Scan for Devices" above — TV plus any detected audio system.</p>
               <label for="cec_standby_verify_attempts">Standby Confirm Attempts</label>
               <input type="number" id="cec_standby_verify_attempts" name="cec_standby_verify_attempts" min="1" step="1"
                      value="{{ config.cec.standby_verify_attempts }}">
