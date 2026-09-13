@@ -21,6 +21,7 @@ from .actions import cec_control
 from .actions import cursor as cursor_actions
 from .actions import display as display_actions
 from .actions import launchers
+from .actions import notifications as notifications_actions
 from .actions import screen_lock as screen_lock_actions
 from .activity_gate import ActivityGate
 from .config import store as config_store
@@ -122,6 +123,7 @@ class CouchSessionResources:
         self.manual_exit_watcher = manual_exit_watcher
         self.cec_retry_task: asyncio.Task | None = None
         self.screen_lock_cookie: str | None = None
+        self.notifications_cookie: str | None = None
 
 
 def build_hooks(
@@ -155,6 +157,7 @@ def build_hooks(
         # screen — display/CEC/audio/launch all still proceed regardless,
         # but the user should actually be able to see the result.
         resources.screen_lock_cookie = await screen_lock_actions.activate_couch(config.screen_lock, health)
+        resources.notifications_cookie = await notifications_actions.activate_couch(config.notifications, health)
         cec = _current_cec()
         if cec.enabled:
             adapter = await _cec_adapter(cec)
@@ -206,6 +209,8 @@ def build_hooks(
         await cursor_actions.activate_desk(config.cursor, health)
         await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
         resources.screen_lock_cookie = None
+        await notifications_actions.activate_desk(config.notifications, health, resources.notifications_cookie)
+        resources.notifications_cookie = None
         cec = _current_cec()
         if cec.enabled and cec.power_off_on_teardown:
             adapter = await _cec_adapter(cec)

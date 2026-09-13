@@ -133,6 +133,16 @@ class ScreenLockConfig:
 
 
 @dataclass
+class NotificationsConfig:
+    # No security tradeoff like screen_lock -- purely a UX improvement
+    # (nobody wants an "updates available" popup interrupting a stream),
+    # so this defaults on rather than requiring opt-in. Confirmed live
+    # 2026-09-12: a stock CachyOS update-notifier popup interrupted an
+    # active MoonDeck stream.
+    enabled: bool = True
+
+
+@dataclass
 class CursorConfig:
     # Off by default, matching screen_lock's explicit-opt-in treatment --
     # this depends on the "invisible" Xcursor theme already existing on
@@ -218,6 +228,7 @@ class JoystickNotifyConfig:
     on_connect: ActionConfig = field(default_factory=ActionConfig)
     custom_commands: list[CustomCommand] = field(default_factory=list)
     screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     cursor: CursorConfig = field(default_factory=CursorConfig)
     shortcuts: ShortcutConfig = field(default_factory=ShortcutConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)
