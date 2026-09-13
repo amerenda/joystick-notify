@@ -121,6 +121,7 @@ class CouchSessionResources:
     def __init__(self, manual_exit_watcher: ManualExitWatcher) -> None:
         self.manual_exit_watcher = manual_exit_watcher
         self.cec_retry_task: asyncio.Task | None = None
+        self.cec_wake_verify_task: asyncio.Task | None = None
         self.screen_lock_cookie: str | None = None
 
 
@@ -150,6 +151,35 @@ def build_hooks(
             return cec.adapter
         return await cec_discover.ensure_adapter(health)
 
+    def _spawn_wake_verify(adapter: str, cec: CecConfig) -> None:
+        # Runs concurrently with display/audio/launch, never blocking them
+        # -- CEC wake confirmation can take up to
+        # wake_verify_attempts * wake_verify_delay_s, and the couch
+        # activation the user actually sees must not wait on it (same
+        # reasoning as activate_desk() running CEC standby last: the CEC
+        # step is allowed to be slow/best-effort, the rest of the
+        # transition is not). Reports the confirmed/unconfirmed outcome to
+        # the "cec" health component once known, superseding the
+        # optimistic "wake + active-source sent" set immediately below.
+        async def _verify() -> None:
+            unconfirmed = await cec_control.wake_and_verify(
+                adapter,
+                cec.standby_targets,
+                health,
+                attempts=cec.wake_verify_attempts,
+                delay_s=cec.wake_verify_delay_s,
+            )
+            if unconfirmed:
+                health.failed(
+                    "cec",
+                    f"wake unconfirmed for address(es) {unconfirmed}",
+                    "target(s) may still be off after retries",
+                )
+            else:
+                health.ok("cec", "wake confirmed for all targets")
+
+        resources.cec_wake_verify_task = supervise("cec_wake_verify", _verify(), health)
+
     async def activate_couch(device_id: str) -> None:
         # First, so nothing else that follows is hidden behind a lock
         # screen — display/CEC/audio/launch all still proceed regardless,
@@ -171,6 +201,7 @@ def build_hooks(
                     wake_targets=cec.standby_targets,
                 )
                 health.ok("cec", "wake + active-source sent")
+                _spawn_wake_verify(adapter, cec)
         await display_actions.activate_couch(config.display, health)
         await audio_actions.activate_couch(config.audio, health)
         await cursor_actions.activate_couch(config.cursor, health)
@@ -182,6 +213,9 @@ def build_hooks(
         if resources.cec_retry_task is not None:
             resources.cec_retry_task.cancel()
             resources.cec_retry_task = None
+        if resources.cec_wake_verify_task is not None:
+            resources.cec_wake_verify_task.cancel()
+            resources.cec_wake_verify_task = None
         # Exit the launched process BEFORE the display switch, not after:
         # confirmed live 2026-08-22 that leaving Big Picture running
         # across a display-mode change (even just until the *next* couch
@@ -287,6 +321,7 @@ def build_hooks(
                     retry_delay_s=cec.active_source_retry_delay_s,
                     wake_targets=cec.standby_targets,
                 )
+                _spawn_wake_verify(adapter, cec)
         await screen_lock_actions.deactivate_screensaver(health)
 
     return ActionHooks(

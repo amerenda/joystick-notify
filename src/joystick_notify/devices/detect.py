@@ -46,6 +46,19 @@ logger = logging.getLogger(__name__)
 HID_ROOT = "/sys/bus/hid/devices"
 _NAME_PATTERNS = ("Controller", "Gamepad", "8BitDo")
 _EXCLUDE_PATTERNS = ("LED", "Light", "Lighting")
+# A real controller's evdev node always sits under a physical bus path
+# (usb/.../input/inputNN, a bluetooth path, etc.) -- only a kernel-uinput-
+# created device (no physical hardware at all) sits directly under
+# /devices/virtual/input/inputNN. Confirmed live 2026-09-12: MoonDeckBuddy
+# relays the Steam Deck's controller to the host as exactly such a virtual
+# uinput gamepad (device_id resolved to the bare devpath, e.g.
+# "/devices/virtual/input/input53", since it has no HID_UNIQ/vid:pid at
+# all) and it still carried ID_INPUT_JOYSTICK=1 -- so it passed every other
+# check here and triggered a full couch-mode activation (CEC wake, display/
+# audio switch) for what should have been an unlock-only Sunshine/Moonlight
+# stream. See Areas/Archlinux/notes/joystick-notify-sunshine-reenable-
+# phase3-notes.md (2026-09-12) in the Obsidian vault for the full incident.
+_VIRTUAL_DEVPATH_PREFIX = "/devices/virtual/"
 
 
 def stable_device_id(properties: dict) -> str | None:
@@ -126,7 +139,14 @@ def is_candidate_hid(properties: dict) -> bool:
     heuristics (controller-liveness-watch.py's is_candidate()), kept as a
     secondary net for HID-subsystem events that don't carry
     ID_INPUT_JOYSTICK at all — which is every event read from a raw sysfs
-    uevent file, i.e. the entire hidraw-liveness detection path."""
+    uevent file, i.e. the entire hidraw-liveness detection path.
+
+    Checked before anything else: a virtual (uinput) devpath is never a
+    real controller, regardless of what properties it otherwise carries —
+    see _VIRTUAL_DEVPATH_PREFIX's docstring.
+    """
+    if properties.get("DEVPATH", "").startswith(_VIRTUAL_DEVPATH_PREFIX):
+        return False
     if properties.get("ID_INPUT_JOYSTICK") == "1":
         return True
     vendor_id, _ = vendor_product(properties)

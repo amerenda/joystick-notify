@@ -160,6 +160,13 @@
               <input type="number" id="cec_standby_verify_delay_s" name="cec_standby_verify_delay_s" min="0.5" step="0.5"
                      value="{{ config.cec.standby_verify_delay_s }}">
               <p class="muted" style="margin-top:-8px;">Each target gets this many standby attempts, this far apart, before being reported as "may still be on." Raise these if your TV/receiver is slow to confirm standby.</p>
+              <label for="cec_wake_verify_attempts">Wake Confirm Attempts</label>
+              <input type="number" id="cec_wake_verify_attempts" name="cec_wake_verify_attempts" min="1" step="1"
+                     value="{{ config.cec.wake_verify_attempts }}">
+              <label for="cec_wake_verify_delay_s">Wake Confirm Delay (seconds)</label>
+              <input type="number" id="cec_wake_verify_delay_s" name="cec_wake_verify_delay_s" min="0.5" step="0.5"
+                     value="{{ config.cec.wake_verify_delay_s }}">
+              <p class="muted" style="margin-top:-8px;">Mirrors the standby confirm settings above, for the wake direction: the "cec" status only reports confirmed once the target's power status actually reports "on," not just that the wake command was sent.</p>
             </details>
             {% endif %}
           </div>

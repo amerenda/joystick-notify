@@ -470,6 +470,12 @@ async def configure_post(request: Request):
     config.cec.standby_verify_delay_s = _positive_float(
         "cec_standby_verify_delay_s", config.cec.standby_verify_delay_s
     )
+    config.cec.wake_verify_attempts = _positive_int(
+        "cec_wake_verify_attempts", config.cec.wake_verify_attempts
+    )
+    config.cec.wake_verify_delay_s = _positive_float(
+        "cec_wake_verify_delay_s", config.cec.wake_verify_delay_s
+    )
 
     config.on_connect.run = str(form.get("launch_preset", ""))
     config.on_connect.teardown_command = str(form.get("teardown_command", "")).strip()

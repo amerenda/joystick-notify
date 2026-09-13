@@ -146,6 +146,54 @@ async def power_status(adapter: str | None, logical_addr: int) -> str:
     return parse_power_status(out)
 
 
+async def wake_and_verify(
+    adapter: str | None,
+    targets: list[int],
+    health: Health,
+    *,
+    attempts: int = 5,
+    delay_s: float = 2.0,
+) -> list[int]:
+    """Mirrors standby_and_verify()'s confirm-before-reporting pattern for
+    the wake direction. image_view_on()/wake_non_tv_targets() are
+    fire-and-forget CEC broadcasts with no acknowledgement that the target
+    actually powered on -- confirmed live 2026-09-12 (the MoonDeckBuddy
+    incident): health.json's "cec" component reported ok ("wake +
+    active-source sent") for an event where the TV never actually turned
+    on, because nothing checked. Polls power_status() the same way
+    standby_and_verify() does, just for "on" instead of "standby". Returns
+    the list of addresses that never confirmed; the caller (daemon.py)
+    reports this to the SAME "cec" health component wake_and_select_input()
+    already uses (unlike standby_and_verify's separate "cec_standby" --
+    a wake failing during couch activation is a real, user-visible problem
+    for the session that just started, not best-effort teardown cleanup).
+    """
+    pending = list(dict.fromkeys(targets))
+    for attempt in range(1, attempts + 1):
+        if not pending:
+            break
+        await asyncio.sleep(delay_s)
+        still_pending = []
+        for addr in pending:
+            status = await power_status(adapter, addr)
+            if status == "on":
+                logger.info("cec: wake confirmed for logical addr %d (attempt %d/%d)", addr, attempt, attempts)
+            else:
+                logger.info(
+                    "cec: wake not yet confirmed for logical addr %d (attempt %d/%d, status=%s)",
+                    addr, attempt, attempts, status,
+                )
+                still_pending.append(addr)
+        pending = still_pending
+
+    unconfirmed = pending
+    if unconfirmed:
+        logger.warning("cec: wake unconfirmed for address(es) %s, target(s) may still be off", unconfirmed)
+    else:
+        logger.info("cec: wake confirmed for all targets")
+    return unconfirmed
+
+
 async def standby_and_verify(
     adapter: str | None,
     targets: list[int],

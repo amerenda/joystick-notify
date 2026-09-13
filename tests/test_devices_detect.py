@@ -49,6 +49,25 @@ def test_is_candidate_hid_false_for_unrelated_device():
     assert is_candidate_hid({"HID_NAME": "Logitech Mouse"}) is False
 
 
+def test_is_candidate_hid_excludes_virtual_uinput_device_even_with_joystick_tag():
+    # Regression test for the 2026-09-12 MoonDeckBuddy incident: a
+    # relayed virtual gamepad still carries ID_INPUT_JOYSTICK=1 and would
+    # otherwise pass every other check, triggering a full couch-mode
+    # activation for what should be an unlock-only remote stream.
+    assert is_candidate_hid({
+        "DEVPATH": "/devices/virtual/input/input53",
+        "ID_INPUT_JOYSTICK": "1",
+    }) is False
+
+
+def test_is_candidate_hid_excludes_virtual_uinput_device_by_valve_vendor_too():
+    assert is_candidate_hid({
+        "DEVPATH": "/devices/virtual/input/input53",
+        "HID_ID": "0003:000028DE:00001102",
+        "HID_NAME": "Microsoft X-Box 360 pad",
+    }) is False
+
+
 def test_profile_for_matches_8bitdo_by_vendor_and_name():
     profile = profile_for({"ID_VENDOR_ID": "2dc8", "HID_NAME": "8BitDo Ultimate 2"})
     assert profile.id == "8bitdo"

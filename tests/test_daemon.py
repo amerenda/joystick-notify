@@ -320,3 +320,94 @@ async def test_activate_couch_picks_up_cec_enabled_toggled_on_without_restart(tm
     args, kwargs = cec_calls[0]
     assert args[0] == "/dev/cec0"
     assert args[1] == "3.2.0.0"
+
+
+@pytest.mark.asyncio
+async def test_activate_couch_spawns_wake_verify_task_that_updates_health(tmp_path, monkeypatch):
+    """Regression test for the 2026-09-12 MoonDeckBuddy incident:
+    activate_couch() used to report health.ok("cec", "wake + active-source
+    sent") unconditionally, with nothing ever checking whether the target
+    actually woke. A background verify task must now run concurrently
+    (not blocking the rest of activation) and update the "cec" component
+    once it resolves.
+    """
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def fake_wake_and_select_input(*args, **kwargs):
+        return None
+
+    verify_calls = []
+
+    async def fake_wake_and_verify(adapter, targets, health, **kwargs):
+        verify_calls.append((adapter, targets, kwargs))
+        return []  # confirmed
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
+    monkeypatch.setattr(daemon_module.cec_control, "wake_and_verify", fake_wake_and_verify)
+
+    config = JoystickNotifyConfig()
+    config.cec.enabled = True
+    config.cec.adapter = "/dev/cec0"
+    config.cec.standby_targets = [0, 5]
+    config.shortcuts.exit_couch_enabled = False
+    config_path = tmp_path / "config.toml"
+    config_store.save(config, config_path)
+
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+    hooks = build_hooks(config, health, watcher, config_path)
+
+    await hooks.activate_couch("device-1")
+    await asyncio.sleep(0)  # let the spawned verify task run to completion
+
+    assert len(verify_calls) == 1
+    adapter, targets, _kwargs = verify_calls[0]
+    assert adapter == "/dev/cec0"
+    assert targets == [0, 5]
+    assert health.get("cec").reason == "wake confirmed for all targets"
+
+
+@pytest.mark.asyncio
+async def test_activate_couch_reports_cec_failed_when_wake_unconfirmed(tmp_path, monkeypatch):
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def fake_wake_and_select_input(*args, **kwargs):
+        return None
+
+    async def fake_wake_and_verify(adapter, targets, health, **kwargs):
+        return [0]  # TV never confirmed
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
+    monkeypatch.setattr(daemon_module.cec_control, "wake_and_verify", fake_wake_and_verify)
+
+    config = JoystickNotifyConfig()
+    config.cec.enabled = True
+    config.cec.adapter = "/dev/cec0"
+    config.shortcuts.exit_couch_enabled = False
+    config_path = tmp_path / "config.toml"
+    config_store.save(config, config_path)
+
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+    hooks = build_hooks(config, health, watcher, config_path)
+
+    await hooks.activate_couch("device-1")
+    await asyncio.sleep(0)
+
+    status = health.get("cec")
+    assert status.status == Status.FAILED
+    assert "unconfirmed" in status.reason
