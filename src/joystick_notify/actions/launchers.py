@@ -39,7 +39,49 @@ def _is_steam_running(proc_root: str = "/proc") -> bool:
 
 
 def _get_steam_pids(proc_root: str = "/proc") -> set[str]:
-    return get_matching_pids(["steam"], proc_root=proc_root)
+    """Matches the real Steam client process precisely -- deliberately NOT
+    the generic substring-based get_matching_pids(["steam"]) used
+    elsewhere, which also matches any unrelated process whose comm/cmdline
+    merely contains "steam" somewhere. Confirmed live 2026-09-12: Steam's
+    own error-dialog helper, steam_msg.sh (which Steam itself spawns when
+    a launch fails -- e.g. the "Unable to open a connection to X" dialog),
+    has "steam" in its path and was silently counted as "Steam still
+    running" for over two hours after a single failed launch left its
+    dialog un-dismissed on screen -- every subsequent
+    _shutdown_steam_and_wait() call waited out the full
+    STEAM_SHUTDOWN_TIMEOUT_S before giving up, and
+    is_launch_process_alive()/startup reconciliation thought Steam was
+    continuously running the whole time, none of it ever actually true.
+
+    The real client's /proc/<pid>/comm is exactly "steam" (5 characters,
+    never truncated), or its cmdline's argv[0] basename is exactly
+    "steam" (its own launcher script/binary path) -- not merely
+    containing the substring anywhere.
+    """
+    try:
+        pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return set()
+    matched: set[str] = set()
+    for pid in pids:
+        comm_path = os.path.join(proc_root, pid, "comm")
+        try:
+            with open(comm_path) as f:
+                comm = f.read().strip()
+        except OSError:
+            comm = ""
+        if comm == "steam":
+            matched.add(pid)
+            continue
+        cmdline_path = os.path.join(proc_root, pid, "cmdline")
+        try:
+            with open(cmdline_path, "rb") as f:
+                argv0 = f.read().split(b"\0", 1)[0].decode(errors="replace")
+        except OSError:
+            argv0 = ""
+        if argv0 and os.path.basename(argv0) == "steam":
+            matched.add(pid)
+    return matched
 
 
 def is_process_running(name_patterns: list[str], proc_root: str = "/proc") -> bool:

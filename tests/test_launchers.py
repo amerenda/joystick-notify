@@ -49,6 +49,54 @@ def test_is_process_running_false_when_no_match(tmp_path):
     assert is_process_running(["steam"], proc_root=str(tmp_path)) is False
 
 
+# --- _get_steam_pids: precise match, not the generic substring one ---
+# Direct regression test for the 2026-09-12 incident: get_matching_pids's
+# broad substring match also matched Steam's own error-dialog helper,
+# steam_msg.sh (spawned by Steam itself on a failed launch), silently
+# treating a stuck, un-dismissed dialog as "Steam still running" for
+# hours. _get_steam_pids() must match only the real client.
+
+
+def test_get_steam_pids_matches_real_client_by_comm(tmp_path):
+    from joystick_notify.actions.launchers import _get_steam_pids
+
+    _make_fake_proc(tmp_path, "123", comm="steam", cmdline="/home/alex/.local/share/Steam/ubuntu12_32/steam\x00-gamepadui\x00")
+    assert _get_steam_pids(proc_root=str(tmp_path)) == {"123"}
+
+
+def test_get_steam_pids_matches_by_cmdline_argv0_basename_when_comm_differs(tmp_path):
+    from joystick_notify.actions.launchers import _get_steam_pids
+
+    # Falls back to argv[0]'s basename when comm isn't exactly "steam" --
+    # still the real client's own launcher path, not a substring match.
+    _make_fake_proc(tmp_path, "123", comm="steam.bin", cmdline="/home/alex/.local/share/Steam/ubuntu12_32/steam\x00-gamepadui\x00")
+    assert _get_steam_pids(proc_root=str(tmp_path)) == {"123"}
+
+
+def test_get_steam_pids_excludes_steam_msg_dialog_helper(tmp_path):
+    from joystick_notify.actions.launchers import _get_steam_pids
+
+    # The exact shape of the 2026-09-12 incident: Steam's own
+    # "Unable to open a connection to X" error dialog, left stuck for
+    # hours, previously counted as "Steam still running."
+    _make_fake_proc(
+        tmp_path, "456", comm="steam_msg.sh",
+        cmdline="bash\x00/home/alex/.local/share/Steam/steam_msg.sh\x00--title\x00Unable to open a connection to X\x00",
+    )
+    assert _get_steam_pids(proc_root=str(tmp_path)) == set()
+
+
+def test_get_steam_pids_excludes_runtime_helper_processes(tmp_path):
+    from joystick_notify.actions.launchers import _get_steam_pids
+
+    # steam-runtime-launcher-service, srt-logger, steamwebhelper, etc. --
+    # all real child processes of a genuine Steam session, none of which
+    # is the client itself and none of which -shutdown targets.
+    _make_fake_proc(tmp_path, "789", comm="steam-runtime-l", cmdline="steam-runtime-launcher-service\x00--alongside-steam\x00")
+    _make_fake_proc(tmp_path, "790", comm="srt-logger", cmdline="/home/alex/.local/share/Steam/ubuntu12_32/steam-runtime/usr/libexec/steam-runtime-tools-0/srt-logger\x00")
+    assert _get_steam_pids(proc_root=str(tmp_path)) == set()
+
+
 # --- _run_detached error visibility ---
 # Direct regression test for the 2026-08-21 live-testing finding: Steam's
 # real "unable to open a connection to X" failure was completely
