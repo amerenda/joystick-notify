@@ -56,6 +56,13 @@ class CecConfig:
     # standby command. 5 * 3.0s (~15s) gives real hardware room to finish.
     standby_verify_attempts: int = 5
     standby_verify_delay_s: float = 3.0
+    # Mirrors standby_verify_{attempts,delay_s} for the wake direction --
+    # see cec_control.wake_and_verify()'s docstring for why an unverified
+    # image_view_on()/wake_non_tv_targets() wake can silently no-op (found
+    # live 2026-09-12: health.json reported "cec" ok for an event where the
+    # TV never actually turned on).
+    wake_verify_attempts: int = 5
+    wake_verify_delay_s: float = 2.0
 
 
 @dataclass

@@ -372,3 +372,88 @@ def test_wake_and_select_input_wakes_non_tv_targets_before_active_source():
         assert opcodes.index("--system-audio-mode-request") < opcodes.index("--active-source")
     finally:
         cec_control._run = orig_run
+
+
+def test_wake_and_verify_returns_empty_when_confirmed(tmp_path):
+    from joystick_notify.actions import cec_control
+
+    async def fake_run(cmd, timeout=5.0):
+        return 0, "pwr-state: on"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        unconfirmed = asyncio.run(
+            cec_control.wake_and_verify(None, [0, 5], health, attempts=1, delay_s=0)
+        )
+        assert unconfirmed == []
+    finally:
+        cec_control._run = orig_run
+
+
+def test_wake_and_verify_returns_unconfirmed_addresses_when_still_off(tmp_path):
+    # Direct regression test for the 2026-09-12 MoonDeckBuddy incident:
+    # image_view_on() is fire-and-forget, so a dropped/ignored wake frame
+    # went completely undetected -- this is what lets the caller (daemon.py)
+    # tell "we sent it and it worked" apart from "we sent it and the TV
+    # never actually turned on."
+    from joystick_notify.actions import cec_control
+
+    async def fake_run(cmd, timeout=5.0):
+        return 0, "pwr-state: standby"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        unconfirmed = asyncio.run(
+            cec_control.wake_and_verify(None, [0, 5], health, attempts=1, delay_s=0)
+        )
+        assert unconfirmed == [0, 5]
+    finally:
+        cec_control._run = orig_run
+
+
+def test_wake_and_verify_logs_warning_when_unconfirmed(tmp_path, caplog):
+    from joystick_notify.actions import cec_control
+
+    async def fake_run(cmd, timeout=5.0):
+        return 0, "pwr-state: standby"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        with caplog.at_level("WARNING", logger="joystick_notify.actions.cec_control"):
+            asyncio.run(cec_control.wake_and_verify(None, [0], health, attempts=1, delay_s=0))
+        assert any("unconfirmed" in r.message for r in caplog.records)
+    finally:
+        cec_control._run = orig_run
+
+
+def test_wake_and_verify_checks_all_pending_targets_every_round_not_sequentially(tmp_path):
+    from joystick_notify.actions import cec_control
+
+    call_count = {0: 0, 5: 0}
+
+    async def fake_run(cmd, timeout=5.0):
+        addr = int(cmd[cmd.index("--to") + 1])
+        call_count[addr] += 1
+        # addr 0 confirms on the first poll, addr 5 only on the second.
+        if addr == 0 or call_count[addr] >= 2:
+            return 0, "pwr-state: on"
+        return 0, "pwr-state: standby"
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        unconfirmed = asyncio.run(
+            cec_control.wake_and_verify(None, [0, 5], health, attempts=2, delay_s=0)
+        )
+        assert unconfirmed == []
+        assert call_count[0] == 1  # confirmed round 1, never polled again
+        assert call_count[5] == 2
+    finally:
+        cec_control._run = orig_run
