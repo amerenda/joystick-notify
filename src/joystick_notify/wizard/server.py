@@ -651,6 +651,7 @@ async def api_cec_topology(request: Request):
         adapter = config.cec.adapter or adapters[0]
 
     topology = await cec_discover.get_topology(adapter)
+    own_phys_addr = await cec_discover.get_own_physical_address(adapter)
     suggested = ""
     if topology:
         targets = {0}  # TV is always logical address 0
@@ -661,6 +662,7 @@ async def api_cec_topology(request: Request):
 
     return JSONResponse({
         "ok": True,
+        "own_phys_addr": own_phys_addr,
         "devices": [
             {
                 "logical_address": d.logical_address,

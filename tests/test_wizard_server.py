@@ -214,6 +214,32 @@ def test_api_cec_topology_returns_devices_and_suggestion(client, monkeypatch):
     assert body["devices"][0]["osd_name"] == "LG OLED"
 
 
+def test_api_cec_topology_includes_own_phys_addr_even_with_no_other_devices(client, monkeypatch):
+    # Regression test: a topology scan on Alex's actual hardware (CEC
+    # dongle inline in the video path, receiver not CEC-responsive) finds
+    # only the TV -- the picker still needs the adapter's own claimed
+    # address available to pick, since that's the one this override field
+    # is actually for.
+    from joystick_notify.devices import cec as cec_discover
+    from joystick_notify.devices.cec import TopologyDevice
+
+    async def fake_get_topology(adapter):
+        return [TopologyDevice(logical_address=0, device_type="TV", phys_addr="0.0.0.0")]
+
+    async def fake_get_own_physical_address(adapter):
+        return "4.0.0.0"
+
+    monkeypatch.setattr(cec_discover, "get_topology", fake_get_topology)
+    monkeypatch.setattr(cec_discover, "get_own_physical_address", fake_get_own_physical_address)
+
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    resp = client.post("/api/cec/topology", headers=auth_headers, data={"adapter": "/dev/cec0"})
+
+    assert resp.status_code == 200
+    assert resp.json()["own_phys_addr"] == "4.0.0.0"
+
+
 def test_api_cec_topology_includes_phys_addr_for_active_source_picker(client, monkeypatch):
     # The wizard's active-source picker (configure.html's device buttons)
     # sets cec_active_source_phys_addr from this field directly -- it must

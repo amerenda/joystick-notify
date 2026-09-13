@@ -84,10 +84,11 @@
               {% endfor %}
             </select>
             <label for="cec_active_source_phys_addr">
-              Physical Address Override (leave blank to auto-use the adapter's own address — correct for most setups)
+              Physical Address Override (leave blank to skip an explicit input switch — Wake alone is
+              enough on most setups; set this only if your TV/receiver doesn't switch to this PC on wake)
             </label>
             <input type="text" id="cec_active_source_phys_addr" name="cec_active_source_phys_addr"
-                   value="{{ config.cec.active_source_phys_addr }}" placeholder="e.g. 3.2.0.0 — only if CEC is on a different HDMI path than the video">
+                   value="{{ config.cec.active_source_phys_addr }}" placeholder="e.g. 3.2.0.0 — click a device below instead of typing this">
             <button type="button" class="secondary" onclick="scanCecTopology()">Scan for Devices</button>
             <span id="cec-topology-result" class="muted"></span>
             <div id="cec-device-picker"></div>
@@ -108,22 +109,33 @@
                   result.textContent = 'error: ' + (data.error || 'unknown');
                   return;
                 }
-                if (!data.devices.length) {
-                  result.textContent = 'no devices found on the bus';
-                  return;
-                }
-                result.textContent = 'Detected ' + data.devices.length + ' device(s) — click one to use its address:';
-                for (const d of data.devices) {
-                  const label = `${d.osd_name || d.device_type} (${d.phys_addr || 'address ' + d.logical_address})`;
+
+                const addButton = (label, physAddr) => {
                   const btn = document.createElement('button');
                   btn.type = 'button';
                   btn.className = 'secondary';
                   btn.style.marginRight = '6px';
+                  btn.style.marginBottom = '6px';
                   btn.textContent = label;
-                  btn.disabled = !d.phys_addr;
-                  btn.onclick = () => { document.getElementById('cec_active_source_phys_addr').value = d.phys_addr; };
+                  btn.onclick = () => { document.getElementById('cec_active_source_phys_addr').value = physAddr; };
                   picker.appendChild(btn);
+                };
+
+                if (data.own_phys_addr) {
+                  addButton(`This PC — detected address (${data.own_phys_addr})`, data.own_phys_addr);
                 }
+                for (const d of data.devices) {
+                  if (!d.phys_addr) continue;
+                  addButton(`${d.osd_name || d.device_type} (${d.phys_addr})`, d.phys_addr);
+                }
+
+                const parts = [];
+                if (data.own_phys_addr) parts.push('this PC');
+                if (data.devices.length) parts.push(data.devices.length + ' other device(s)');
+                result.textContent = parts.length
+                  ? 'Detected ' + parts.join(' + ') + ' — click one below to use its address:'
+                  : 'no devices found on the bus, and this adapter has no claimed address yet';
+
                 if (data.suggested_standby_targets) {
                   document.getElementById('cec_standby_targets').value = data.suggested_standby_targets;
                 }
