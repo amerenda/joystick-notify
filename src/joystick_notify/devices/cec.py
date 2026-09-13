@@ -180,12 +180,14 @@ def find_audio_system_target(topology: list[TopologyDevice]) -> TopologyDevice |
 TOPOLOGY_TIMEOUT_S = 5.0
 
 
-async def get_topology(adapter: str | None) -> list[TopologyDevice]:
-    """Runs `cec-ctl -S` and parses the topology dump for the wizard's CEC
-    step -- real hardware I/O, exercised only on a box with actual CEC
-    hardware. Returns [] on any failure (no cec-ctl, no adapter, timeout)
-    rather than raising -- this is a best-effort auto-fill suggestion for
-    the wizard, never something that should block rendering the page.
+async def _run_cec_dash_s(adapter: str | None) -> str | None:
+    """Shared `cec-ctl -S` invocation backing get_topology() and
+    get_own_physical_address() -- both parse different sections of the
+    exact same dump (see parse_own_physical_address's docstring: the
+    adapter's own Driver Info block is always printed before the
+    per-device System Information blocks parse_topology reads). Returns
+    None on any failure (no cec-ctl, no adapter, timeout) rather than
+    raising.
     """
     args = ["cec-ctl", "-S"]
     if adapter:
@@ -195,13 +197,44 @@ async def get_topology(adapter: str | None) -> list[TopologyDevice]:
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
     except FileNotFoundError:
-        return []
+        return None
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=TOPOLOGY_TIMEOUT_S)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        return []
+        return None
     if proc.returncode != 0:
+        return None
+    return out.decode(errors="replace")
+
+
+async def get_topology(adapter: str | None) -> list[TopologyDevice]:
+    """Runs `cec-ctl -S` and parses the topology dump for the wizard's CEC
+    step -- real hardware I/O, exercised only on a box with actual CEC
+    hardware. Returns [] on any failure (no cec-ctl, no adapter, timeout)
+    rather than raising -- this is a best-effort auto-fill suggestion for
+    the wizard, never something that should block rendering the page.
+    """
+    output = await _run_cec_dash_s(adapter)
+    if output is None:
         return []
-    return parse_topology(out.decode(errors="replace"))
+    return parse_topology(output)
+
+
+async def get_own_physical_address(adapter: str | None) -> str | None:
+    """Runs `cec-ctl -S` and parses the adapter's OWN physical address --
+    the value it auto-claimed at boot via cec0-configure's
+    --phys-addr-from-edid-poll, e.g. "4.0.0.0" for a dongle sitting
+    inline in the actual video path. Nothing before this surfaced that
+    value anywhere outside the boot-time log -- exists so the wizard's
+    active-source picker can offer it as a one-click choice instead of
+    Alex having to SSH in and read `cec-ctl -S` by hand. Deliberately a
+    second `cec-ctl -S` call rather than sharing one with get_topology()'s
+    caller -- two readers of the same /dev/cec* device concurrently is an
+    unnecessary risk for an on-demand, several-seconds-either-way action.
+    """
+    output = await _run_cec_dash_s(adapter)
+    if output is None:
+        return None
+    return parse_own_physical_address(output)

@@ -3,6 +3,7 @@ import asyncio
 from joystick_notify.actions.cec_control import parse_power_status
 from joystick_notify.devices.cec import (
     find_audio_system_target,
+    get_own_physical_address,
     get_topology,
     parse_own_physical_address,
     parse_topology,
@@ -115,6 +116,28 @@ def test_get_topology_returns_empty_on_nonzero_exit(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     assert asyncio.run(get_topology("/dev/cec0")) == []
+
+
+def test_get_own_physical_address_parses_driver_info_block(monkeypatch):
+    # The wizard's active-source picker needs this to offer the adapter's
+    # own claimed address as a one-click choice -- e.g. Alex's dongle
+    # sits inline in the video path and auto-claims 4.0.0.0 at boot, but
+    # nothing surfaced that value anywhere outside the boot-time log
+    # before this.
+    async def fake_exec(*args, **kwargs):
+        assert args[0] == "cec-ctl"
+        return _FakeProc(DRIVER_INFO_SAMPLE.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert asyncio.run(get_own_physical_address("/dev/cec0")) == "4.0.0.0"
+
+
+def test_get_own_physical_address_none_when_cec_ctl_missing(monkeypatch):
+    async def fake_exec(*args, **kwargs):
+        raise FileNotFoundError("cec-ctl not found")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert asyncio.run(get_own_physical_address(None)) is None
 
 
 def test_standby_and_verify_logs_warning_when_unconfirmed(tmp_path, caplog):
