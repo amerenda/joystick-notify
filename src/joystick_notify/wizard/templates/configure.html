@@ -230,6 +230,14 @@
         <label><input type="checkbox" name="screen_lock_enabled" {% if config.screen_lock.enabled %}checked{% endif %}> Unlock Screen and Disable Auto-Lock During Couch Mode</label>
         <label><input type="checkbox" name="screen_lock_hold_inhibit" {% if config.screen_lock.hold_inhibit %}checked{% endif %}> Also Hold a Screensaver Inhibit for the Whole Session (recommended if enabled above)</label>
       </div>
+
+      <div class="card">
+        <h2>Suppress Notification Popups</h2>
+        <p class="muted">Hides desktop notification popups (e.g. update-available notices) for the
+        duration of any active session — couch mode, and any Sunshine/Moonlight/MoonDeck stream.
+        Notifications still reach history, they just don't pop up on screen.</p>
+        <label><input type="checkbox" name="notifications_enabled" {% if config.notifications.enabled %}checked{% endif %}> Suppress Popups During Couch Mode and Streams</label>
+      </div>
     </div>
 
     <div class="tab-panel" :class="{active: tab === 'controllers'}">

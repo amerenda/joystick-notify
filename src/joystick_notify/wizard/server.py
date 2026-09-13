@@ -23,6 +23,7 @@ from starlette.templating import Jinja2Templates
 from ..actions import audio as audio_actions
 from ..actions import display as display_actions
 from ..actions import launchers
+from ..actions import notifications as notifications_actions
 from ..actions import screen_lock as screen_lock_actions
 from ..config import store as config_store
 from ..config.schema import CustomCommand
@@ -200,8 +201,9 @@ async def api_screen_unlock(request: Request):
     if getattr(request.app.state, "screen_unlock_held", False):
         return JSONResponse({"ok": True, "already_unlocked": True})
     dpms_off = {name for name, state in (await display_actions.dpms_states()).items() if state == "off"}
-    config = config_store.load().screen_lock
-    request.app.state.screen_unlock_cookie = await screen_lock_actions.activate_couch(config, health)
+    full_config = config_store.load()
+    request.app.state.screen_unlock_cookie = await screen_lock_actions.activate_couch(full_config.screen_lock, health)
+    request.app.state.notifications_cookie = await notifications_actions.activate_couch(full_config.notifications, health)
     request.app.state.screen_unlock_held = True
     request.app.state.screen_unlock_dpms_off = dpms_off
     await display_actions.restore_dpms_off(dpms_off)
@@ -214,9 +216,12 @@ async def api_screen_lock(request: Request):
         return JSONResponse({"ok": False, "error": "daemon health unavailable"}, status_code=503)
     if not getattr(request.app.state, "screen_unlock_held", False):
         return JSONResponse({"ok": True, "already_locked": True})
-    config = config_store.load().screen_lock
+    full_config = config_store.load()
     cookie = getattr(request.app.state, "screen_unlock_cookie", None)
-    await screen_lock_actions.activate_desk(config, health, cookie)
+    await screen_lock_actions.activate_desk(full_config.screen_lock, health, cookie)
+    notifications_cookie = getattr(request.app.state, "notifications_cookie", None)
+    await notifications_actions.activate_desk(full_config.notifications, health, notifications_cookie)
+    request.app.state.notifications_cookie = None
     dpms_off = getattr(request.app.state, "screen_unlock_dpms_off", set())
     await display_actions.restore_dpms_off(dpms_off)
     request.app.state.screen_unlock_cookie = None
@@ -499,6 +504,7 @@ async def configure_post(request: Request):
 
     config.screen_lock.enabled = form.get("screen_lock_enabled") == "on"
     config.screen_lock.hold_inhibit = form.get("screen_lock_hold_inhibit") == "on"
+    config.notifications.enabled = form.get("notifications_enabled") == "on"
 
     config.shortcuts.exit_couch_enabled = form.get("exit_couch_enabled") == "on"
     config.shortcuts.exit_couch_hold_seconds = _positive_float(
