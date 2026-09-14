@@ -491,26 +491,70 @@ def test_configure_post_saves_cec_power_off_and_timing_fields(client):
 
 
 def test_configure_post_unchecking_cec_power_off_saves_false(client):
-    # Checkboxes only appear in form data when checked -- the absence of
-    # "cec_power_off_on_teardown" must be read as False, not "leave as is."
+    # Checkboxes only appear in form data when checked. Within an active
+    # ("Enable CEC" checked) panel, the absence of "cec_power_off_on_teardown"
+    # must be read as an explicit uncheck (False), not "leave as is."
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
     auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
 
     client.post(
         "/configure",
         headers=auth_headers,
-        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "", "cec_power_off_on_teardown": "on"},
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "cec_enabled": "on",
+            "cec_power_off_on_teardown": "on",
+        },
     )
     client.post(
         "/configure",
         headers=auth_headers,
-        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": ""},
+        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "", "cec_enabled": "on"},
     )
 
     from joystick_notify.config import store as config_store
 
     saved = config_store.load()
     assert saved.cec.power_off_on_teardown is False
+
+
+def test_configure_post_disabling_cec_preserves_power_off_on_teardown(client):
+    # Regression test for the 2026-09-13/14 archlinux incident: a game exit
+    # triggered a desk teardown that never sent a CEC standby command at
+    # all, with zero log output. Root cause traced to power_off_on_teardown
+    # having been silently reset to False by an earlier save made with
+    # "Enable CEC" unchecked -- that checkbox's own absence from the
+    # submitted form was (wrongly) being read the same way as an explicit
+    # uncheck, unlike every other CEC field, which already guards on its
+    # own presence. Toggling "Enable CEC" off and back on must not lose it.
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "cec_enabled": "on",
+            "cec_power_off_on_teardown": "on",
+        },
+    )
+
+    # Simulate unchecking "Enable CEC" and saving -- the whole sub-panel,
+    # including the "Power Off TV When Finished" checkbox, drops out of
+    # the submitted form entirely.
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={"desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": ""},
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.cec.enabled is False
+    assert saved.cec.power_off_on_teardown is True
 
 
 def test_configure_post_invalid_timing_value_falls_back_to_existing(client):
