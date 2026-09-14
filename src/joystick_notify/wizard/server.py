@@ -465,15 +465,29 @@ async def configure_post(request: Request):
     # wasn't rendered, same as if the page had never mentioned them at
     # all. Guard each on its own presence so unchecking "Enable CEC" (or
     # a save with no CEC adapter detected) doesn't wipe previously-saved
-    # values back to their defaults. Checkboxes can't be guarded this way
-    # -- an unchecked box and a hidden one are both simply absent -- so
-    # cec_power_off_on_teardown keeps the codebase's normal
-    # absent-means-false checkbox handling.
+    # values back to their defaults.
+    #
+    # cec_power_off_on_teardown is a checkbox, so its OWN presence can't
+    # tell "rendered and left unchecked" apart from "not rendered at all"
+    # -- both submit nothing. Gate it on cec_enabled (already computed
+    # above) instead: that's the exact value bound to Alpine's `cecEnabled`
+    # via x-model on the SAME checkbox that drives `x-if="cecEnabled"`, so
+    # it's the precise signal for "was the panel containing this checkbox
+    # actually shown this submission." Confirmed live 2026-09-13/14:
+    # without this guard, every save made with "Enable CEC" unchecked
+    # silently reset power_off_on_teardown to False on disk -- every other
+    # CEC setting already survived via its own guard below, but this one
+    # didn't, and the daemon's next teardown then silently no-op'd the CEC
+    # standby with zero log output (cec_control.standby_and_verify()
+    # returns immediately when power_off_on_teardown is False, same as it
+    # does for an empty standby_targets list -- see daemon.py's
+    # activate_desk()).
+    if config.cec.enabled:
+        config.cec.power_off_on_teardown = form.get("cec_power_off_on_teardown") == "on"
     if "cec_adapter" in form:
         config.cec.adapter = str(form.get("cec_adapter", ""))
     if "cec_active_source_phys_addr" in form:
         config.cec.active_source_phys_addr = str(form.get("cec_active_source_phys_addr", "")).strip()
-    config.cec.power_off_on_teardown = form.get("cec_power_off_on_teardown") == "on"
     if "cec_wake_delay_s" in form:
         config.cec.wake_delay_s = _nonneg_float("cec_wake_delay_s", config.cec.wake_delay_s)
     if "cec_active_source_retries" in form:
