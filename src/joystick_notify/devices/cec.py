@@ -177,7 +177,11 @@ def find_audio_system_target(topology: list[TopologyDevice]) -> TopologyDevice |
     return None
 
 
-TOPOLOGY_TIMEOUT_S = 5.0
+# `cec-ctl -S` polls every logical address in turn and takes ~7.4s on the
+# real Pulse-Eight dongle (measured live 2026-09-26; the wizard docs already
+# cite ~7s). The old 5.0s limit killed every scan mid-flight, which the wizard
+# then reported as "no devices found on the bus". Leave real headroom.
+TOPOLOGY_TIMEOUT_S = 15.0
 
 
 async def _run_cec_dash_s(adapter: str | None) -> str | None:
