@@ -13,19 +13,21 @@ the cursor, there's nothing to show.
 
 `kapplymousetheme` -- KDE's normal live-theme-switch tool -- refuses to
 run at all under Wayland: it hard-checks KWindowSystem::isPlatformX11()
-and exits (confirmed live 2026-08-29, disassembly shows the exact string
-"X11 backend not detected. Exit."). This session is KWin/Wayland, so its
-effect is replicated here by hand, the same way ansible-playbooks'
-roles/mouse-hide does it live from the control node:
-  1. kwriteconfig6 sets kcminputrc's [Mouse] cursorTheme -- this is what
-     KWin itself reads for its own compositor-drawn cursor, which is what
-     Steam/Big Picture and everything else without its own custom cursor
-     actually shows.
-  2. qdbus6 org.kde.KWin /KWin reconfigure applies it live, no logout.
-  3. ~/.icons/default/index.theme covers GTK/SDL apps that resolve "the
-     cursor theme" via the classic Xcursor "default" convention instead
-     of reading kcminputrc directly (relevant since Steam's own UI isn't
-     a native Qt/KDE app).
+and exits (confirmed live 2026-08-29). `plasma-apply-cursortheme` is the
+Wayland-capable equivalent, so this uses it, plus a hand-written
+~/.icons/default/index.theme for GTK/SDL apps that resolve "the cursor
+theme" via the classic Xcursor "default" convention (Steam's own UI).
+
+Applying is VERIFIED, not assumed (2026-09-26 incident: desk restore
+reported OK while KWin's live theme stayed "invisible" for 10+ hours, so
+the mouse stayed hidden in desk mode). The earlier kwriteconfig6 +
+`qdbus6 org.kde.KWin /KWin reconfigure` path wrote the right files but
+did not make KWin reload the theme. And plasma-apply-cursortheme itself
+compares the requested theme against kcminputrc, not against KWin's live
+state, so once the files and the compositor drift apart it prints "already
+set" and does nothing. So after applying, KWin's live `themeName`
+(supportInformation) is read back; on mismatch the theme is forced by
+applying a different theme first and then the target again.
 
 Best-effort, like audio.py -- a stuck cursor theme is annoying, not "the
 feature doesn't work," so failures here report Health.failed but never
@@ -35,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 from ..config.schema import CursorConfig
@@ -65,12 +68,17 @@ def icons_default_theme_content(theme: str) -> str:
     return f"[Icon Theme]\nInherits={theme}\n"
 
 
-async def _apply_theme(theme: str, health: Health) -> None:
-    rc, out = await _run(["kwriteconfig6", "--file", "kcminputrc", "--group", "Mouse", "--key", "cursorTheme", theme])
+async def _live_theme() -> str | None:
+    """KWin's live cursor theme, or None if it can't be read."""
+    rc, out = await _run(["qdbus6", "org.kde.KWin", "/KWin", "supportInformation"])
     if rc != 0:
-        health.failed("cursor", f"failed to write cursorTheme={theme}: {out}")
-        return
+        return None
+    section = out.partition("\nCursor\n")[2]
+    m = re.search(r"^themeName:\s*(\S+)\s*$", section, re.MULTILINE)
+    return m.group(1) if m else None
 
+
+async def _apply_theme(theme: str, config: CursorConfig, health: Health) -> None:
     icons_default = Path.home() / ".icons" / "default"
     try:
         icons_default.mkdir(parents=True, exist_ok=True)
@@ -79,18 +87,39 @@ async def _apply_theme(theme: str, health: Health) -> None:
         health.failed("cursor", f"failed to write ~/.icons/default/index.theme: {e}")
         return
 
-    rc, out = await _run(["qdbus6", "org.kde.KWin", "/KWin", "reconfigure"])
+    rc, out = await _run(["plasma-apply-cursortheme", theme])
     if rc != 0:
-        health.failed("cursor", f"KWin reconfigure failed applying {theme}: {out}")
+        health.failed("cursor", f"failed to apply cursor theme {theme}: {out.strip()}")
         return
 
-    health.ok("cursor", f"cursor theme set to {theme}")
+    live = await _live_theme()
+    if live is None:
+        health.failed("cursor", f"applied {theme} but could not read KWin's live cursor theme back")
+        return
+    if live == theme:
+        health.ok("cursor", f"cursor theme set to {theme}")
+        return
+
+    # Files and compositor have drifted apart; plasma-apply-cursortheme is a
+    # no-op when kcminputrc already matches. Force a real change via another theme.
+    nudge = next((t for t in (config.hide_theme, config.normal_theme) if t and t != theme), "default")
+    logger.warning("cursor: KWin live theme is %r after applying %r, forcing via %r", live, theme, nudge)
+    await _run(["plasma-apply-cursortheme", nudge])
+    rc, out = await _run(["plasma-apply-cursortheme", theme])
+    if rc != 0:
+        health.failed("cursor", f"failed to apply cursor theme {theme} after forcing: {out.strip()}")
+        return
+    live = await _live_theme()
+    if live == theme:
+        health.ok("cursor", f"cursor theme set to {theme} (forced past stale KWin state)")
+    else:
+        health.failed("cursor", f"KWin live cursor theme is {live!r}, wanted {theme!r}")
 
 
 async def activate_couch(config: CursorConfig, health: Health) -> None:
     if not config.enabled:
         return
-    await _apply_theme(config.hide_theme, health)
+    await _apply_theme(config.hide_theme, config, health)
 
 
 async def activate_desk(config: CursorConfig, health: Health) -> None:
@@ -102,4 +131,4 @@ async def activate_desk(config: CursorConfig, health: Health) -> None:
         # exist on this host.
         health.ok("cursor", "no normal_theme configured, leaving cursor theme as-is")
         return
-    await _apply_theme(config.normal_theme, health)
+    await _apply_theme(config.normal_theme, config, health)
