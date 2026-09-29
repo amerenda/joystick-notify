@@ -460,6 +460,90 @@ def test_configure_post_saves_and_marks_configured(client):
     assert saved.on_connect.run == "steam-bigpicture"
 
 
+def test_configure_post_saves_cursor_idle_park_fields(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "desk_mode": "", "couch_port": "", "couch_mode": "",
+            "desk_sink": "", "couch_sink": "",
+            "cursor_idle_park_enabled": "on",
+            "cursor_idle_park_delay_s": "30",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.cursor.idle_park_enabled is True
+    assert saved.cursor.idle_park_delay_s == 30.0
+
+
+def test_configure_post_unchecking_cursor_idle_park_saves_false(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "desk_mode": "", "couch_port": "", "couch_mode": "",
+            "desk_sink": "", "couch_sink": "",
+            "cursor_idle_park_enabled": "on",
+            "cursor_idle_park_delay_s": "30",
+        },
+    )
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "desk_mode": "", "couch_port": "", "couch_mode": "",
+            "desk_sink": "", "couch_sink": "",
+            "cursor_idle_park_delay_s": "30",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.cursor.idle_park_enabled is False
+
+
+def test_configure_post_invalid_cursor_idle_park_delay_falls_back_to_existing(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "desk_mode": "", "couch_port": "", "couch_mode": "",
+            "desk_sink": "", "couch_sink": "",
+            "cursor_idle_park_delay_s": "30",
+        },
+    )
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "desk_mode": "", "couch_port": "", "couch_mode": "",
+            "desk_sink": "", "couch_sink": "",
+            "cursor_idle_park_delay_s": "not-a-number",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.cursor.idle_park_delay_s == 30.0
+
+
 def test_configure_post_saves_cec_power_off_and_timing_fields(client):
     client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
     auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")

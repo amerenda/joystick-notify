@@ -26,6 +26,7 @@ from .actions import screen_lock as screen_lock_actions
 from .activity_gate import ActivityGate
 from .config import store as config_store
 from .config.schema import CecConfig, JoystickNotifyConfig
+from .cursor_idle_park import CursorIdleParkWatcher
 from .debounce import Debouncer, DeviceEvent
 from .devices import cec as cec_discover
 from .devices.detect import HidrawLivenessWatcher, UdevWatcher, device_present
@@ -119,8 +120,9 @@ class CouchSessionResources:
     not two edited functions.
     """
 
-    def __init__(self, manual_exit_watcher: ManualExitWatcher) -> None:
+    def __init__(self, manual_exit_watcher: ManualExitWatcher, cursor_idle_park_watcher: CursorIdleParkWatcher) -> None:
         self.manual_exit_watcher = manual_exit_watcher
+        self.cursor_idle_park_watcher = cursor_idle_park_watcher
         self.cec_retry_task: asyncio.Task | None = None
         self.cec_wake_verify_task: asyncio.Task | None = None
         self.screen_lock_cookie: str | None = None
@@ -133,7 +135,7 @@ def build_hooks(
     manual_exit_watcher: ManualExitWatcher,
     config_path: Path | None = None,
 ) -> ActionHooks:
-    resources = CouchSessionResources(manual_exit_watcher)
+    resources = CouchSessionResources(manual_exit_watcher, CursorIdleParkWatcher(config.cursor, health))
 
     def _current_cec() -> CecConfig:
         # Re-read the CEC section fresh from disk on every activation,
@@ -208,11 +210,13 @@ def build_hooks(
         await display_actions.activate_couch(config.display, health)
         await audio_actions.activate_couch(config.audio, health)
         await cursor_actions.activate_couch(config.cursor, health)
+        await resources.cursor_idle_park_watcher.start(device_id)
         if config.shortcuts.exit_couch_enabled:
             await resources.manual_exit_watcher.start(device_id)
 
     async def activate_desk() -> None:
         await resources.manual_exit_watcher.stop()
+        await resources.cursor_idle_park_watcher.stop()
         if resources.cec_retry_task is not None:
             resources.cec_retry_task.cancel()
             resources.cec_retry_task = None
@@ -274,13 +278,15 @@ def build_hooks(
         return device_present(device_id)
 
     async def on_reconnect_while_couch(device_id: str) -> None:
-        # Restarts the manual-exit shortcut watcher against whatever evdev
-        # node the reconnect landed on -- a brief disconnect/reconnect
-        # within disconnect_grace_s never tears couch mode down, but the
-        # watcher already exited (OSError on the now-dead node) and nothing
-        # else would ever restart it for the rest of this session.
+        # Restarts the manual-exit shortcut watcher (and, same reasoning,
+        # the cursor idle-park watcher) against whatever evdev node the
+        # reconnect landed on -- a brief disconnect/reconnect within
+        # disconnect_grace_s never tears couch mode down, but the watcher
+        # already exited (OSError on the now-dead node) and nothing else
+        # would ever restart it for the rest of this session.
         if config.shortcuts.exit_couch_enabled:
             await resources.manual_exit_watcher.start(device_id)
+        await resources.cursor_idle_park_watcher.start(device_id)
 
     async def enter_couch_idle() -> None:
         # Owner absent, game still running: screensaver + TV standby,

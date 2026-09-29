@@ -42,12 +42,16 @@ def test_cursor_config_round_trips(tmp_path):
     cfg.cursor.enabled = True
     cfg.cursor.hide_theme = "invisible"
     cfg.cursor.normal_theme = "breeze_cursors"
+    cfg.cursor.idle_park_enabled = True
+    cfg.cursor.idle_park_delay_s = 30.0
     save(cfg, path)
 
     loaded = load(path)
     assert loaded.cursor.enabled is True
     assert loaded.cursor.hide_theme == "invisible"
     assert loaded.cursor.normal_theme == "breeze_cursors"
+    assert loaded.cursor.idle_park_enabled is True
+    assert loaded.cursor.idle_park_delay_s == 30.0
 
 
 def test_shutdown_config_defaults_off():

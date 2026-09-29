@@ -458,6 +458,9 @@ async def configure_post(request: Request):
                 return default  # any malformed entry: reject the whole list, don't silently drop it
         return values
 
+    config.cursor.idle_park_enabled = form.get("cursor_idle_park_enabled") == "on"
+    config.cursor.idle_park_delay_s = _positive_float("cursor_idle_park_delay_s", config.cursor.idle_park_delay_s)
+
     config.cec.enabled = form.get("cec_enabled") == "on"
     # Text/number/list fields below live inside Alpine's x-if="cecEnabled"
     # block (and, within that, an {% if not cec_adapters %} branch) --

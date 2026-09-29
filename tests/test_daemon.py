@@ -224,6 +224,81 @@ async def test_activate_desk_skips_exit_launched_when_nothing_configured(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_activate_couch_starts_cursor_idle_park_watcher_when_enabled(tmp_path, monkeypatch):
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
+
+    starts = []
+
+    class _FakeWatcher:
+        def __init__(self, config, health):
+            pass
+
+        async def start(self, device_id):
+            starts.append(device_id)
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(daemon_module, "CursorIdleParkWatcher", _FakeWatcher)
+
+    config = JoystickNotifyConfig()
+    config.cursor.idle_park_enabled = True
+    config.shortcuts.exit_couch_enabled = False
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
+
+    await hooks.activate_couch("device-1")
+
+    assert starts == ["device-1"]
+
+
+@pytest.mark.asyncio
+async def test_activate_desk_stops_cursor_idle_park_watcher(tmp_path, monkeypatch):
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.launchers, "exit_launched", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+
+    stops = []
+
+    class _FakeWatcher:
+        def __init__(self, config, health):
+            pass
+
+        async def start(self, device_id):
+            pass
+
+        async def stop(self):
+            stops.append(True)
+
+    monkeypatch.setattr(daemon_module, "CursorIdleParkWatcher", _FakeWatcher)
+
+    config = JoystickNotifyConfig()
+    config.cursor.idle_park_enabled = True
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
+
+    await hooks.activate_desk()
+
+    assert stops == [True]
+
+
+@pytest.mark.asyncio
 async def test_activate_couch_rereads_cec_enabled_from_disk_not_startup_cache(tmp_path, monkeypatch):
     """Regression test for the reported bug: unchecking "Enable CEC" in the
     wizard and saving updates config.toml, but the daemon's `config` object

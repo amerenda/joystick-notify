@@ -42,6 +42,20 @@
         <label for="couch_mode">Couch mode</label>
         <input type="text" id="couch_mode" name="couch_mode" value="{{ config.display.couch_mode }}" placeholder="e.g. 3840x2160@60">
       </div>
+
+      <div class="card">
+        <h2>Cursor</h2>
+        <p class="muted">Steam's own overlay/pause-menu cursor draws itself wherever the real
+        system pointer currently sits -- by default that's dead center of the screen, the
+        worst place for it to reappear mid-game. This nudges the real (invisible) pointer
+        into the bottom-right corner after a period of no controller activity, so the
+        overlay's cursor shows up out of the way instead. Requires <code>ydotool</code> on
+        the host.</p>
+        <label><input type="checkbox" name="cursor_idle_park_enabled" {% if config.cursor.idle_park_enabled %}checked{% endif %}> Park cursor to corner when idle</label>
+        <label for="cursor_idle_park_delay_s">Idle delay before parking (seconds)</label>
+        <input type="number" id="cursor_idle_park_delay_s" name="cursor_idle_park_delay_s" min="1" step="1"
+               value="{{ config.cursor.idle_park_delay_s }}">
+      </div>
     </div>
 
     <div class="tab-panel" :class="{active: tab === 'audio'}">

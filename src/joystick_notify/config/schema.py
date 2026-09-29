@@ -162,6 +162,13 @@ class CursorConfig:
     # then leaves the current cursor theme alone rather than guessing at a
     # name that might not exist (see actions/cursor.py).
     normal_theme: str = ""
+    # Off by default, independent opt-in from `enabled` above -- requires
+    # ydotool/ydotoold on the host (ansible-playbooks installs+enables it
+    # only when this is turned on). See cursor_idle_park.py's module
+    # docstring for why this exists at all (Steam's own overlay cursor
+    # reappearing center-screen every pause, confirmed live 2026-09-28).
+    idle_park_enabled: bool = False
+    idle_park_delay_s: float = 30.0
 
 
 @dataclass
