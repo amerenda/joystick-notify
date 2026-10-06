@@ -73,3 +73,16 @@ def test_set_theme_noop_when_already_live(monkeypatch):
     monkeypatch.setattr(mh, "live_theme", lambda: "breeze_cursors")
     monkeypatch.setattr(mh, "_run", lambda cmd: pytest.fail("should not run"))
     assert mh.set_theme("breeze_cursors", "invisible") is True
+
+
+def test_session_env_fills_missing_wayland_display(tmp_path):
+    (tmp_path / "wayland-0").touch()
+    (tmp_path / "wayland-0.lock").touch()
+    env = mh.session_env({"XDG_RUNTIME_DIR": str(tmp_path)})
+    assert env["WAYLAND_DISPLAY"] == "wayland-0"
+    assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={tmp_path}/bus"
+
+
+def test_session_env_keeps_existing_values(tmp_path):
+    env = mh.session_env({"XDG_RUNTIME_DIR": str(tmp_path), "WAYLAND_DISPLAY": "wayland-9"})
+    assert env["WAYLAND_DISPLAY"] == "wayland-9"

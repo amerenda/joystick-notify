@@ -108,9 +108,25 @@ class IdleTracker:
 
 # --- KWin / theme plumbing -------------------------------------------------
 
+def session_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for talking to the user's KWin session.
+
+    Callers differ (daemon child, systemd user unit, plain ssh): without
+    WAYLAND_DISPLAY, Qt tools like plasma-apply-cursortheme abort silently.
+    """
+    env = dict(os.environ if base is None else base)
+    runtime = env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
+    if "WAYLAND_DISPLAY" not in env:
+        socks = sorted(p.name for p in Path(runtime).glob("wayland-[0-9]*") if not p.name.endswith(".lock"))
+        env["WAYLAND_DISPLAY"] = socks[0] if socks else "wayland-0"
+    env.setdefault("QT_QPA_PLATFORM", "wayland")
+    return env
+
+
 def _run(cmd: list[str]) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=CMD_TIMEOUT_S)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=CMD_TIMEOUT_S, env=session_env())
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return -1, str(e)
     return p.returncode, p.stdout + p.stderr
