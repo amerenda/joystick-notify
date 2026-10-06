@@ -1,0 +1,14 @@
+[Unit]
+Description=Make the mouse cursor visible at login (cures a hidden cursor left by a previous session)
+After=graphical-session.target
+StartLimitIntervalSec=120
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mouse-hider restore
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

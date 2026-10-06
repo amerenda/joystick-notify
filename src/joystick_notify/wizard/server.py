@@ -168,7 +168,7 @@ async def api_screen_unlock(request: Request):
     (Sunshine's stream-start hook) that wants exactly screen_lock.py's
     unlock/disable-autolock/inhibit mechanism and nothing else -- not the
     full couch-mode transition (CEC TV/receiver wake, display output
-    switch, audio switch, cursor hide, launcher). A remote/Deck stream
+    switch, audio switch, launcher). A remote/Deck stream
     has no reason to touch any of that; it captures the desktop and
     streams its own audio/video regardless of what's plugged into the
     TV. Calls screen_lock.activate_couch() directly -- the exact same

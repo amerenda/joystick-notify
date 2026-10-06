@@ -18,7 +18,6 @@ from pathlib import Path
 
 from .actions import audio as audio_actions
 from .actions import cec_control
-from .actions import cursor as cursor_actions
 from .actions import display as display_actions
 from .actions import launchers
 from .actions import notifications as notifications_actions
@@ -207,7 +206,6 @@ def build_hooks(
                 _spawn_wake_verify(adapter, cec)
         await display_actions.activate_couch(config.display, health)
         await audio_actions.activate_couch(config.audio, health)
-        await cursor_actions.activate_couch(config.cursor, health)
         if config.shortcuts.exit_couch_enabled:
             await resources.manual_exit_watcher.start(device_id)
 
@@ -240,7 +238,6 @@ def build_hooks(
         # allowed to fail.
         await display_actions.activate_desk(config.display, health)
         await audio_actions.activate_desk(config.audio, health)
-        await cursor_actions.activate_desk(config.cursor, health)
         await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
         resources.screen_lock_cookie = None
         await notifications_actions.activate_desk(config.notifications, health, resources.notifications_cookie)

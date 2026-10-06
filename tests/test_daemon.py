@@ -245,7 +245,6 @@ async def test_activate_couch_rereads_cec_enabled_from_disk_not_startup_cache(tm
     monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
-    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
 
     config_path = tmp_path / "config.toml"
@@ -292,7 +291,6 @@ async def test_activate_couch_picks_up_cec_enabled_toggled_on_without_restart(tm
     monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
-    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
 
     config_path = tmp_path / "config.toml"
@@ -348,7 +346,6 @@ async def test_activate_couch_spawns_wake_verify_task_that_updates_health(tmp_pa
     monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
-    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
     monkeypatch.setattr(daemon_module.cec_control, "wake_and_verify", fake_wake_and_verify)
 
@@ -390,7 +387,6 @@ async def test_activate_couch_reports_cec_failed_when_wake_unconfirmed(tmp_path,
     monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.display_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", _noop)
-    monkeypatch.setattr(daemon_module.cursor_actions, "activate_couch", _noop)
     monkeypatch.setattr(daemon_module.cec_control, "wake_and_select_input", fake_wake_and_select_input)
     monkeypatch.setattr(daemon_module.cec_control, "wake_and_verify", fake_wake_and_verify)
 
