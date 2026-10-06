@@ -175,7 +175,7 @@ class StateMachine:
           still be in progress. Confirmed live 2026-08-31: see
           `notes/state-desync-and-stale-carryover-background.md`. Here we
           only correct `self.mode` to match reality; replaying the full
-          activation (CEC wake, audio switch, cursor hide) would be
+          activation (CEC wake, audio switch) would be
           redundant and, for CEC, actively disruptive against a receiver
           that's already correctly configured.
         - **A fresh OS boot** has no possible live session to preserve --

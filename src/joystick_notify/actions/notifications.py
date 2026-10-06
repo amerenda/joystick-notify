@@ -2,7 +2,7 @@
 couch mode (physical controller) and Sunshine's narrow unlock-only path
 (Moonlight/MoonDeck/Desktop/Big Picture) alike. Same activate_couch/
 activate_desk shape as every other action module (screen_lock.py,
-audio.py, display.py, cursor.py).
+audio.py, display.py).
 
 Confirmed live 2026-09-12: a stock CachyOS update-notifier popup
 ("Cachy-Update — 4 updates available") interrupted an active MoonDeck

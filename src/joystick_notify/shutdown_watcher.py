@@ -25,7 +25,7 @@ actual shutdown -- worst case is identical to before this module
 existed (no teardown), never worse. 13s default leaves a margin under
 the 15s `InhibitDelayMaxSec` logind is configured for (see
 `ansible-playbooks`' `roles/joystick-notify` logind.conf.d drop-in) --
-enough for the fast synchronous steps (display/audio/cursor/screen-lock)
+enough for the fast synchronous steps (display/audio/screen-lock)
 to reliably finish; CEC standby to the TV (best-effort everywhere else
 in this codebase too, up to ~30s per target) gets a head start but may
 not always complete.

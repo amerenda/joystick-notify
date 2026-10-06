@@ -150,23 +150,8 @@ class NotificationsConfig:
 
 
 @dataclass
-class CursorConfig:
-    # Off by default, matching screen_lock's explicit-opt-in treatment --
-    # this depends on the "invisible" Xcursor theme already existing on
-    # the host (ansible-playbooks roles/mouse-hide), so a fresh/
-    # undeployed host must not silently no-op switching to a theme that
-    # was never installed. See actions/cursor.py's module docstring.
-    enabled: bool = False
-    hide_theme: str = "invisible"
-    # Empty = unknown/don't care what the normal theme is -- activate_desk
-    # then leaves the current cursor theme alone rather than guessing at a
-    # name that might not exist (see actions/cursor.py).
-    normal_theme: str = ""
-
-
-@dataclass
 class ShutdownConfig:
-    # Off by default, same explicit-opt-in treatment as screen_lock/cursor
+    # Off by default, same explicit-opt-in treatment as screen_lock
     # -- unlike those, a bug here affects real system shutdown behavior
     # (a held inhibitor lock, even bounded, is real user-visible impact
     # every time the machine powers off), not just this daemon's own
@@ -236,7 +221,6 @@ class JoystickNotifyConfig:
     custom_commands: list[CustomCommand] = field(default_factory=list)
     screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
-    cursor: CursorConfig = field(default_factory=CursorConfig)
     shortcuts: ShortcutConfig = field(default_factory=ShortcutConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)
     shutdown: ShutdownConfig = field(default_factory=ShutdownConfig)
