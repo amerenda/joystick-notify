@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""mouse-hider: hide the pointer after N seconds of inactivity, restore on motion.
+
+Standalone. Not part of the joystick-notify daemon or wizard: point the
+wizard's launch/teardown commands at `mouse-hider start` / `mouse-hider stop`.
+
+How it hides: KWin (Wayland) has no "hide cursor on idle" switch, so this
+swaps the cursor THEME to a fully transparent one ("invisible", installed by
+ansible-playbooks roles/mouse-hide) after the idle timeout, and swaps back on
+the first pointer event. Pointer events are read directly from evdev
+(read-only, no grab), so they still arrive while the cursor is invisible.
+Limitation: clients that draw their own cursor sprite (Steam's in-game
+overlay) are not affected by the theme.
+
+Safety properties (the whole point of this script):
+  * `start` and `run` ALWAYS make the cursor visible first, so a hidden
+    cursor left over from a previous session or reboot is cured.
+  * The hidden state is never trusted: every change is read back from KWin's
+    live theme (supportInformation) and forced via a nudge theme on mismatch.
+  * `stop` / SIGTERM / SIGINT / any crash restore the normal theme.
+  * `restore` makes the cursor visible and works whether or not the hider runs.
+
+Config: ~/.config/mouse-hider/config.toml (all keys optional)
+    idle_seconds    = 15
+    hide_theme      = "invisible"
+    normal_theme    = "breeze_cursors"
+    exclude_devices = ["Pulse-Eight"]    # substrings of evdev device names
+CLI flags --idle / --hide-theme / --normal-theme override the file.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+DEFAULTS = {
+    "idle_seconds": 15.0,
+    "hide_theme": "invisible",
+    "normal_theme": "breeze_cursors",
+    "exclude_devices": [],
+}
+CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mouse-hider" / "config.toml"
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+PIDFILE = RUNTIME_DIR / "mouse-hider.pid"
+TICK_S = 0.5
+RESCAN_S = 5.0
+CMD_TIMEOUT_S = 8.0
+
+
+@dataclass
+class Config:
+    idle_seconds: float = 15.0
+    hide_theme: str = "invisible"
+    normal_theme: str = "breeze_cursors"
+    exclude_devices: list[str] = field(default_factory=list)
+
+
+def load_config(args: argparse.Namespace, path: Path = CONFIG_PATH) -> Config:
+    raw = dict(DEFAULTS)
+    if path.exists():
+        with path.open("rb") as f:
+            raw.update({k: v for k, v in tomllib.load(f).items() if k in DEFAULTS})
+    if getattr(args, "idle", None) is not None:
+        raw["idle_seconds"] = args.idle
+    if getattr(args, "hide_theme", None):
+        raw["hide_theme"] = args.hide_theme
+    if getattr(args, "normal_theme", None):
+        raw["normal_theme"] = args.normal_theme
+    cfg = Config(
+        idle_seconds=float(raw["idle_seconds"]),
+        hide_theme=str(raw["hide_theme"]),
+        normal_theme=str(raw["normal_theme"]),
+        exclude_devices=list(raw["exclude_devices"]),
+    )
+    if cfg.idle_seconds <= 0:
+        raise SystemExit("idle_seconds must be > 0")
+    if cfg.hide_theme == cfg.normal_theme:
+        raise SystemExit("hide_theme and normal_theme must differ")
+    return cfg
+
+
+class IdleTracker:
+    """Pure idle/hidden state, no I/O: unit-testable with an injected clock."""
+
+    def __init__(self, idle_seconds: float, now: float) -> None:
+        self.idle_seconds = idle_seconds
+        self.last_activity = now
+        self.hidden = False
+
+    def activity(self, now: float) -> bool:
+        """Record pointer activity. True if the cursor must be restored."""
+        self.last_activity = now
+        if self.hidden:
+            return True
+        return False
+
+    def should_hide(self, now: float) -> bool:
+        return not self.hidden and now - self.last_activity >= self.idle_seconds
+
+
+# --- KWin / theme plumbing -------------------------------------------------
+
+def _run(cmd: list[str]) -> tuple[int, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=CMD_TIMEOUT_S)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return -1, str(e)
+    return p.returncode, p.stdout + p.stderr
+
+
+def live_theme() -> str | None:
+    rc, out = _run(["qdbus6", "org.kde.KWin", "/KWin", "supportInformation"])
+    if rc != 0:
+        return None
+    section = out.partition("\nCursor\n")[2]
+    m = re.search(r"^themeName:\s*(\S+)\s*$", section, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def set_theme(theme: str, nudge: str) -> bool:
+    """Apply `theme` to live KWin and VERIFY it. Forces past stale state."""
+    if live_theme() == theme:
+        return True
+    _run(["plasma-apply-cursortheme", theme])
+    if live_theme() == theme:
+        return True
+    # kcminputrc already matched so the call was a no-op: force a real change.
+    _run(["plasma-apply-cursortheme", nudge])
+    _run(["plasma-apply-cursortheme", theme])
+    return live_theme() == theme
+
+
+def make_visible(cfg: Config) -> bool:
+    return set_theme(cfg.normal_theme, cfg.hide_theme)
+
+
+def make_hidden(cfg: Config) -> bool:
+    return set_theme(cfg.hide_theme, cfg.normal_theme)
+
+
+def log(msg: str) -> None:
+    print(f"mouse-hider: {msg}", flush=True)
+
+
+# --- evdev watching ---------------------------------------------------------
+
+def pointer_devices(cfg: Config):
+    import evdev
+    from evdev import ecodes
+
+    found = {}
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        caps = dev.capabilities()
+        rel = caps.get(ecodes.EV_REL, [])
+        keys = caps.get(ecodes.EV_KEY, [])
+        is_pointer = ecodes.REL_X in rel or ecodes.BTN_MOUSE in keys
+        if not is_pointer or any(x in dev.name for x in cfg.exclude_devices):
+            dev.close()
+            continue
+        found[path] = dev
+    return found
+
+
+async def watch(dev, on_event) -> None:
+    from evdev import ecodes
+
+    try:
+        async for ev in dev.async_read_loop():
+            if ev.type in (ecodes.EV_REL, ecodes.EV_KEY, ecodes.EV_ABS):
+                on_event()
+    except OSError:
+        pass  # device unplugged; the rescan loop forgets it
+
+
+async def run_loop(cfg: Config) -> None:
+    loop = asyncio.get_running_loop()
+    tracker = IdleTracker(cfg.idle_seconds, time.monotonic())
+    stop = asyncio.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+
+    pending_restore = False
+
+    def on_event() -> None:
+        nonlocal pending_restore
+        if tracker.activity(time.monotonic()):
+            pending_restore = True
+
+    watchers: dict[str, asyncio.Task] = {}
+
+    async def rescan() -> None:
+        for path in [p for p, t in watchers.items() if t.done()]:
+            del watchers[path]
+        for path, dev in pointer_devices(cfg).items():
+            if path in watchers:
+                dev.close()
+                continue
+            log(f"watching {dev.name} ({path})")
+            watchers[path] = asyncio.create_task(watch(dev, on_event))
+
+    last_scan = 0.0
+    try:
+        while not stop.is_set():
+            now = time.monotonic()
+            if now - last_scan >= RESCAN_S:
+                await rescan()
+                last_scan = now
+            if pending_restore:
+                pending_restore = False
+                ok = await loop.run_in_executor(None, make_visible, cfg)
+                tracker.hidden = not ok
+                log("pointer activity: cursor restored" if ok else "FAILED to restore cursor, will retry")
+            elif tracker.should_hide(now):
+                ok = await loop.run_in_executor(None, make_hidden, cfg)
+                tracker.hidden = ok
+                tracker.last_activity = time.monotonic()  # drop events that raced the swap
+                log(f"idle {cfg.idle_seconds:g}s: cursor hidden" if ok else "FAILED to hide cursor")
+                if not ok:
+                    await loop.run_in_executor(None, make_visible, cfg)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=TICK_S)
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        for t in watchers.values():
+            t.cancel()
+        make_visible(cfg)
+        log("stopped, cursor restored")
+
+
+# --- commands ---------------------------------------------------------------
+
+def read_pid() -> int | None:
+    try:
+        pid = int(PIDFILE.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        return None
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    cfg = load_config(args)
+    if not make_visible(cfg):
+        log(f"WARNING: could not confirm {cfg.normal_theme!r} is live before starting")
+    PIDFILE.write_text(str(os.getpid()))
+    try:
+        asyncio.run(run_loop(cfg))
+    finally:
+        PIDFILE.unlink(missing_ok=True)
+    return 0
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    if read_pid():
+        log(f"already running (pid {read_pid()})")
+        return 0
+    cmd = [sys.executable, os.path.abspath(__file__), "run"]
+    for flag, val in (("--idle", args.idle), ("--hide-theme", args.hide_theme), ("--normal-theme", args.normal_theme)):
+        if val is not None:
+            cmd += [flag, str(val)]
+    logf = open(RUNTIME_DIR / "mouse-hider.log", "ab")
+    p = subprocess.Popen(cmd, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, start_new_session=True)
+    log(f"started (pid {p.pid})")
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    """Kill the hider and make the pointer visible and working."""
+    pid = read_pid()
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(40):
+            if read_pid() is None:
+                break
+            time.sleep(0.25)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    return cmd_restore(args)
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    cfg = load_config(args)
+    if make_visible(cfg):
+        log(f"cursor visible ({cfg.normal_theme})")
+        return 0
+    log(f"ERROR: KWin live theme is {live_theme()!r}, wanted {cfg.normal_theme!r}")
+    return 1
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    pid = read_pid()
+    print(f"hider: {'running pid ' + str(pid) if pid else 'not running'}")
+    print(f"live cursor theme: {live_theme()}")
+    return 0 if pid else 3
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="mouse-hider", description=__doc__.split("\n\n")[0])
+    ap.add_argument("command", choices=["start", "stop", "restore", "status", "run"])
+    ap.add_argument("--idle", type=float, help="idle seconds before hiding (default 15)")
+    ap.add_argument("--hide-theme")
+    ap.add_argument("--normal-theme")
+    args = ap.parse_args()
+    return {"start": cmd_start, "stop": cmd_stop, "restore": cmd_restore, "status": cmd_status, "run": cmd_run}[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
