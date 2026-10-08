@@ -1520,3 +1520,24 @@ def test_api_autoswitch_not_in_bearer_token_scope(isolated_config):
 
     resp = client.post("/api/autoswitch", headers={"Authorization": f"Bearer {token}"}, json={"enabled": False})
     assert resp.status_code == 401
+
+
+def test_configure_saves_and_renders_hooks(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+    client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "hook_poststart": ["mouse-hider start", "  ", "notify-send 'it\'s couch'"],
+            "hook_postexit": "mouse-hider stop",
+            "hooks_timeout_s": "20",
+        },
+    )
+    resp = client.get("/configure", headers=auth_headers)
+    assert resp.status_code == 200
+    assert "x-data='hookLists(" in resp.text
+    assert 'x-data="hookLists(' not in resp.text
+    assert "mouse-hider start" in resp.text and "mouse-hider stop" in resp.text
+    assert "it\\u0027s couch" in resp.text
