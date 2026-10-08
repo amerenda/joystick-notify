@@ -19,6 +19,7 @@ from pathlib import Path
 from .actions import audio as audio_actions
 from .actions import cec_control
 from .actions import display as display_actions
+from .actions import hooks as hooks_actions
 from .actions import launchers
 from .actions import notifications as notifications_actions
 from .actions import screen_lock as screen_lock_actions
@@ -326,7 +327,22 @@ def build_hooks(
                 _spawn_wake_verify(adapter, cec)
         await screen_lock_actions.deactivate_screensaver(health)
 
+    async def run_hooks(phase: str) -> None:
+        # Fresh from disk on every phase (same reasoning as _current_cec):
+        # editing hooks in the wizard must apply to the very next
+        # transition without a daemon restart.
+        hooks_cfg = config_store.load(config_path).hooks
+        commands = getattr(hooks_cfg, phase)
+        if commands:
+            mode = "couch" if phase in ("prestart", "poststart") else "desk"
+            failed = await hooks_actions.run_phase(phase, commands, mode, hooks_cfg.timeout_s)
+            if failed:
+                health.failed("hooks", f"{len(failed)} {phase} hook(s) failed", "; ".join(failed)[:300])
+            else:
+                health.ok("hooks", f"{phase} ok")
+
     return ActionHooks(
+        run_hooks=run_hooks,
         activate_couch=activate_couch,
         activate_desk=activate_desk,
         launch=launch,

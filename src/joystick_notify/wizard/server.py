@@ -22,6 +22,7 @@ from starlette.templating import Jinja2Templates
 
 from ..actions import audio as audio_actions
 from ..actions import display as display_actions
+from ..actions import hooks as hooks_actions
 from ..actions import launchers
 from ..actions import notifications as notifications_actions
 from ..actions import screen_lock as screen_lock_actions
@@ -398,6 +399,7 @@ async def configure_get(request: Request):
             # Jinja's |tojson -- a raw list of CustomCommand dataclass
             # instances isn't JSON-serializable.
             "custom_commands_json": [asdict(c) for c in config.custom_commands],
+            "hooks_json": {p: getattr(config.hooks, p) for p in hooks_actions.PHASES},
             "api_token": api_token,
         },
     )
@@ -511,6 +513,12 @@ async def configure_post(request: Request):
         for n, v in zip(names, values)
         if n.strip() and v.strip()
     ]
+
+    for phase in hooks_actions.PHASES:
+        values = form.getlist(f"hook_{phase}") if hasattr(form, "getlist") else []
+        setattr(config.hooks, phase, hooks_actions.clean_commands(values))
+    if "hooks_timeout_s" in form:
+        config.hooks.timeout_s = _positive_float("hooks_timeout_s", config.hooks.timeout_s)
 
     config.timing.disconnect_grace_s = _positive_float("disconnect_grace_s", config.timing.disconnect_grace_s)
     config.timing.launch_startup_grace_s = _positive_float("launch_startup_grace_s", config.timing.launch_startup_grace_s)

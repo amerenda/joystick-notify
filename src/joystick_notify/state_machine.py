@@ -99,6 +99,10 @@ class ActionHooks:
     # StateMachine.reconcile_startup_mode). Returns None when the live
     # state is inconclusive.
     detect_live_mode: Optional[Callable[[], Awaitable[Optional["Mode"]]]] = None
+    # Runs the user's [hooks] commands for one phase ("prestart",
+    # "poststart", "preexit", "postexit") -- see actions/hooks.py. Must
+    # never raise; _run_hooks() below guards against it anyway.
+    run_hooks: Optional[Callable[[str], Awaitable[None]]] = None
 
 
 DEFAULT_DISCONNECT_GRACE_S = 30
@@ -440,6 +444,16 @@ class StateMachine:
         self._tasks.pop(task_name, None)
         await self._transition(Mode.DESK, device_id=device_id, force=force)
 
+    async def _run_hooks(self, phase: str) -> None:
+        if self._hooks.run_hooks is None:
+            return
+        try:
+            await self._hooks.run_hooks(phase)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("state_machine: %s hooks crashed (transition continues)", phase)
+
     async def _transition(self, target: Mode, *, device_id: str | None = None, force: bool = False) -> None:
         tag = device_id or self._owner or "-"
         async with self._lock:
@@ -448,6 +462,7 @@ class StateMachine:
             self._cancel_task("owner_watch")
             self._cancel_task("stale_session_recovery")
             if target == Mode.COUCH:
+                await self._run_hooks("prestart")
                 try:
                     await self._hooks.activate_couch(self._owner)
                 except ActivationError as e:
@@ -460,8 +475,10 @@ class StateMachine:
                 self._idle = False
                 if self._hooks.launch is not None:
                     await self._hooks.launch()
+                await self._run_hooks("poststart")
                 self._spawn_task("owner_watch", self._owner_watch_loop())
             else:
+                await self._run_hooks("preexit")
                 try:
                     await self._hooks.activate_desk()
                 except ActivationError as e:
@@ -473,6 +490,7 @@ class StateMachine:
                 self._launch_ts = None
                 self._no_controller_since = None
                 self._idle = False
+                await self._run_hooks("postexit")
             self._health.ok("state_machine", f"mode={self.mode.value}")
             headline(logger, "state_machine[%s]: transitioned to %s", tag, self.mode.value)
 

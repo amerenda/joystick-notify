@@ -247,6 +247,43 @@
         }
       </script>
 
+      <div class="card" x-data='hookLists({{ hooks_json|tojson }})'>
+        <h2>Lifecycle Hooks</h2>
+        <p class="muted">Any number of shell commands to run around each switch, in order. Use these for anything
+        distro-specific (hide the mouse, pause a service, change lighting). A command that fails or runs longer than
+        the timeout is logged and skipped &mdash; it never blocks the switch. Commands should be safe to run twice.
+        They receive <code>JOYSTICK_NOTIFY_PHASE</code> and <code>JOYSTICK_NOTIFY_MODE</code> in their environment.</p>
+        <template x-for="phase in phases" :key="phase.key">
+          <div style="margin-top:16px;">
+            <label x-text="phase.title"></label>
+            <p class="muted" style="margin-top:-8px;" x-text="phase.help"></p>
+            <template x-for="(cmd, index) in lists[phase.key]" :key="index">
+              <div class="component-row">
+                <input type="text" :name="'hook_' + phase.key" x-model="lists[phase.key][index]" placeholder="shell command">
+                <button type="button" class="secondary" @click="lists[phase.key].splice(index, 1)">Remove</button>
+              </div>
+            </template>
+            <button type="button" class="secondary" @click="lists[phase.key].push('')">+ Add Command</button>
+          </div>
+        </template>
+        <label for="hooks_timeout_s" style="margin-top:16px;">Per-command timeout (seconds)</label>
+        <input type="number" min="1" step="1" id="hooks_timeout_s" name="hooks_timeout_s" value="{{ config.hooks.timeout_s|int }}">
+      </div>
+
+      <script>
+        function hookLists(initial) {
+          return {
+            lists: initial,
+            phases: [
+              {key: 'prestart', title: 'Before couch mode starts', help: 'Runs before display, audio and launch are switched.'},
+              {key: 'poststart', title: 'After couch mode starts', help: 'Runs once couch mode is up and the launch command has fired.'},
+              {key: 'preexit', title: 'Before desk mode starts', help: 'Runs before the launched app is closed and the desk display is restored.'},
+              {key: 'postexit', title: 'After desk mode starts', help: 'Runs once desk mode is fully active.'},
+            ],
+          };
+        }
+      </script>
+
       <div class="card">
         <h2>Bypass Lock Screen on Connect</h2>
         <p class="muted" style="color:#e0b13c;">Security tradeoff, not a cosmetic setting: this dismisses an

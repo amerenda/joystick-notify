@@ -181,6 +181,25 @@ class ShortcutConfig:
 
 
 @dataclass
+class HooksConfig:
+    # N user-defined shell commands per lifecycle phase (see
+    # actions/hooks.py). The wizard deliberately exposes only these generic
+    # slots -- not feature toggles like "hide the mouse" -- because how to do
+    # any such thing differs per distro/desktop.
+    #   prestart:  before couch mode activates
+    #   poststart: after couch mode is active (and the launch command fired)
+    #   preexit:   before desk mode activates
+    #   postexit:  after desk mode is active
+    prestart: list[str] = field(default_factory=list)
+    poststart: list[str] = field(default_factory=list)
+    preexit: list[str] = field(default_factory=list)
+    postexit: list[str] = field(default_factory=list)
+    # Per-command wall-clock limit; a command that overruns is killed and
+    # the transition carries on.
+    timeout_s: float = 30.0
+
+
+@dataclass
 class WizardConfig:
     # Loopback-only by default — see plans/joystick-notify-v2.md, "Wizard
     # network exposure and auth" for why this must not default to a LAN
@@ -224,3 +243,4 @@ class JoystickNotifyConfig:
     shortcuts: ShortcutConfig = field(default_factory=ShortcutConfig)
     wizard: WizardConfig = field(default_factory=WizardConfig)
     shutdown: ShutdownConfig = field(default_factory=ShutdownConfig)
+    hooks: HooksConfig = field(default_factory=HooksConfig)

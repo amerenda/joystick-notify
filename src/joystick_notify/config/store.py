@@ -18,6 +18,7 @@ from .schema import (
     CecConfig,
     CustomCommand,
     DisplayConfig,
+    HooksConfig,
     IdleConfig,
     JoystickNotifyConfig,
     NotificationsConfig,
@@ -96,6 +97,19 @@ def _custom_commands(raw_list) -> list[CustomCommand]:
     return result
 
 
+def _hooks(raw_section, defaults: HooksConfig) -> HooksConfig:
+    """Like _section, but coerces the command lists so a hand-edited
+    `prestart = "foo"` (string, not list) can't crash the daemon."""
+    from ..actions.hooks import PHASES, clean_commands
+
+    if not isinstance(raw_section, dict):
+        return defaults
+    cfg = _section(HooksConfig, defaults, raw_section)
+    for phase in PHASES:
+        setattr(cfg, phase, clean_commands(getattr(cfg, phase)))
+    return cfg
+
+
 def _from_dict(raw: dict) -> JoystickNotifyConfig:
     defaults = JoystickNotifyConfig()
     return JoystickNotifyConfig(
@@ -114,4 +128,5 @@ def _from_dict(raw: dict) -> JoystickNotifyConfig:
         shortcuts=_section(ShortcutConfig, defaults.shortcuts, raw.get("shortcuts", {})),
         wizard=_section(WizardConfig, defaults.wizard, raw.get("wizard", {})),
         shutdown=_section(ShutdownConfig, defaults.shutdown, raw.get("shutdown", {})),
+        hooks=_hooks(raw.get("hooks", {}), defaults.hooks),
     )

@@ -71,6 +71,7 @@ package() {
   install -Dm0644 packaging/systemd/joystick-notify.service "$pkgdir/usr/lib/systemd/user/joystick-notify.service"
   install -Dm0644 packaging/systemd/joystick-notify-tray.service "$pkgdir/usr/lib/systemd/user/joystick-notify-tray.service"
   install -Dm0644 packaging/systemd/mouse-hider-restore.service "$pkgdir/usr/lib/systemd/user/mouse-hider-restore.service"
+  install -Dm0644 packaging/systemd/mouse-hider.service "$pkgdir/usr/lib/systemd/user/mouse-hider.service"
   install -Dm0755 tools/mouse-hider/mouse-hider "$pkgdir/usr/bin/mouse-hider"
 
   install -Dm0644 packaging/systemd-system/cec0-configure.service "$pkgdir/usr/lib/systemd/system/cec0-configure.service"
