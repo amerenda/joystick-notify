@@ -480,3 +480,38 @@ def test_wake_and_verify_checks_all_pending_targets_every_round_not_sequentially
         assert call_count[5] == 2
     finally:
         cec_control._run = orig_run
+
+
+def test_standby_and_verify_still_broadcasts_when_targets_empty(tmp_path, caplog):
+    # Regression for the 2026-09-26 incident: standby_targets=[] made the
+    # verify loop a no-op, so no standby was ever sent and nothing was logged.
+    from joystick_notify.actions import cec_control
+
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        return 0, ""
+
+    orig_run = cec_control._run
+    cec_control._run = fake_run
+    try:
+        health = Health(path=Path(tmp_path) / "health.json")
+        with caplog.at_level("WARNING"):
+            result = asyncio.run(
+                cec_control.standby_and_verify(None, [], health, phys_addr="3.2.0.0", attempts=3, delay_s=0)
+            )
+        assert result == []
+        assert any("--standby" in c and "15" in c for c in calls)
+        assert not any("--give-device-power-status" in c for c in calls)
+        assert "no standby_targets configured" in caplog.text
+    finally:
+        cec_control._run = orig_run
+
+
+def test_topology_timeout_exceeds_real_scan_duration():
+    # `cec-ctl -S` measured ~7.4s live on the Pulse-Eight dongle; the old 5s
+    # limit made every wizard scan fail with "no devices found".
+    from joystick_notify.devices import cec
+
+    assert cec.TOPOLOGY_TIMEOUT_S >= 10.0

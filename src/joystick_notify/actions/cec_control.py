@@ -251,6 +251,20 @@ async def standby_and_verify(
     """
     BROADCAST_ADDR = 15
     pending = list(dict.fromkeys(targets))  # de-duplicated, order preserved
+    if not pending:
+        # `targets` only drives *verification* -- the broadcast is addressed
+        # to everyone regardless. An empty list (e.g. cleared in the wizard
+        # by accident, or a failed topology scan) used to skip the whole
+        # loop below, so power_off_on_teardown=true silently sent no standby
+        # at all and logged nothing (confirmed live 2026-09-26: TV stayed on
+        # after couch -> desk). Still send it once; just nothing to confirm.
+        logger.warning(
+            "cec: no standby_targets configured -- sending standby broadcast anyway, but it can't be verified"
+        )
+        if phys_addr:
+            await set_stream_path_and_active_source(adapter, phys_addr)
+        await _run(["cec-ctl", *_adapter_args(adapter), "--to", str(BROADCAST_ADDR), "--standby"])
+        return []
     for attempt in range(1, attempts + 1):
         if not pending:
             break
