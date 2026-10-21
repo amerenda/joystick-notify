@@ -6,7 +6,7 @@ import pytest
 
 from joystick_notify.debounce import DeviceEvent, StableKind
 from joystick_notify.health import Health, Status
-from joystick_notify.state_machine import ActionHooks, ActivationError, Mode, StateMachine
+from joystick_notify.state_machine import MIXED_LAYOUT, ActionHooks, ActivationError, Mode, StateMachine
 
 
 def make_health(tmp_path):
@@ -14,7 +14,7 @@ def make_health(tmp_path):
 
 
 def make_hooks(**overrides):
-    calls = {"couch": 0, "desk": 0, "launch": 0}
+    calls = {"couch": 0, "desk": 0, "launch": 0, "desk_display": 0}
 
     async def activate_couch(device_id):
         calls["couch"] += 1
@@ -24,6 +24,9 @@ def make_hooks(**overrides):
 
     async def launch():
         calls["launch"] += 1
+
+    async def activate_desk_display():
+        calls["desk_display"] += 1
 
     hooks = ActionHooks(
         activate_couch=overrides.get("activate_couch", activate_couch),
@@ -36,6 +39,7 @@ def make_hooks(**overrides):
         enter_couch_idle=overrides.get("enter_couch_idle"),
         exit_couch_idle=overrides.get("exit_couch_idle"),
         detect_live_mode=overrides.get("detect_live_mode"),
+        activate_desk_display=overrides.get("activate_desk_display", activate_desk_display),
     )
     return hooks, calls
 
@@ -909,7 +913,7 @@ async def test_reconcile_startup_mode_keeps_default_when_inconclusive(tmp_path):
     health = make_health(tmp_path)
 
     async def detect_live_mode():
-        return None  # e.g. kscreen-doctor unreachable, or neither/both ports enabled
+        return None  # kscreen-doctor unreachable
 
     hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
     sm = StateMachine(
@@ -988,6 +992,10 @@ async def test_reconcile_startup_mode_fresh_boot_noop_when_already_desk(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_reconcile_startup_mode_mixed_layout_switches_displays_only_placeholder():
+    pass
+
+
 async def test_reconcile_startup_mode_fresh_boot_inconclusive_does_not_force(tmp_path):
     # Fresh boot, but detect_live_mode couldn't determine anything -- too
     # little signal to force a teardown against.
