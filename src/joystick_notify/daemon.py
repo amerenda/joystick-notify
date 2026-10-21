@@ -302,6 +302,9 @@ def build_hooks(
     async def detect_live_mode():
         return await display_actions.detect_active_mode(config.display)
 
+    async def activate_desk_display() -> None:
+        await display_actions.activate_desk(config.display, health)
+
     async def exit_couch_idle() -> None:
         # Wakes the TV back up and dismisses the screensaver -- the mirror
         # of enter_couch_idle(), fired on reconnect (see
@@ -353,6 +356,7 @@ def build_hooks(
         enter_couch_idle=enter_couch_idle,
         exit_couch_idle=exit_couch_idle,
         detect_live_mode=detect_live_mode,
+        activate_desk_display=activate_desk_display,
     )
 
 
