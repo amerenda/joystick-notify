@@ -992,10 +992,34 @@ async def test_reconcile_startup_mode_fresh_boot_noop_when_already_desk(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_reconcile_startup_mode_mixed_layout_switches_displays_only_placeholder():
-    pass
+@pytest.mark.parametrize("uptime_s", [5.0, 99999.0], ids=["fresh_boot", "restart"])
+async def test_reconcile_startup_mode_mixed_layout_switches_displays_only(tmp_path, uptime_s):
+    # 2026-10-21: after a reboot KWin enabled the TV next to the desk (new
+    # output identity) and the desk flickered; this used to be logged as
+    # "inconclusive" and left alone. Both-enabled is never a couch session,
+    # so the displays go to desk -- but only the displays: a full
+    # activate_desk would also exit the game.
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return MIXED_LAYOUT
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: uptime_s
+    )
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk_display"] == 1
+    assert calls["desk"] == 0
+    assert calls["couch"] == 0
+    assert health.get("state_machine").reason == "mode=desk"
+    await sm.aclose()
 
 
+@pytest.mark.asyncio
 async def test_reconcile_startup_mode_fresh_boot_inconclusive_does_not_force(tmp_path):
     # Fresh boot, but detect_live_mode couldn't determine anything -- too
     # little signal to force a teardown against.
