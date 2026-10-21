@@ -44,6 +44,11 @@ class Mode(str, Enum):
     COUCH = "couch"
 
 
+# detect_live_mode() result when kscreen-doctor answered but the layout is
+# neither mode: both configured outputs enabled, or neither.
+MIXED_LAYOUT = "mixed"
+
+
 class ActivationError(Exception):
     """Raised by an action hook when a mode activation fails in a way that
     should be visible (Health.failed) and cause a fallback to desk mode —
@@ -96,9 +101,13 @@ class ActionHooks:
     exit_couch_idle: Optional[Callable[[], Awaitable[None]]] = None
     # Startup-only: reads live display hardware state to tell reality apart
     # from self.mode's hardcoded DESK default (see
-    # StateMachine.reconcile_startup_mode). Returns None when the live
-    # state is inconclusive.
-    detect_live_mode: Optional[Callable[[], Awaitable[Optional["Mode"]]]] = None
+    # StateMachine.reconcile_startup_mode). Returns MIXED_LAYOUT when both
+    # or neither output is enabled, None when the live state can't be read.
+    detect_live_mode: Optional[Callable[[], Awaitable[Optional["Mode | str"]]]] = None
+    # Startup-only: switches just the displays to the desk layout, for a
+    # MIXED_LAYOUT. Unlike activate_desk it leaves the launched game,
+    # audio and CEC alone.
+    activate_desk_display: Optional[Callable[[], Awaitable[None]]] = None
     # Runs the user's [hooks] commands for one phase ("prestart",
     # "poststart", "preexit", "postexit") -- see actions/hooks.py. Must
     # never raise; _run_hooks() below guards against it anyway.
@@ -201,16 +210,36 @@ class StateMachine:
         `self._fresh_boot` (set at construction from `/proc/uptime`, same
         signal `activity_gate.py` already uses for controller-carryover)
         disambiguates the two.
+
+        A third situation applies to both: MIXED_LAYOUT, both outputs (or
+        neither) enabled. No couch session ever looks like that (couch
+        disables the desk), so it is never a session to preserve. Confirmed
+        live 2026-10-21: after a reboot KWin met the TV under a new output
+        identity (EDID now injected at boot), enabled it by default next to
+        the desk at 144 Hz, and the desk flickered; this used to log
+        "inconclusive" and leave it. Only the displays are switched -- the
+        game, audio and CEC are left alone.
         """
         if self._hooks.detect_live_mode is None:
             return
         detected = await self._hooks.detect_live_mode()
         if detected is None:
             logger.info(
-                "state_machine: startup reconciliation inconclusive (couldn't determine live display state), "
+                "state_machine: startup reconciliation inconclusive (couldn't read live display state), "
                 "keeping default mode=%s",
                 self.mode.value,
             )
+            return
+
+        if detected == MIXED_LAYOUT:
+            headline(
+                logger,
+                "state_machine: startup found both or neither output enabled (not a desk or couch layout), "
+                "switching displays to desk",
+            )
+            if self._hooks.activate_desk_display is not None:
+                await self._hooks.activate_desk_display()
+            self._health.ok("state_machine", f"mode={self.mode.value}")
             return
 
         if self._fresh_boot:
