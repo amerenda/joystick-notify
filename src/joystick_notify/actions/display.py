@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..config.schema import DisplayConfig
 from ..health import Health
-from ..state_machine import ActivationError, Mode
+from ..state_machine import MIXED_LAYOUT, ActivationError, Mode
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ async def _apply_and_verify(enable_port: str, mode: str, disable_port: str, *, m
     return False
 
 
-async def detect_active_mode(config: DisplayConfig) -> Mode | None:
+async def detect_active_mode(config: DisplayConfig) -> Mode | str | None:
     """Startup reconciliation helper (see
     state_machine.StateMachine.reconcile_startup_mode): reads live
     kscreen-doctor output to determine which of the two configured ports is
@@ -234,10 +234,9 @@ async def detect_active_mode(config: DisplayConfig) -> Mode | None:
     at its hardcoded DESK default while the TV was still plainly live and
     the desk monitor was black.
 
-    Returns None when live state is inconclusive (kscreen-doctor
-    unreachable, or the two ports don't disagree -- neither or both
-    reporting enabled) so the caller knows not to trust a guess rather than
-    picking one arbitrarily.
+    Returns MIXED_LAYOUT when both or neither port is enabled -- a layout
+    neither mode produces -- and None only when kscreen-doctor can't be
+    read, so the caller never acts on a guess.
     """
     kjson = await get_kscreen_json()
     if kjson is None:
@@ -248,7 +247,7 @@ async def detect_active_mode(config: DisplayConfig) -> Mode | None:
         return Mode.COUCH
     if desk_enabled and not couch_enabled:
         return Mode.DESK
-    return None
+    return MIXED_LAYOUT
 
 
 async def activate_desk(config: DisplayConfig, health: Health) -> None:

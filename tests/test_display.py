@@ -6,7 +6,7 @@ import pytest
 from joystick_notify.actions import display as display_module
 from joystick_notify.actions.display import connector_status, detect_active_mode, output_enabled, parse_outputs
 from joystick_notify.config.schema import DisplayConfig
-from joystick_notify.state_machine import Mode
+from joystick_notify.state_machine import MIXED_LAYOUT, Mode
 
 KSCREEN_JSON = {
     "outputs": [
@@ -78,7 +78,7 @@ async def test_detect_active_mode_none_when_kscreen_doctor_unreachable(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_detect_active_mode_none_when_neither_port_enabled(monkeypatch):
+async def test_detect_active_mode_mixed_when_neither_port_enabled(monkeypatch):
     both_disabled = {
         "outputs": [
             {"name": "HDMI-A-1", "enabled": False, "connected": True},
@@ -87,7 +87,21 @@ async def test_detect_active_mode_none_when_neither_port_enabled(monkeypatch):
     }
     monkeypatch.setattr(display_module, "get_kscreen_json", _fake_kscreen_json(both_disabled))
     config = DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-1")
-    assert await detect_active_mode(config) is None
+    assert await detect_active_mode(config) == MIXED_LAYOUT
+
+
+@pytest.mark.asyncio
+async def test_detect_active_mode_mixed_when_both_ports_enabled(monkeypatch):
+    # 2026-10-21: KWin enabled the TV next to the desk after a reboot.
+    both_enabled = {
+        "outputs": [
+            {"name": "HDMI-A-1", "enabled": True, "connected": True},
+            {"name": "HDMI-A-2", "enabled": True, "connected": True},
+        ]
+    }
+    monkeypatch.setattr(display_module, "get_kscreen_json", _fake_kscreen_json(both_enabled))
+    config = DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-1")
+    assert await detect_active_mode(config) == MIXED_LAYOUT
 
 
 def test_connector_status_connected(tmp_path):

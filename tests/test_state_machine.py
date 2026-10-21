@@ -6,7 +6,7 @@ import pytest
 
 from joystick_notify.debounce import DeviceEvent, StableKind
 from joystick_notify.health import Health, Status
-from joystick_notify.state_machine import ActionHooks, ActivationError, Mode, StateMachine
+from joystick_notify.state_machine import MIXED_LAYOUT, ActionHooks, ActivationError, Mode, StateMachine
 
 
 def make_health(tmp_path):
@@ -14,7 +14,7 @@ def make_health(tmp_path):
 
 
 def make_hooks(**overrides):
-    calls = {"couch": 0, "desk": 0, "launch": 0}
+    calls = {"couch": 0, "desk": 0, "launch": 0, "desk_display": 0}
 
     async def activate_couch(device_id):
         calls["couch"] += 1
@@ -24,6 +24,9 @@ def make_hooks(**overrides):
 
     async def launch():
         calls["launch"] += 1
+
+    async def activate_desk_display():
+        calls["desk_display"] += 1
 
     hooks = ActionHooks(
         activate_couch=overrides.get("activate_couch", activate_couch),
@@ -36,6 +39,7 @@ def make_hooks(**overrides):
         enter_couch_idle=overrides.get("enter_couch_idle"),
         exit_couch_idle=overrides.get("exit_couch_idle"),
         detect_live_mode=overrides.get("detect_live_mode"),
+        activate_desk_display=overrides.get("activate_desk_display", activate_desk_display),
     )
     return hooks, calls
 
@@ -909,7 +913,7 @@ async def test_reconcile_startup_mode_keeps_default_when_inconclusive(tmp_path):
     health = make_health(tmp_path)
 
     async def detect_live_mode():
-        return None  # e.g. kscreen-doctor unreachable, or neither/both ports enabled
+        return None  # kscreen-doctor unreachable
 
     hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
     sm = StateMachine(
@@ -984,6 +988,34 @@ async def test_reconcile_startup_mode_fresh_boot_noop_when_already_desk(tmp_path
     assert sm.mode == Mode.DESK
     assert calls["desk"] == 0
     assert calls["couch"] == 0
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uptime_s", [5.0, 99999.0], ids=["fresh_boot", "restart"])
+async def test_reconcile_startup_mode_mixed_layout_switches_displays_only(tmp_path, uptime_s):
+    # 2026-10-21: after a reboot KWin enabled the TV next to the desk (new
+    # output identity) and the desk flickered; this used to be logged as
+    # "inconclusive" and left alone. Both-enabled is never a couch session,
+    # so the displays go to desk -- but only the displays: a full
+    # activate_desk would also exit the game.
+    health = make_health(tmp_path)
+
+    async def detect_live_mode():
+        return MIXED_LAYOUT
+
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode)
+    sm = StateMachine(
+        hooks, health, disconnect_grace_s=0.05, poll_interval_s=0.01, system_uptime_s=lambda: uptime_s
+    )
+
+    await sm.reconcile_startup_mode()
+
+    assert sm.mode == Mode.DESK
+    assert calls["desk_display"] == 1
+    assert calls["desk"] == 0
+    assert calls["couch"] == 0
+    assert health.get("state_machine").reason == "mode=desk"
     await sm.aclose()
 
 
