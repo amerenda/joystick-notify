@@ -112,3 +112,44 @@ def test_session_env_fills_missing_wayland_display(tmp_path):
 def test_session_env_keeps_existing_values(tmp_path):
     env = mh.session_env({"XDG_RUNTIME_DIR": str(tmp_path), "WAYLAND_DISPLAY": "wayland-9"})
     assert env["WAYLAND_DISPLAY"] == "wayland-9"
+
+
+@pytest.mark.parametrize(
+    "ev_type,code,expected",
+    [
+        (mh.EV_REL, 0, True),  # REL_X
+        (mh.EV_ABS, 0, True),  # absolute pointer (Sunshine's virtual mouse)
+        (mh.EV_KEY, 0x110, True),  # BTN_LEFT
+        (mh.EV_KEY, 0x112, True),  # BTN_MIDDLE
+        (mh.EV_KEY, 28, False),  # KEY_ENTER: a CEC remote or keyboard is not pointer activity
+        (mh.EV_KEY, 0x130, False),  # BTN_SOUTH: gamepad button
+        (0x00, 0, False),  # EV_SYN
+    ],
+)
+def test_is_pointer_activity(ev_type, code, expected):
+    assert mh.is_pointer_activity(ev_type, code) is expected
+
+
+def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypatch):
+    import threading
+
+    kwin = FakeKWin()
+    monkeypatch.setattr(mh, "_run", kwin)
+    stop = threading.Event()
+    activity = iter([True])
+
+    def fake_wait(timeout):
+        if next(activity, None):
+            return True
+        stop.set()
+        return False
+
+    monkeypatch.setattr(mh, "wait_for_pointer_activity", fake_wait)
+    monkeypatch.setattr(stop, "wait", lambda timeout: stop.set() or True)
+    mh.run_loop(mh.Config(idle_seconds=15), stop)
+
+    durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
+    methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and len(c) > 3]
+    assert durations == ["1", "15"]  # hide now, then the real timeout
+    assert methods.index("loadEffect") < methods.index("reconfigureEffect") < methods.index("unloadEffect")
+    assert not kwin.loaded  # stopped: effect unloaded

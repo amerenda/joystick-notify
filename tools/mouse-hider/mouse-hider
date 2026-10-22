@@ -7,7 +7,13 @@ wizard's launch/teardown commands at `mouse-hider start` / `mouse-hider stop`.
 How it hides: KWin's built-in "hidecursor" effect (KWin 6.2+), loaded at
 runtime over D-Bus while the hider runs and unloaded when it stops. KWin
 itself hides the pointer after the idle timeout and shows it on the next
-pointer event, over every window. An earlier version swapped the cursor
+pointer event, over every window.
+
+Hide on start: the effect has no "hide now" call, so it is loaded with its
+shortest timeout (1s) and the pointer disappears right after start. The
+first real pointer event (read from evdev, read-only) switches it to
+idle_seconds. That switch has to wait for motion because the effect's
+reconfigure always shows the pointer; right after motion it's visible anyway. An earlier version swapped the cursor
 THEME instead; KWin reported the swap as live, but Wayland clients that set
 their own cursor surface (browsers, terminals, most apps) kept drawing a
 visible pointer, so the cursor never actually disappeared over windows.
@@ -32,6 +38,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -52,6 +59,11 @@ CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) /
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 PIDFILE = RUNTIME_DIR / "mouse-hider.pid"
 CHECK_S = 5.0
+HIDE_NOW_S = 1  # the effect's shortest timeout: 0 means never
+# evdev types/codes counted as pointer activity, the same events KWin's
+# effect treats as activity. Keyboard keys (a CEC remote) are not.
+EV_KEY, EV_REL, EV_ABS = 0x01, 0x02, 0x03
+BTN_MOUSE, BTN_JOYSTICK = 0x110, 0x120
 CMD_TIMEOUT_S = 8.0
 
 
@@ -117,14 +129,15 @@ def effect_loaded() -> bool | None:
     return out.strip().lower() == "true"
 
 
-def configure_effect(cfg: Config) -> None:
-    for key, value in (("InactivityDuration", str(cfg.inactivity_duration)), ("HideOnTyping", "false")):
+def configure_effect(cfg: Config, duration: int | None = None) -> None:
+    duration = cfg.inactivity_duration if duration is None else duration
+    for key, value in (("InactivityDuration", str(duration)), ("HideOnTyping", "false")):
         _run(["kwriteconfig6", "--file", "kwinrc", "--group", EFFECT_GROUP, "--key", key, value])
 
 
-def enable_hiding(cfg: Config) -> bool:
-    """Load the effect with the configured timeout and VERIFY it's loaded."""
-    configure_effect(cfg)
+def enable_hiding(cfg: Config, duration: int | None = None) -> bool:
+    """Load the effect with `duration` (default idle_seconds) and VERIFY it's loaded."""
+    configure_effect(cfg, duration)
     if effect_loaded():
         _effects("reconfigureEffect", EFFECT)
         return True
@@ -167,14 +180,72 @@ def log(msg: str) -> None:
     print(f"mouse-hider: {msg}", flush=True)
 
 
+def is_pointer_activity(ev_type: int, code: int) -> bool:
+    if ev_type in (EV_REL, EV_ABS):
+        return True
+    return ev_type == EV_KEY and BTN_MOUSE <= code < BTN_JOYSTICK
+
+
+def pointer_devices() -> list:
+    try:
+        import evdev
+    except ImportError:
+        return []
+    found = []
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        caps = dev.capabilities()
+        if evdev.ecodes.REL_X in caps.get(EV_REL, []) or BTN_MOUSE in caps.get(EV_KEY, []):
+            found.append(dev)
+        else:
+            dev.close()
+    return found
+
+
+def wait_for_pointer_activity(timeout: float) -> bool:
+    """True as soon as any pointer device reports activity within `timeout`."""
+    devices = pointer_devices()
+    deadline = time.monotonic() + timeout
+    try:
+        while devices and (left := deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select(devices, [], [], min(left, 0.5))
+            for dev in ready:
+                try:
+                    if any(is_pointer_activity(ev.type, ev.code) for ev in dev.read()):
+                        return True
+                except OSError:
+                    devices.remove(dev)  # unplugged
+        if not devices:
+            time.sleep(max(0.0, deadline - time.monotonic()))
+        return False
+    finally:
+        for dev in devices:
+            dev.close()
+
+
 def run_loop(cfg: Config, stop: threading.Event) -> None:
-    if enable_hiding(cfg):
-        log(f"KWin {EFFECT} effect loaded: pointer hides after {cfg.inactivity_duration}s idle")
+    # Hide on start: the shortest timeout first, idle_seconds after the first motion.
+    hide_now = enable_hiding(cfg, HIDE_NOW_S)
+    if hide_now:
+        log(f"KWin {EFFECT} effect loaded: pointer hides now, then after {cfg.inactivity_duration}s idle")
     else:
         log(f"FAILED to load KWin {EFFECT} effect, will retry")
     try:
-        while not stop.wait(CHECK_S):
+        while not stop.is_set():
+            if hide_now:
+                if wait_for_pointer_activity(CHECK_S) and not stop.is_set():
+                    hide_now = False
+                    configure_effect(cfg)
+                    _effects("reconfigureEffect", EFFECT)
+                    log(f"pointer activity: idle timeout now {cfg.inactivity_duration}s")
+                    continue
+            elif stop.wait(CHECK_S):
+                break
             if effect_loaded() is not True:
+                hide_now = False
                 ok = enable_hiding(cfg)
                 log(f"{EFFECT} effect was not loaded: " + ("loaded again" if ok else "FAILED to load, will retry"))
     finally:
