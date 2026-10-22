@@ -8,7 +8,9 @@ Hides the pointer after N seconds of inactivity and restores it on motion. Stand
     mouse-hider status
     mouse-hider run        # foreground (debugging)
 
-Config `~/.config/mouse-hider/config.toml` (all optional): `idle_seconds = 15`, `hide_theme = "invisible"`, `normal_theme = "breeze_cursors"`, `exclude_devices = []`. Flags `--idle`, `--hide-theme`, `--normal-theme` override it.
+How it hides: it loads KWin's built-in `hidecursor` effect (KWin 6.2+) at runtime while it runs, sets the effect's timeout in kwinrc `[Effect-hidecursor]`, and unloads the effect when it stops. KWin hides the pointer over every window and shows it on the next pointer event. The effect is never enabled in kwinrc `[Plugins]`, so nothing survives a crash, logout or reboot.
+
+Config `~/.config/mouse-hider/config.toml` (all optional): `idle_seconds = 15` (whole seconds, minimum 1), `normal_theme = "breeze_cursors"` (what `restore` puts back if the transparent `invisible` theme from the old theme-swapping version is still live). Flag `--idle` overrides it.
 
 Wizard (Lifecycle Hooks card, Launch tab) - the recommended, crash-proof wiring uses the shipped user unit, whose `ExecStopPost` restores the cursor however the hider ends (stop, crash, kill, logout) and which survives a daemon restart:
 
@@ -18,8 +20,6 @@ Wizard (Lifecycle Hooks card, Launch tab) - the recommended, crash-proof wiring 
 
 The last line is belt-and-braces and safe to run twice. Hooks never block a switch; a failing one is logged and shows as a `hooks` failure in daemon health. Plain `mouse-hider start` / `mouse-hider stop` also work as hook commands, but then the hider dies with the daemon's cgroup on a daemon restart.
 
-Needs the `invisible` theme (ansible-playbooks `roles/mouse-hide`), `plasma-apply-cursortheme`, `qdbus6`, python-evdev and `input` group membership.
-
-Limitation: clients that draw their own cursor (Steam's in-game overlay) ignore the theme.
+Needs KWin 6.2+ (the `hidecursor` effect), `qdbus6`, `kwriteconfig6` and `plasma-apply-cursortheme`.
 
 `mouse-hider-restore.service` (user unit, shipped by the package) runs `mouse-hider restore` at every login so a hidden cursor can never survive a reboot.

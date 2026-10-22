@@ -407,3 +407,42 @@ async def test_activate_couch_reports_cec_failed_when_wake_unconfirmed(tmp_path,
     status = health.get("cec")
     assert status.status == Status.FAILED
     assert "unconfirmed" in status.reason
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locked_at_entry", [True, False])
+async def test_exit_relocks_only_when_couch_started_from_a_locked_screen(tmp_path, monkeypatch, locked_at_entry):
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def fake_get_active():
+        return locked_at_entry
+
+    locks = []
+
+    async def fake_lock(health):
+        locks.append(True)
+        return True
+
+    for module in (daemon_module.display_actions, daemon_module.audio_actions):
+        monkeypatch.setattr(module, "activate_couch", _noop)
+        monkeypatch.setattr(module, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "get_active", fake_get_active)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "lock", fake_lock)
+
+    config = JoystickNotifyConfig()
+    config.screen_lock.enabled = True
+    config.shortcuts.exit_couch_enabled = False
+    config_store.save(config, tmp_path / "config.toml")
+    health = Health(path=Path(tmp_path) / "health.json")
+    hooks = build_hooks(config, health, ManualExitWatcher(lambda: None, health), tmp_path / "config.toml")
+
+    await hooks.activate_couch("device-1")
+    await hooks.activate_desk()
+    await hooks.activate_desk()  # a second exit must not lock again
+
+    assert locks == ([True] if locked_at_entry else [])

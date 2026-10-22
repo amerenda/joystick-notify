@@ -174,3 +174,41 @@ def test_activate_desk_noop_when_disabled(tmp_path, monkeypatch):
     cfg = ScreenLockConfig(enabled=False)
     asyncio.run(screen_lock.activate_desk(cfg, health, cookie=None))
     assert calls == []  # nothing run at all when disabled
+
+
+def test_lock_reports_ok_when_verified_locked(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        if cmd[-1] == "org.freedesktop.ScreenSaver.GetActive":
+            return 0, "true"
+        return 0, ""
+
+    monkeypatch.setattr(screen_lock, "_run", fake_run)
+    health = Health(path=Path(tmp_path) / "health.json")
+
+    assert asyncio.run(screen_lock.lock(health, verify_delay_s=0)) is True
+    assert calls[0][-1] == "org.freedesktop.ScreenSaver.Lock"
+    assert not any(cmd[:2] == ["loginctl", "lock-session"] for cmd in calls)
+    assert health.get("screen_lock").status == Status.OK
+
+
+def test_lock_falls_back_to_loginctl_then_fails_if_never_locked(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_run(cmd, timeout=5.0):
+        calls.append(cmd)
+        if cmd == ["loginctl"]:
+            return 0, "SESSION  UID USER SEAT  LEADER  CLASS   TTY  IDLE SINCE\n      2 1000 alex seat0 1101 user tty1 no -\n"
+        if cmd[-1] == "org.freedesktop.ScreenSaver.GetActive":
+            return 0, "false"
+        return 0, ""
+
+    monkeypatch.setattr(screen_lock, "_run", fake_run)
+    monkeypatch.setattr("os.getuid", lambda: 1000)
+    health = Health(path=Path(tmp_path) / "health.json")
+
+    assert asyncio.run(screen_lock.lock(health, verify_attempts=2, verify_delay_s=0)) is False
+    assert ["loginctl", "lock-session", "2"] in calls
+    assert health.get("screen_lock").status == Status.FAILED

@@ -181,6 +181,27 @@ async def restore_autolock(health: Health) -> None:
     health.ok("screen_lock", "autolock restored")
 
 
+async def lock(health: Health, *, verify_attempts: int = 3, verify_delay_s: float = 0.5) -> bool:
+    """Locks the session again -- for a couch session that started from a
+    locked screen, so leaving couch mode puts the desk back the way it was
+    found instead of leaving it unlocked. Verified via GetActive(), with
+    `loginctl lock-session` as the fallback if the ScreenSaver call alone
+    didn't take, mirroring unlock_and_disable_autolock's two signals.
+    """
+    await _run(["qdbus6", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.Lock"])
+    for attempt in range(1, verify_attempts + 1):
+        await asyncio.sleep(verify_delay_s)
+        if await get_active():
+            health.ok("screen_lock", "re-locked after couch session")
+            return True
+        if attempt == 1:
+            session = await _find_seat_session()
+            if session is not None:
+                await _run(["loginctl", "lock-session", session])
+    health.failed("screen_lock", "could not re-lock after couch session")
+    return False
+
+
 async def acquire_inhibit(app: str = "joystick-notify", reason: str = "active couch session") -> str | None:
     rc, out = await _run(
         ["qdbus6", "org.freedesktop.ScreenSaver", "/ScreenSaver", "org.freedesktop.ScreenSaver.Inhibit", app, reason]

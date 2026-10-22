@@ -124,6 +124,9 @@ class CouchSessionResources:
         self.cec_retry_task: asyncio.Task | None = None
         self.cec_wake_verify_task: asyncio.Task | None = None
         self.screen_lock_cookie: str | None = None
+        # The screen was locked when couch mode started: activate_desk()
+        # locks it again so exiting never leaves the desk unlocked.
+        self.relock_on_desk = False
         self.notifications_cookie: str | None = None
 
 
@@ -186,7 +189,9 @@ def build_hooks(
         # First, so nothing else that follows is hidden behind a lock
         # screen — display/CEC/audio/launch all still proceed regardless,
         # but the user should actually be able to see the result.
-        resources.screen_lock_cookie = await screen_lock_actions.activate_couch(config.screen_lock, health)
+        if config.screen_lock.enabled:
+            resources.relock_on_desk = await screen_lock_actions.get_active()
+        resources.screen_lock_cookie =await screen_lock_actions.activate_couch(config.screen_lock, health)
         resources.notifications_cookie = await notifications_actions.activate_couch(config.notifications, health)
         cec = _current_cec()
         if cec.enabled:
@@ -241,6 +246,9 @@ def build_hooks(
         await audio_actions.activate_desk(config.audio, health)
         await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
         resources.screen_lock_cookie = None
+        if resources.relock_on_desk:
+            resources.relock_on_desk = False
+            await screen_lock_actions.lock(health)
         await notifications_actions.activate_desk(config.notifications, health, resources.notifications_cookie)
         resources.notifications_cookie = None
         cec = _current_cec()
