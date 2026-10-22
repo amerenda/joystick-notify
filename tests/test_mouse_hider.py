@@ -70,6 +70,9 @@ def test_enable_hiding_configures_then_loads_and_verifies(monkeypatch):
     assert ["--key", "InactivityDuration", "10"] == writes[0][-3:]
     assert ["--key", "HideOnTyping", "false"] == writes[1][-3:]
     assert all("--group" in c and "Effect-hidecursor" in c for c in writes)
+    methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and len(c) > 3]
+    # loadEffect alone keeps KWin's cached kwinrc; reconfigureEffect reparses it.
+    assert methods.index("loadEffect") < methods.index("reconfigureEffect")
 
 
 def test_enable_hiding_reports_failure_when_kwin_refuses(monkeypatch):
@@ -149,7 +152,8 @@ def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypat
     mh.run_loop(mh.Config(idle_seconds=15), stop)
 
     durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
-    methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and len(c) > 3]
+    methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and c[2] == "/Effects"]
     assert durations == ["1", "15"]  # hide now, then the real timeout
-    assert methods.index("loadEffect") < methods.index("reconfigureEffect") < methods.index("unloadEffect")
+    assert methods == ["isEffectLoaded", "loadEffect", "reconfigureEffect", "isEffectLoaded",
+                       "reconfigureEffect", "isEffectLoaded", "unloadEffect", "isEffectLoaded"]
     assert not kwin.loaded  # stopped: effect unloaded

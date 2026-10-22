@@ -136,12 +136,15 @@ def configure_effect(cfg: Config, duration: int | None = None) -> None:
 
 
 def enable_hiding(cfg: Config, duration: int | None = None) -> bool:
-    """Load the effect with `duration` (default idle_seconds) and VERIFY it's loaded."""
+    """Load the effect with `duration` (default idle_seconds) and VERIFY it's loaded.
+
+    reconfigureEffect runs even right after loadEffect: only it makes KWin
+    reparse kwinrc, so a fresh load alone can keep a stale cached timeout.
+    """
     configure_effect(cfg, duration)
-    if effect_loaded():
-        _effects("reconfigureEffect", EFFECT)
-        return True
-    _effects("loadEffect", EFFECT)
+    if not effect_loaded():
+        _effects("loadEffect", EFFECT)
+    _effects("reconfigureEffect", EFFECT)
     return effect_loaded() is True
 
 
