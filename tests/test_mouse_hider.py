@@ -15,39 +15,37 @@ _loader.exec_module(mh)
 
 
 def args(**kw):
-    return argparse.Namespace(idle=kw.get("idle"), hide_theme=kw.get("hide_theme"), normal_theme=kw.get("normal_theme"))
+    return argparse.Namespace(idle=kw.get("idle"))
 
 
-def test_hides_only_after_idle_threshold():
-    t = mh.IdleTracker(15, now=100.0)
-    assert not t.should_hide(114.9)
-    assert t.should_hide(115.0)
+class FakeKWin:
+    """Answers the qdbus6/kwriteconfig6/plasma-apply-cursortheme calls."""
 
+    def __init__(self, loaded=False, theme="breeze_cursors", load_works=True):
+        self.loaded, self.theme, self.load_works = loaded, theme, load_works
+        self.calls = []
 
-def test_activity_resets_idle_timer():
-    t = mh.IdleTracker(15, now=0.0)
-    t.activity(10.0)
-    assert not t.should_hide(24.9)
-    assert t.should_hide(25.0)
-
-
-def test_activity_while_visible_needs_no_restore():
-    assert mh.IdleTracker(15, now=0.0).activity(1.0) is False
-
-
-def test_activity_while_hidden_requests_restore():
-    t = mh.IdleTracker(15, now=0.0)
-    t.hidden = True
-    assert t.activity(20.0) is True
-    assert not t.should_hide(100.0)  # already hidden: never re-hide
+    def __call__(self, cmd):
+        self.calls.append(cmd)
+        method = cmd[3].rsplit(".", 1)[-1] if cmd[0] == "qdbus6" and len(cmd) > 3 else None
+        if method == "isEffectLoaded":
+            return 0, "true" if self.loaded else "false"
+        if method == "loadEffect":
+            self.loaded = self.load_works
+        elif method == "unloadEffect":
+            self.loaded = False
+        elif method == "supportInformation":
+            return 0, f"Platform\nfoo\nCursor\n======\nthemeName: {self.theme}\n"
+        elif cmd[0] == "plasma-apply-cursortheme":
+            self.theme = cmd[1]
+        return 0, ""
 
 
 def test_config_defaults_and_file_and_cli_override(tmp_path):
-    missing = tmp_path / "nope.toml"
-    cfg = mh.load_config(args(), missing)
-    assert (cfg.idle_seconds, cfg.hide_theme, cfg.normal_theme) == (15.0, "invisible", "breeze_cursors")
+    cfg = mh.load_config(args(), tmp_path / "nope.toml")
+    assert (cfg.idle_seconds, cfg.normal_theme) == (15.0, "breeze_cursors")
     f = tmp_path / "c.toml"
-    f.write_text('idle_seconds = 30\nnormal_theme = "Breeze_Light"\nbogus = 1\n')
+    f.write_text('idle_seconds = 30\nnormal_theme = "Breeze_Light"\nhide_theme = "old"\nbogus = 1\n')
     cfg = mh.load_config(args(), f)
     assert (cfg.idle_seconds, cfg.normal_theme) == (30.0, "Breeze_Light")
     assert mh.load_config(args(idle=5), f).idle_seconds == 5.0
@@ -56,23 +54,54 @@ def test_config_defaults_and_file_and_cli_override(tmp_path):
 def test_config_rejects_bad_values(tmp_path):
     with pytest.raises(SystemExit):
         mh.load_config(args(idle=0), tmp_path / "x.toml")
-    with pytest.raises(SystemExit):
-        mh.load_config(args(hide_theme="a", normal_theme="a"), tmp_path / "x.toml")
 
 
-def test_set_theme_forces_via_nudge_when_live_state_is_stale(monkeypatch):
-    live = ["invisible", "invisible", "breeze_cursors"]  # before, after plain apply, after nudge+apply
-    calls = []
-    monkeypatch.setattr(mh, "live_theme", lambda: live.pop(0))
-    monkeypatch.setattr(mh, "_run", lambda cmd: calls.append(cmd) or (0, ""))
-    assert mh.set_theme("breeze_cursors", "invisible") is True
-    assert [c[-1] for c in calls] == ["breeze_cursors", "invisible", "breeze_cursors"]
+def test_inactivity_duration_is_whole_seconds_and_never_zero():
+    assert mh.Config(idle_seconds=15).inactivity_duration == 15
+    assert mh.Config(idle_seconds=0.2).inactivity_duration == 1  # 0 would mean never hide
 
 
-def test_set_theme_noop_when_already_live(monkeypatch):
-    monkeypatch.setattr(mh, "live_theme", lambda: "breeze_cursors")
-    monkeypatch.setattr(mh, "_run", lambda cmd: pytest.fail("should not run"))
-    assert mh.set_theme("breeze_cursors", "invisible") is True
+def test_enable_hiding_configures_then_loads_and_verifies(monkeypatch):
+    kwin = FakeKWin()
+    monkeypatch.setattr(mh, "_run", kwin)
+    assert mh.enable_hiding(mh.Config(idle_seconds=10)) is True
+    assert kwin.loaded
+    writes = [c for c in kwin.calls if c[0] == "kwriteconfig6"]
+    assert ["--key", "InactivityDuration", "10"] == writes[0][-3:]
+    assert ["--key", "HideOnTyping", "false"] == writes[1][-3:]
+    assert all("--group" in c and "Effect-hidecursor" in c for c in writes)
+    methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and len(c) > 3]
+    # loadEffect alone keeps KWin's cached kwinrc; reconfigureEffect reparses it.
+    assert methods.index("loadEffect") < methods.index("reconfigureEffect")
+
+
+def test_enable_hiding_reports_failure_when_kwin_refuses(monkeypatch):
+    monkeypatch.setattr(mh, "_run", FakeKWin(load_works=False))
+    assert mh.enable_hiding(mh.Config()) is False
+
+
+def test_enable_hiding_reconfigures_an_already_loaded_effect(monkeypatch):
+    kwin = FakeKWin(loaded=True)
+    monkeypatch.setattr(mh, "_run", kwin)
+    assert mh.enable_hiding(mh.Config()) is True
+    methods = [c[3] for c in kwin.calls if c[0] == "qdbus6"]
+    assert "org.kde.kwin.Effects.reconfigureEffect" in methods
+    assert "org.kde.kwin.Effects.loadEffect" not in methods
+
+
+def test_make_visible_unloads_effect_and_cures_leftover_hidden_theme(monkeypatch):
+    kwin = FakeKWin(loaded=True, theme="invisible")
+    monkeypatch.setattr(mh, "_run", kwin)
+    assert mh.make_visible(mh.Config()) is True
+    assert not kwin.loaded
+    assert kwin.theme == "breeze_cursors"
+
+
+def test_make_visible_leaves_a_normal_theme_alone(monkeypatch):
+    kwin = FakeKWin(theme="Breeze_Light")
+    monkeypatch.setattr(mh, "_run", kwin)
+    assert mh.make_visible(mh.Config()) is True
+    assert not any(c[0] == "plasma-apply-cursortheme" for c in kwin.calls)
 
 
 def test_session_env_fills_missing_wayland_display(tmp_path):
@@ -86,3 +115,45 @@ def test_session_env_fills_missing_wayland_display(tmp_path):
 def test_session_env_keeps_existing_values(tmp_path):
     env = mh.session_env({"XDG_RUNTIME_DIR": str(tmp_path), "WAYLAND_DISPLAY": "wayland-9"})
     assert env["WAYLAND_DISPLAY"] == "wayland-9"
+
+
+@pytest.mark.parametrize(
+    "ev_type,code,expected",
+    [
+        (mh.EV_REL, 0, True),  # REL_X
+        (mh.EV_ABS, 0, True),  # absolute pointer (Sunshine's virtual mouse)
+        (mh.EV_KEY, 0x110, True),  # BTN_LEFT
+        (mh.EV_KEY, 0x112, True),  # BTN_MIDDLE
+        (mh.EV_KEY, 28, False),  # KEY_ENTER: a CEC remote or keyboard is not pointer activity
+        (mh.EV_KEY, 0x130, False),  # BTN_SOUTH: gamepad button
+        (0x00, 0, False),  # EV_SYN
+    ],
+)
+def test_is_pointer_activity(ev_type, code, expected):
+    assert mh.is_pointer_activity(ev_type, code) is expected
+
+
+def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypatch):
+    import threading
+
+    kwin = FakeKWin()
+    monkeypatch.setattr(mh, "_run", kwin)
+    stop = threading.Event()
+    activity = iter([True])
+
+    def fake_wait(timeout):
+        if next(activity, None):
+            return True
+        stop.set()
+        return False
+
+    monkeypatch.setattr(mh, "wait_for_pointer_activity", fake_wait)
+    monkeypatch.setattr(stop, "wait", lambda timeout: stop.set() or True)
+    mh.run_loop(mh.Config(idle_seconds=15), stop)
+
+    durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
+    methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and c[2] == "/Effects"]
+    assert durations == ["1", "15"]  # hide now, then the real timeout
+    assert methods == ["isEffectLoaded", "loadEffect", "reconfigureEffect", "isEffectLoaded",
+                       "reconfigureEffect", "isEffectLoaded", "unloadEffect", "isEffectLoaded"]
+    assert not kwin.loaded  # stopped: effect unloaded
