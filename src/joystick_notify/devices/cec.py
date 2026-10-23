@@ -24,12 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import logging
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..health import Health, default_state_dir
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -115,21 +118,34 @@ def _selfheal_state_path() -> Path:
     return default_state_dir() / "cec-selfheal-last"
 
 
-async def ensure_adapter(health: Health, *, cooldown_s: float = 120.0) -> str | None:
-    """Synchronous self-heal, ported from v1's cec_ensure_adapter_best_effort
-    (lib/cec-control.sh): if /dev/cec* is missing right when a wake/standby
-    is needed, reattach via the root-owned cec-watchdog.sh
-    (packaging/bin/cec-watchdog.sh, triggered here through the sudoers
-    NOPASSWD carve-out) rather than waiting for its periodic timer.
-    Rate-limited via a state file mtime so repeated controller reconnects
-    (or a human actively debugging the adapter) don't each trigger a fresh
-    reattach/USB-bus-reset escalation.
+async def _systemd_tracks(adapter: str) -> bool:
+    """True when systemd's device unit for `adapter` (e.g. dev-cec0.device)
+    is active. /dev/cec0 can exist while its unit is inactive: a udev
+    "change" event that doesn't re-apply TAG+="systemd" deactivates it, and
+    cec0-configure.service (BindsTo=dev-cec0.device) stops with it, leaving
+    the adapter at phys f.f.f.f with no logical address (2026-10-23: the TV
+    woke from Image View On but ignored our Set Stream Path, so the Shield
+    kept the input). Any failure to ask systemd counts as tracked, so a box
+    without systemctl never triggers a pointless self-heal.
     """
-    adapters = discover_adapters()
-    if adapters:
-        health.ok("cec", "adapter present")
-        return adapters[0]
+    unit = f"dev-{Path(adapter).name}.device"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl", "is-active", "--quiet", unit,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return True
+    return await proc.wait() == 0
 
+
+async def _run_watchdog(health: Health, cooldown_s: float, reason: str) -> bool:
+    """Runs the root-owned cec-watchdog.sh, rate-limited via a state file
+    mtime so repeated controller reconnects (or a human actively debugging
+    the adapter) don't each trigger a fresh reattach/USB-bus-reset
+    escalation. Returns False (with the "cec" component marked failed) when
+    on cooldown or the script couldn't be run.
+    """
     state_path = _selfheal_state_path()
     now = time.time()
     try:
@@ -137,8 +153,8 @@ async def ensure_adapter(health: Health, *, cooldown_s: float = 120.0) -> str | 
     except OSError:
         last = 0.0
     if now - last < cooldown_s:
-        health.failed("cec", "adapter missing, self-heal on cooldown", f"retry after {cooldown_s - (now - last):.0f}s")
-        return None
+        health.failed("cec", f"{reason}, self-heal on cooldown", f"retry after {cooldown_s - (now - last):.0f}s")
+        return False
 
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.touch()
@@ -154,6 +170,35 @@ async def ensure_adapter(health: Health, *, cooldown_s: float = 120.0) -> str | 
         await proc.wait()
     except FileNotFoundError:
         health.failed("cec", "self-heal failed", "cec-watchdog.sh not found")
+        return False
+    return True
+
+
+async def ensure_adapter(health: Health, *, cooldown_s: float = 120.0) -> str | None:
+    """Synchronous self-heal, ported from v1's cec_ensure_adapter_best_effort
+    (lib/cec-control.sh): if /dev/cec* is missing right when a wake/standby
+    is needed, or present but untracked by systemd (see _systemd_tracks),
+    run the root-owned cec-watchdog.sh (packaging/bin/cec-watchdog.sh,
+    triggered here through the sudoers NOPASSWD carve-out) rather than
+    waiting for its periodic timer.
+    """
+    adapters = discover_adapters()
+    if adapters:
+        if await _systemd_tracks(adapters[0]):
+            health.ok("cec", "adapter present")
+            return adapters[0]
+        logger.warning("cec: %s present but its systemd device unit is inactive (adapter unconfigured), self-healing", adapters[0])
+        if not await _run_watchdog(health, cooldown_s, "adapter unconfigured"):
+            return adapters[0]
+        for _ in range(5):
+            if await _systemd_tracks(adapters[0]):
+                health.ok("cec", "adapter reconfigured via self-heal")
+                return adapters[0]
+            await asyncio.sleep(1)
+        health.failed("cec", "self-heal failed, adapter still unconfigured")
+        return adapters[0]
+
+    if not await _run_watchdog(health, cooldown_s, "adapter missing"):
         return None
 
     for _ in range(5):
