@@ -152,9 +152,11 @@ def build_hooks(
         return config_store.load(config_path).cec
 
     async def _cec_adapter(cec: CecConfig) -> str | None:
-        if cec.adapter:
-            return cec.adapter
-        return await cec_discover.ensure_adapter(health)
+        # Self-heal runs even with an explicit adapter configured: skipping
+        # it there meant an unconfigured /dev/cec0 (2026-10-23) was never
+        # repaired on the one install that sets cec.adapter.
+        found = await cec_discover.ensure_adapter(health)
+        return cec.adapter or found
 
     def _spawn_wake_verify(adapter: str, cec: CecConfig) -> None:
         # Runs concurrently with display/audio/launch, never blocking them
