@@ -7,4 +7,13 @@
 # Generalized from v1: no connector name is hardcoded here — jn-cec0-configure
 # (src/joystick_notify/cec0_configure.py) reads the couch output port from
 # config.toml at runtime instead.
-SUBSYSTEM=="cec", KERNEL=="cec0", ACTION=="add", TAG+="systemd", ENV{SYSTEMD_WANTS}="cec0-configure.service"
+#
+# No ACTION=="add" match: the systemd tag must be re-applied on every event,
+# or a "change" event drops it, systemd deactivates dev-cec0.device, and
+# cec0-configure.service (BindsTo=dev-cec0.device) stops for good. Arch's
+# udev-reload pacman hook runs `udevadm trigger -c change` after any package
+# touching udev rules (including this one), which left the adapter
+# unconfigured (phys f.f.f.f, no logical address) on 2026-10-23. systemd only
+# acts on SYSTEMD_WANTS when the device unit becomes active, so this does not
+# restart the service on every change event.
+SUBSYSTEM=="cec", KERNEL=="cec0", TAG+="systemd", ENV{SYSTEMD_WANTS}="cec0-configure.service"

@@ -12,6 +12,16 @@ from joystick_notify.manual_exit import ManualExitWatcher
 from joystick_notify.wizard.auth import check_bearer_token, load_api_token
 
 
+@pytest.fixture(autouse=True)
+def _no_real_cec_selfheal(monkeypatch):
+    # _cec_adapter() always runs ensure_adapter(), which shells out to
+    # systemctl and sudo; keep these tests off the host's real CEC state.
+    async def fake_ensure_adapter(health, **kwargs):
+        return "/dev/cec0"
+
+    monkeypatch.setattr("joystick_notify.daemon.cec_discover.ensure_adapter", fake_ensure_adapter)
+
+
 def test_main_install_api_token_persists_hash_and_exits(tmp_path, monkeypatch):
     # Out-of-band provisioning path used by ansible's sunshine role --
     # must exit immediately without starting the full daemon.

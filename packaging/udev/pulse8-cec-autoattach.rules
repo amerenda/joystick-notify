@@ -8,7 +8,9 @@
 # CONFIG_USB_DEFAULT_PERSIST enables it by default.
 SUBSYSTEM=="usb", ATTR{manufacturer}=="Pulse-Eight", ATTR{product}=="CEC Adapter", ATTR{power/persist}="0"
 
-SUBSYSTEM=="tty", ACTION=="add", ATTRS{manufacturer}=="Pulse-Eight", ATTRS{product}=="CEC Adapter", TAG+="systemd", ENV{SYSTEMD_WANTS}="pulse8-cec-attach@$devnode.service"
+# No ACTION=="add" match, same reason as cec-configure-autostart.rules: a
+# "change" event must not strip the systemd tag from the tty device.
+SUBSYSTEM=="tty", ATTRS{manufacturer}=="Pulse-Eight", ATTRS{product}=="CEC Adapter", TAG+="systemd", ENV{SYSTEMD_WANTS}="pulse8-cec-attach@$devnode.service"
 
 # Force device to be reconfigured when reset after suspend, otherwise the ttyACM link is
 # lost but udev will not notice. A usb_dev_uevent with DEVNUM=000 is a sign that the
