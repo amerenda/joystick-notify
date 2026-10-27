@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""8bitdo-probe: what is the 8BitDo dongle doing, and who is listening to it?
+
+Read-only. Never grabs, binds, unbinds or writes anything.
+
+The Ultimate 2 Wireless dongle presents differently per controller mode
+(chosen at power-on: nothing = XInput, hold B = DInput, hold Y = Switch):
+
+    310b  XInput   kernel xpad -> a gamepad evdev node; no paddles/L4/R4
+    6012  DInput   vendor HID, hidraw only: Steam (and SDL's HIDAPI driver)
+                   read it directly and can bind paddles/L4/R4
+    6013  seen as the "Ultimate 2" vendor HID too; NOT known to SDL or to
+          Steam's driver table, and joystick-notify's own notes record it
+          enumerating while the controller was powered off
+    3109  "8BitDo IDLE": dongle without a controller link
+
+For the dongle this prints the USB product id, what the kernel bound it to
+(xpad, hid-generic, hid-nintendo), whether it has an evdev gamepad node,
+which processes hold its hidraw node open (is Steam listening?), and, with
+--listen N, counts the reports that arrive in N seconds: press buttons, move
+sticks, then press a paddle. No reports with the controller on means no link.
+
+    8bitdo-probe              # state only
+    8bitdo-probe --listen 15  # and count reports while you press things
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import os
+import select
+import sys
+import time
+from pathlib import Path
+
+VENDOR = "2dc8"
+MODES = {
+    "310b": "XInput (kernel xpad): works as a gamepad everywhere, no paddles/L4/R4 for Steam",
+    "6012": "DInput (hold B at power-on): hidraw only, Steam/SDL read it and can bind paddles/L4/R4",
+    "6013": "vendor HID ('Ultimate 2'): hidraw only; not a product id SDL knows. Dongle without a link, or a mode Steam does not drive",
+    "3109": "8BitDo IDLE: dongle without a controller link",
+    "3106": "older dongle (XInput)",
+}
+
+
+def usb_devices(sys_usb: str = "/sys/bus/usb/devices") -> list[dict]:
+    found = []
+    for d in sorted(glob.glob(os.path.join(sys_usb, "*"))):
+        vid = _read(os.path.join(d, "idVendor"))
+        if vid != VENDOR:
+            continue
+        found.append({
+            "path": d,
+            "product_id": _read(os.path.join(d, "idProduct")),
+            "name": _read(os.path.join(d, "product")),
+            "serial": _read(os.path.join(d, "serial")),
+        })
+    return found
+
+
+def _read(path: str) -> str:
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def interfaces(usb_path: str) -> list[dict]:
+    """Per interface: bound driver, hidraw nodes, evdev nodes."""
+    out = []
+    for iface in sorted(glob.glob(usb_path + ":*")):
+        driver = os.path.basename(os.path.realpath(os.path.join(iface, "driver"))) if os.path.exists(os.path.join(iface, "driver")) else "(none)"
+        hidraw = ["/dev/" + os.path.basename(p) for p in glob.glob(iface + "/*/hidraw/hidraw*")]
+        events = ["/dev/input/" + os.path.basename(p) for p in glob.glob(iface + "/*/input/input*/event*")]
+        out.append({"interface": os.path.basename(iface), "driver": driver, "hidraw": sorted(hidraw), "events": sorted(events)})
+    return out
+
+
+def holders(node: str, proc: str = "/proc") -> list[str]:
+    """Processes with `node` open (needs to be the same user, or root)."""
+    found = []
+    for fd_dir in glob.glob(os.path.join(proc, "[0-9]*", "fd")):
+        try:
+            for fd in os.listdir(fd_dir):
+                if os.path.realpath(os.path.join(fd_dir, fd)) == node:
+                    pid = fd_dir.split(os.sep)[-2]
+                    found.append(f"{_read(os.path.join(proc, pid, 'comm')) or '?'}[{pid}]")
+                    break
+        except OSError:
+            continue
+    return sorted(set(found))
+
+
+def verdict(product_id: str, ifaces: list[dict]) -> str:
+    has_gamepad = any(i["events"] for i in ifaces)
+    has_hidraw = any(i["hidraw"] for i in ifaces)
+    base = MODES.get(product_id, "unknown product id")
+    if has_gamepad:
+        return f"{base}. Gamepad evdev node present."
+    if has_hidraw:
+        return f"{base}. No evdev gamepad node: only an application that opens hidraw (Steam) can use it."
+    return f"{base}. No input node and no hidraw node."
+
+
+def listen(node: str, seconds: float) -> tuple[int, set[int]]:
+    """Count reports on `node`; returns (reports, distinct first bytes)."""
+    try:
+        fd = os.open(node, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as e:
+        print(f"  cannot open {node}: {e}")
+        return 0, set()
+    count, ids = 0, set()
+    end = time.monotonic() + seconds
+    try:
+        while (left := end - time.monotonic()) > 0:
+            ready, _, _ = select.select([fd], [], [], min(left, 0.5))
+            if ready:
+                try:
+                    data = os.read(fd, 256)
+                except BlockingIOError:
+                    continue
+                except OSError:  # the dongle went away
+                    break
+                if not data:
+                    break
+                count += 1
+                ids.add(data[0])
+    finally:
+        os.close(fd)
+    return count, ids
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--listen", type=float, default=0, metavar="SECONDS", help="count hidraw reports for this long")
+    args = ap.parse_args()
+
+    devices = usb_devices()
+    if not devices:
+        print(f"no {VENDOR} (8BitDo) USB device present: dongle unplugged?")
+        return 1
+    for dev in devices:
+        pid = dev["product_id"]
+        ifaces = interfaces(dev["path"])
+        print(f"{VENDOR}:{pid} {dev['name']!r} serial={dev['serial'] or '-'}")
+        for i in ifaces:
+            print(f"  {i['interface']}: driver={i['driver']} hidraw={i['hidraw'] or '-'} evdev={i['events'] or '-'}")
+            for node in i["hidraw"]:
+                print(f"    {node} held open by: {', '.join(holders(node)) or 'nobody (Steam is not listening)'}")
+        print(f"  => {verdict(pid, ifaces)}")
+        if args.listen:
+            for node in [n for i in ifaces for n in i["hidraw"]]:
+                print(f"  listening {args.listen:g}s on {node}: press buttons, sticks, then a paddle ...", flush=True)
+                n, ids = listen(node, args.listen)
+                print(f"    {n} reports, report ids {sorted(hex(x) for x in ids) or '-'}"
+                      + ("" if n else "  <- silent: no controller link, or the controller is asleep"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
