@@ -171,3 +171,56 @@ def test_activate_desk_succeeds_when_configured_sink_exists(tmp_path, monkeypatc
     health = Health(path=Path(tmp_path) / "health.json")
     asyncio.run(audio.activate_desk(cfg, health))
     assert health.get("audio").status == Status.OK
+
+
+# --- Stable couch sink: match the port description when the name moved (issue #56) ---
+# 2026-10-27: the saved 'hdmi-stereo-extra3' was gone after a reboot and the
+# fallback picked the FIRST hdmi sink ('extra2'), which can be another port.
+
+TWO_HDMI_SINKS = """\
+Sink #0
+	Name: alsa_output.pci-0000_03_00.1.hdmi-stereo-extra2
+	Description: Navi 48 HDMI/DP Audio Digital Stereo (HDMI 3)
+Sink #1
+	Name: alsa_output.pci-0000_03_00.1.hdmi-stereo-extra4
+	Description: Navi 48 HDMI/DP Audio Digital Stereo (HDMI 4)
+"""
+
+
+def test_resolve_couch_sink_matches_the_port_description_when_the_name_moved(monkeypatch, caplog):
+    import logging
+
+    _patch_pactl(monkeypatch, {
+        ("list", "sinks"): (0, TWO_HDMI_SINKS),
+        ("list", "short", "sinks"): (0, "0\talsa_output.pci-0000_03_00.1.hdmi-stereo-extra2\tmod\ts16le\tIDLE\n"),
+    })
+    cfg = AudioConfig(
+        couch_sink="alsa_output.pci-0000_03_00.1.hdmi-stereo-extra3",
+        couch_sink_description="Navi 48 HDMI/DP Audio Digital Stereo (HDMI 4)",
+    )
+    with caplog.at_level(logging.INFO, logger="joystick_notify.actions.audio"):
+        result = asyncio.run(audio.resolve_couch_sink(cfg))
+    # Not the first HDMI sink: the one for the configured port.
+    assert result == "alsa_output.pci-0000_03_00.1.hdmi-stereo-extra4"
+    assert [r.levelname for r in caplog.records if "matched by port description" in r.message] == ["INFO"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_resolve_couch_sink_without_a_stored_description_still_falls_back(monkeypatch):
+    _patch_pactl(monkeypatch, {
+        ("list", "sinks"): (0, TWO_HDMI_SINKS),
+        ("list", "short", "sinks"): (0, "0\talsa_output.pci-0000_03_00.1.hdmi-stereo-extra2\tmod\ts16le\tIDLE\n"),
+    })
+    cfg = AudioConfig(couch_sink="alsa_output.pci-0000_03_00.1.hdmi-stereo-extra3")
+    assert asyncio.run(audio.resolve_couch_sink(cfg)) == "alsa_output.pci-0000_03_00.1.hdmi-stereo-extra2"
+
+
+def test_resolve_sink_by_description_refuses_an_ambiguous_match():
+    sinks = parse_sinks(TWO_HDMI_SINKS.replace("(HDMI 4)", "(HDMI 3)"))
+    assert resolve_sink_by_description(sinks, "Navi 48 HDMI/DP Audio Digital Stereo (HDMI 3)") is None
+
+
+def test_description_of_returns_the_sink_description():
+    sinks = parse_sinks(TWO_HDMI_SINKS)
+    assert audio.description_of(sinks, "alsa_output.pci-0000_03_00.1.hdmi-stereo-extra4").endswith("(HDMI 4)")
+    assert audio.description_of(sinks, "missing") == ""

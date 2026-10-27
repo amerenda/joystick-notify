@@ -70,10 +70,17 @@ def resolve_sink_by_alsa(sinks: list[SinkInfo], want_card: str, want_dev: str) -
 
 
 def resolve_sink_by_description(sinks: list[SinkInfo], want_desc: str) -> str | None:
+    """The sink whose description is `want_desc`, only when exactly one is:
+    two sinks sharing a description cannot say which port was meant."""
+    matches = [s.name for s in sinks if s.description == want_desc]
+    return matches[0] if len(matches) == 1 else None
+
+
+def description_of(sinks: list[SinkInfo], name: str) -> str:
     for s in sinks:
-        if s.description == want_desc:
-            return s.name
-    return None
+        if s.name == name:
+            return s.description
+    return ""
 
 
 def resolve_hdmi_sink(short_sinks_output: str) -> str | None:
@@ -123,6 +130,15 @@ async def resolve_couch_sink(config: AudioConfig) -> str | None:
         sinks = await list_sinks()
         if any(s.name == config.couch_sink for s in sinks):
             return config.couch_sink
+        if config.couch_sink_description:
+            by_description = resolve_sink_by_description(sinks, config.couch_sink_description)
+            if by_description:
+                # Expected after most boots: the name moved, the port did not.
+                logger.info(
+                    "audio: couch_sink %r is gone, using %r (matched by port description %r)",
+                    config.couch_sink, by_description, config.couch_sink_description,
+                )
+                return by_description
         logger.warning(
             "audio: configured couch_sink %r no longer exists (PipeWire sink names can change across "
             "HDMI reconnects), falling back to dynamic resolution",

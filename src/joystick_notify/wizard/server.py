@@ -429,7 +429,12 @@ async def configure_post(request: Request):
         )
 
     config.audio.desk_sink = str(form.get("desk_sink", ""))
+    previous_couch_sink = config.audio.couch_sink
     config.audio.couch_sink = str(form.get("couch_sink", ""))
+    if config.audio.couch_sink != previous_couch_sink or not config.audio.couch_sink_description:
+        config.audio.couch_sink_description = audio_actions.description_of(
+            await audio_actions.list_sinks(), config.audio.couch_sink
+        )
 
     def _float(field: str, default: float, *, min_value: float) -> float:
         raw = str(form.get(field, "")).strip()

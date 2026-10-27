@@ -41,6 +41,12 @@ def display_problems(display: "DisplayConfig") -> list[str]:
 class AudioConfig:
     desk_sink: str = ""
     couch_sink: str = ""
+    # PipeWire's HDMI sink NAME carries a numeric suffix that moves between
+    # boots and reconnects ("...hdmi-stereo-extra3"), the DESCRIPTION names
+    # the physical port ("... Digital Stereo (HDMI 3)") and does not. The
+    # wizard records it next to couch_sink; resolution falls back to it when
+    # the saved name is gone (issue #56).
+    couch_sink_description: str = ""
 
 
 @dataclass
