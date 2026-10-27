@@ -15,6 +15,7 @@ import shutil
 import signal
 import sys
 from pathlib import Path
+from typing import Callable
 
 from .actions import audio as audio_actions
 from .actions import cec_control
@@ -28,7 +29,7 @@ from .config import store as config_store
 from .config.schema import CecConfig, JoystickNotifyConfig
 from .debounce import Debouncer, DeviceEvent
 from .devices import cec as cec_discover
-from .devices.detect import HidrawLivenessWatcher, UdevWatcher, device_present
+from .devices.detect import HidrawLivenessWatcher, UdevWatcher, owner_present
 from .event_log import headline
 from .health import HEARTBEAT_INTERVAL_SECONDS, Health
 from .manual_exit import ManualExitWatcher
@@ -135,6 +136,7 @@ def build_hooks(
     health: Health,
     manual_exit_watcher: ManualExitWatcher,
     config_path: Path | None = None,
+    owner_is_live: Callable[[str], bool] | None = None,
 ) -> ActionHooks:
     resources = CouchSessionResources(manual_exit_watcher)
 
@@ -279,7 +281,7 @@ def build_hooks(
         return bool(config.on_connect.run)
 
     async def is_owner_present(device_id: str) -> bool:
-        return device_present(device_id)
+        return owner_present(device_id, owner_is_live)
 
     async def on_reconnect_while_couch(device_id: str) -> None:
         # Restarts the manual-exit shortcut watcher against whatever evdev
@@ -389,7 +391,12 @@ async def run_daemon(config_path: Path | None = None) -> None:
         hold_seconds=config.shortcuts.exit_couch_hold_seconds,
     )
 
-    hooks = build_hooks(config, health, manual_exit_watcher, config_path)
+    # liveness_watcher is created below, once the debouncer it feeds exists;
+    # the lambda is only called from the owner-watch loop, after that.
+    hooks = build_hooks(
+        config, health, manual_exit_watcher, config_path,
+        owner_is_live=lambda device_id: liveness_watcher.is_live(device_id),
+    )
     sm = StateMachine(
         hooks,
         health,
