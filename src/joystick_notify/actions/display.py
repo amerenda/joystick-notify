@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..config.schema import DisplayConfig
+from ..config.schema import DisplayConfig, display_problems
 from ..health import Health
 from ..state_machine import MIXED_LAYOUT, ActivationError, Mode
 
@@ -83,6 +83,44 @@ def parse_outputs(kscreen_json: dict) -> list[OutputInfo]:
             )
         )
     return outputs
+
+
+def output_modes(kscreen_json: dict, port: str) -> list[str] | None:
+    """Mode labels kscreen-doctor lists for `port`, None if no such output."""
+    for o in kscreen_json.get("outputs", []):
+        if o.get("name") == port:
+            return [_mode_label(m) for m in o.get("modes", [])]
+    return None
+
+
+def mode_problem(kscreen_json: dict | None, port: str, mode: str) -> str | None:
+    """Why `mode` cannot be set on `port`, or None when it can (or when it
+    cannot be known: no kscreen data, a disconnected output that lists no
+    modes). Issue #52: an unlisted mode failed five times with "Output mode
+    ... not found" and left the session on the wrong monitor."""
+    if not (kscreen_json and port and mode):
+        return None
+    modes = output_modes(kscreen_json, port)
+    if not modes:
+        return None
+    if mode not in modes:
+        return f"{port} does not list {mode} (it offers {', '.join(modes[:6])}{', ...' if len(modes) > 6 else ''})"
+    return None
+
+
+def layout_summary(kscreen_json: dict | None) -> str:
+    """One line of what kscreen-doctor says is actually enabled right now:
+    names AND ids, because a forced-EDID connector re-enumerates and its id
+    moves between calls (issue #53)."""
+    if kscreen_json is None:
+        return "kscreen-doctor -j unavailable"
+    parts = []
+    for o in kscreen_json.get("outputs", []):
+        state = "enabled" if o.get("enabled") else "disabled"
+        if not o.get("connected", True):
+            state += ", disconnected"
+        parts.append(f"{o.get('name', '?')} id={o.get('id', '?')} {state}")
+    return "; ".join(parts) or "no outputs"
 
 
 def output_enabled(kscreen_json: dict, port: str) -> bool:
@@ -202,6 +240,17 @@ async def trigger_connector_rescan(port: str, sysfs_root: Path | str = "/sys/cla
 
 
 async def _apply_and_verify(enable_port: str, mode: str, disable_port: str, *, max_attempts: int, retry_delay_s: float) -> bool:
+    ok, _layout = await _apply_and_verify_detail(enable_port, mode, disable_port, max_attempts=max_attempts, retry_delay_s=retry_delay_s)
+    return ok
+
+
+async def _apply_and_verify_detail(
+    enable_port: str, mode: str, disable_port: str, *, max_attempts: int, retry_delay_s: float
+) -> tuple[bool, str]:
+    """Returns (switched, live layout). The layout is what kscreen-doctor
+    reports after the LAST attempt, so a caller that gives up can say what
+    state the session was actually left in."""
+    layout = "no attempt made"
     for attempt in range(1, max_attempts + 1):
         await asyncio.sleep(0.5)  # let GPU/driver settle before display changes (AMD RDNA3 workaround, carried from v1)
         rc, out = await _run(
@@ -215,13 +264,26 @@ async def _apply_and_verify(enable_port: str, mode: str, disable_port: str, *, m
             ]
         )
         kjson = await get_kscreen_json()
+        layout = layout_summary(kjson)
         if rc == 0 and kjson is not None and output_enabled(kjson, enable_port):
             logger.info("display: %s active (attempt %d/%d)", enable_port, attempt, max_attempts)
-            return True
-        logger.warning("display: switch to %s did not take (attempt %d/%d, rc=%d): %s", enable_port, attempt, max_attempts, rc, out)
+            return True, layout
+        problem = mode_problem(kjson, enable_port, mode)
+        logger.warning(
+            "display: switch to %s did not take (attempt %d/%d, rc=%d): %s | live layout: %s%s",
+            enable_port, attempt, max_attempts, rc, out.strip(), layout, f" | {problem}" if problem else "",
+        )
+        if problem:
+            # The same command will fail the same way: stop retrying it.
+            return False, layout
+        if kjson is not None and output_modes(kjson, enable_port) is None:
+            # The output is not on the bus right now (a re-enumerating
+            # forced-EDID connector): re-running the identical command
+            # cannot work until it is back.
+            await trigger_connector_rescan(enable_port)
         if attempt < max_attempts:
             await asyncio.sleep(retry_delay_s)
-    return False
+    return False, layout
 
 
 async def detect_active_mode(config: DisplayConfig) -> Mode | str | None:
@@ -251,11 +313,15 @@ async def detect_active_mode(config: DisplayConfig) -> Mode | str | None:
 
 
 async def activate_desk(config: DisplayConfig, health: Health) -> None:
-    ok = await _apply_and_verify(config.desk_port, config.desk_mode, config.couch_port, max_attempts=5, retry_delay_s=1.0)
+    problems = display_problems(config)
+    if problems:
+        health.failed("display", f"display config invalid: {problems[0]}")
+        return
+    ok, layout = await _apply_and_verify_detail(config.desk_port, config.desk_mode, config.couch_port, max_attempts=5, retry_delay_s=1.0)
     if ok:
         health.ok("display", f"desk output {config.desk_port} active")
     else:
-        health.failed("display", f"failed to switch to desk output {config.desk_port}")
+        health.failed("display", f"failed to switch to desk output {config.desk_port}", f"live layout: {layout}")
 
 
 async def activate_couch(config: DisplayConfig, health: Health) -> None:
@@ -264,6 +330,9 @@ async def activate_couch(config: DisplayConfig, health: Health) -> None:
     than leaving the system half-switched, matching v1's explicit
     "Returning to desk mode" behavior in display-control.sh.
     """
+    problems = display_problems(config)
+    if problems:
+        raise ActivationError("display", f"display config invalid: {problems[0]}")
     logger.info("display: waiting 5s for receiver to respond after CEC wake...")
     await asyncio.sleep(5)
     await trigger_connector_rescan(config.couch_port)
@@ -288,8 +357,8 @@ async def activate_couch(config: DisplayConfig, health: Health) -> None:
             "TV/receiver may not be responding to CEC or presenting EDID",
         )
 
-    ok = await _apply_and_verify(config.couch_port, config.couch_mode, config.desk_port, max_attempts=5, retry_delay_s=1.0)
+    ok, layout = await _apply_and_verify_detail(config.couch_port, config.couch_mode, config.desk_port, max_attempts=5, retry_delay_s=1.0)
     if not ok:
-        raise ActivationError("display", f"kscreen-doctor failed to switch to couch output {config.couch_port}")
+        raise ActivationError("display", f"kscreen-doctor failed to switch to couch output {config.couch_port}", f"live layout: {layout}")
 
     health.ok("display", f"couch output {config.couch_port} active")

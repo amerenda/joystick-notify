@@ -26,7 +26,7 @@ from .actions import notifications as notifications_actions
 from .actions import screen_lock as screen_lock_actions
 from .activity_gate import ActivityGate
 from .config import store as config_store
-from .config.schema import CecConfig, JoystickNotifyConfig
+from .config.schema import CecConfig, JoystickNotifyConfig, display_problems
 from .debounce import Debouncer, DeviceEvent
 from .devices import cec as cec_discover
 from .devices.detect import HidrawLivenessWatcher, UdevWatcher, owner_present
@@ -70,6 +70,11 @@ def check_startup_health(config: JoystickNotifyConfig, health: Health) -> bool:
         # not degraded, not failed. See plans/joystick-notify-v2.md's CEC
         # detection strategy section.
         health.ok("cec", "CEC disabled in config")
+
+    # Visible in health and --doctor, but not a reason to refuse to start
+    # (ExecStartPre runs --doctor): desk mode and device watching still work.
+    if (problems := display_problems(config.display)):
+        health.failed("display", f"display config invalid: {problems[0]}")
 
     if not config.configured:
         health.degraded("wizard", "not yet configured — open the wizard to finish setup")
