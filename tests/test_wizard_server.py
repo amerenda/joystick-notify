@@ -1585,3 +1585,41 @@ def test_configure_saves_and_renders_hooks(client):
     assert 'x-data="hookLists(' not in resp.text
     assert "mouse-hider start" in resp.text and "mouse-hider stop" in resp.text
     assert "it\\u0027s couch" in resp.text
+
+
+def test_configure_post_rejects_identical_couch_and_desk_ports(client, monkeypatch):
+    from joystick_notify.actions import display as display_actions
+
+    async def no_kscreen():
+        return None
+
+    monkeypatch.setattr(display_actions, "get_kscreen_json", no_kscreen)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure", headers=auth_headers,
+        data={"desk_port": "HDMI-A-2", "couch_port": "HDMI-A-2", "desk_sink": "", "couch_sink": ""},
+    )
+    assert resp.status_code == 400 and "HDMI-A-2" in resp.text
+
+    from joystick_notify.config import store as config_store
+
+    assert config_store.load().display.couch_port == ""  # nothing was saved
+
+
+def test_configure_post_rejects_a_couch_mode_the_output_does_not_list(client, monkeypatch):
+    from joystick_notify.actions import display as display_actions
+
+    async def kscreen():
+        return {"outputs": [{"name": "HDMI-A-1", "enabled": True, "connected": True, "modes": [{"id": "1", "name": "1920x1080@60"}]}]}
+
+    monkeypatch.setattr(display_actions, "get_kscreen_json", kscreen)
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure", headers=auth_headers,
+        data={"desk_port": "HDMI-A-2", "couch_port": "HDMI-A-1", "couch_mode": "3840x2160@60", "desk_sink": "", "couch_sink": ""},
+    )
+    assert resp.status_code == 400 and "3840x2160@60" in resp.text

@@ -23,6 +23,20 @@ class DisplayConfig:
     couch_mode: str = ""
 
 
+def display_problems(display: "DisplayConfig") -> list[str]:
+    """Why this display section cannot work, in words for the wizard. Empty
+    ports are fine ("not configured yet"); two identical ports are not:
+    couch activation then targets the desk monitor and disables nothing
+    (issue #52)."""
+    problems = []
+    if display.couch_port and display.couch_port == display.desk_port:
+        problems.append(
+            f"couch and desk are both set to {display.couch_port}: pick the TV's output for couch mode "
+            "and the monitor's for desk mode"
+        )
+    return problems
+
+
 @dataclass
 class AudioConfig:
     desk_sink: str = ""

@@ -227,3 +227,139 @@ def test_restore_dpms_off_excludes_outputs_that_were_already_on(monkeypatch):
     assert off_cmd[:3] == ["kscreen-doctor", "--dpms", "off"]
     assert "--dpms-excluded" in off_cmd and "HDMI-A-1" in off_cmd
     assert "HDMI-A-2" not in off_cmd  # the one we WANT set off is not excluded
+
+
+# --- Bad display config and blind retries (issues #52, #53) ---
+
+from joystick_notify.actions.display import layout_summary, mode_problem, output_modes
+from joystick_notify.config.schema import display_problems
+from joystick_notify.health import Health
+from joystick_notify.state_machine import ActivationError
+
+TV_AND_MONITOR = {
+    "outputs": [
+        {"id": 2, "name": "HDMI-A-1", "enabled": False, "connected": True,
+         "modes": [{"id": "10", "name": "3840x2160@60"}, {"id": "11", "name": "1920x1080@60"}]},
+        {"id": 1, "name": "HDMI-A-2", "enabled": True, "connected": True,
+         "modes": [{"id": "2", "name": "2560x1440@144"}]},
+    ]
+}
+
+
+def test_display_problems_rejects_identical_couch_and_desk_ports():
+    problems = display_problems(DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-2"))
+    assert len(problems) == 1 and "HDMI-A-2" in problems[0]
+
+
+def test_display_problems_accepts_distinct_and_unconfigured_ports():
+    assert display_problems(DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-1")) == []
+    assert display_problems(DisplayConfig()) == []
+
+
+def test_output_modes_lists_labels_and_none_for_unknown_output():
+    assert output_modes(TV_AND_MONITOR, "HDMI-A-1") == ["3840x2160@60", "1920x1080@60"]
+    assert output_modes(TV_AND_MONITOR, "DP-1") is None
+
+
+def test_mode_problem_flags_a_mode_the_output_does_not_list():
+    # The 2026-10-27 case: the desk monitor was asked for the TV's 4K mode.
+    msg = mode_problem(TV_AND_MONITOR, "HDMI-A-2", "3840x2160@60")
+    assert msg and "HDMI-A-2" in msg and "3840x2160@60" in msg and "2560x1440@144" in msg
+
+
+def test_mode_problem_none_when_listed_or_unknowable():
+    assert mode_problem(TV_AND_MONITOR, "HDMI-A-1", "3840x2160@60") is None
+    assert mode_problem(None, "HDMI-A-1", "3840x2160@60") is None
+    assert mode_problem(TV_AND_MONITOR, "DP-1", "3840x2160@60") is None  # not on the bus: cannot tell
+    assert mode_problem(TV_AND_MONITOR, "HDMI-A-1", "") is None
+
+
+def test_layout_summary_names_ids_and_state():
+    assert layout_summary(TV_AND_MONITOR) == "HDMI-A-1 id=2 disabled; HDMI-A-2 id=1 enabled"
+    assert layout_summary(None) == "kscreen-doctor -j unavailable"
+
+
+@pytest.fixture
+def fast_display(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(display_module.asyncio, "sleep", no_sleep)
+    rescans = []
+
+    async def rescan(port, sysfs_root="/sys/class/drm"):
+        rescans.append(port)
+
+    monkeypatch.setattr(display_module, "trigger_connector_rescan", rescan)
+    return rescans
+
+
+def _scripted_kscreen(monkeypatch, snapshots):
+    """_run returns rc=0 every time; get_kscreen_json walks `snapshots`."""
+    calls = []
+
+    async def fake_run(cmd, timeout=0):
+        calls.append(cmd)
+        return 0, "Output 1 set mode"
+
+    state = {"i": 0}
+
+    async def fake_json():
+        snap = snapshots[min(state["i"], len(snapshots) - 1)]
+        state["i"] += 1
+        return snap
+
+    monkeypatch.setattr(display_module, "_run", fake_run)
+    monkeypatch.setattr(display_module, "get_kscreen_json", fake_json)
+    return calls
+
+
+async def test_apply_stops_retrying_a_mode_the_output_does_not_list(monkeypatch, fast_display, caplog):
+    tv_on = {"outputs": [dict(TV_AND_MONITOR["outputs"][0], enabled=True), dict(TV_AND_MONITOR["outputs"][1], enabled=False)]}
+    calls = _scripted_kscreen(monkeypatch, [tv_on])
+    ok, layout = await display_module._apply_and_verify_detail("HDMI-A-2", "3840x2160@60", "HDMI-A-1", max_attempts=5, retry_delay_s=0)
+    assert ok is False
+    assert len(calls) == 1  # not 5 identical commands
+    assert "HDMI-A-1 id=2 enabled" in layout
+    assert any("does not list 3840x2160@60" in r.message for r in caplog.records)
+
+
+async def test_apply_failure_logs_the_live_layout(monkeypatch, fast_display, caplog):
+    _scripted_kscreen(monkeypatch, [TV_AND_MONITOR])
+    await display_module._apply_and_verify_detail("HDMI-A-1", "3840x2160@60", "HDMI-A-2", max_attempts=2, retry_delay_s=0)
+    warnings = [r.message for r in caplog.records if "did not take" in r.message]
+    assert len(warnings) == 2 and all("live layout: HDMI-A-1 id=2 disabled; HDMI-A-2 id=1 enabled" in w for w in warnings)
+
+
+async def test_apply_rescans_when_the_output_left_the_bus_between_attempts(monkeypatch, fast_display):
+    gone = {"outputs": [TV_AND_MONITOR["outputs"][1]]}
+    _scripted_kscreen(monkeypatch, [gone, TV_AND_MONITOR])
+    await display_module._apply_and_verify_detail("HDMI-A-1", "3840x2160@60", "HDMI-A-2", max_attempts=2, retry_delay_s=0)
+    assert fast_display == ["HDMI-A-1"]
+
+
+async def test_apply_succeeds_once_the_output_is_enabled(monkeypatch, fast_display):
+    enabled = {"outputs": [dict(TV_AND_MONITOR["outputs"][0], enabled=True), dict(TV_AND_MONITOR["outputs"][1], enabled=False)]}
+    _scripted_kscreen(monkeypatch, [TV_AND_MONITOR, enabled])
+    ok, layout = await display_module._apply_and_verify_detail("HDMI-A-1", "3840x2160@60", "HDMI-A-2", max_attempts=3, retry_delay_s=0)
+    assert ok is True and layout == "HDMI-A-1 id=2 enabled; HDMI-A-2 id=1 disabled"
+
+
+async def test_activate_desk_reports_live_layout_when_it_fails(monkeypatch, fast_display):
+    _scripted_kscreen(monkeypatch, [TV_AND_MONITOR])
+    health = Health()
+    # desk output never becomes enabled in the scripted layout
+    await display_module.activate_desk(DisplayConfig(desk_port="HDMI-A-1", couch_port="HDMI-A-2", desk_mode="1920x1080@60", couch_mode="2560x1440@144"), health)
+    status = health.get("display")
+    assert status.status.value == "failed" and "live layout" in status.detail
+
+
+async def test_activate_couch_and_desk_refuse_identical_ports(monkeypatch, fast_display):
+    calls = _scripted_kscreen(monkeypatch, [TV_AND_MONITOR])
+    cfg = DisplayConfig(desk_port="HDMI-A-2", couch_port="HDMI-A-2", desk_mode="2560x1440@144", couch_mode="2560x1440@144")
+    health = Health()
+    await display_module.activate_desk(cfg, health)
+    assert health.get("display").status.value == "failed" and calls == []
+    with pytest.raises(ActivationError):
+        await display_module.activate_couch(cfg, health)
+    assert calls == []

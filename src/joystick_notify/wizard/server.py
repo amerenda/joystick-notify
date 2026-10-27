@@ -8,6 +8,7 @@ auth" section.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -27,7 +28,7 @@ from ..actions import launchers
 from ..actions import notifications as notifications_actions
 from ..actions import screen_lock as screen_lock_actions
 from ..config import store as config_store
-from ..config.schema import CustomCommand
+from ..config.schema import CustomCommand, display_problems
 from ..devices import cec as cec_discover
 from ..health import Health, read_snapshot
 from . import auth as auth_module
@@ -413,6 +414,19 @@ async def configure_post(request: Request):
     config.display.couch_port = str(form.get("couch_port", ""))
     config.display.desk_mode = str(form.get("desk_mode", ""))
     config.display.couch_mode = str(form.get("couch_mode", ""))
+
+    # Refuse to save a display section that cannot work (issue #52) rather
+    # than letting couch mode fail silently on a bad layout later.
+    problems = display_problems(config.display)
+    kscreen_json = await display_actions.get_kscreen_json()
+    for port, mode in ((config.display.couch_port, config.display.couch_mode), (config.display.desk_port, config.display.desk_mode)):
+        if (problem := display_actions.mode_problem(kscreen_json, port, mode)):
+            problems.append(problem)
+    if problems:
+        items = "".join(f"<li>{html.escape(p)}</li>" for p in problems)
+        return HTMLResponse(
+            f"<p>Not saved:</p><ul>{items}</ul><p><a href=\"/\">Back</a></p>", status_code=400
+        )
 
     config.audio.desk_sink = str(form.get("desk_sink", ""))
     config.audio.couch_sink = str(form.get("couch_sink", ""))
