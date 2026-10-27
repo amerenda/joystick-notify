@@ -28,10 +28,23 @@ Safety properties (the whole point of this script):
     over from the old theme-swapping version; it works whether or not the
     hider runs.
 
+Opt-in (grab_controllers = true): controller input must not reveal the pointer. A gamepad dongle also exposes
+keyboard/mouse evdev nodes (the Steam Controller Puck's "lizard mode", an
+8BitDo dongle's HID mouse) and KWin shows the pointer on any pointer event from
+any device, so pressing d-pad-up on the controller brought it back. While the
+hider runs it takes an exclusive grab (EVIOCGRAB) on those nodes, so KWin never
+sees them: only vendor-matched keyboard/mouse nodes without gamepad buttons,
+never the gamepad node a game reads. Off by default because it also takes the
+controller's lizard-mode desktop control away while Steam is not running. The kernel drops a grab when the hider's
+fd closes, so stop, crash or kill releases the controller too.
+
 Config: ~/.config/mouse-hider/config.toml (all keys optional)
     idle_seconds = 15
     normal_theme = "breeze_cursors"   # what `restore` puts back if a hidden theme is live
-CLI flag --idle overrides the file.
+    grab_controllers = false          # opt in: keep controller keyboard/mouse nodes away from KWin
+    controller_vendors = ["28de", "2dc8"]   # Valve, 8BitDo
+CLI flag --idle overrides the file. `mouse-hider probe [seconds]` prints which
+device produces pointer-class events, to find what reveals the pointer.
 """
 from __future__ import annotations
 
@@ -51,6 +64,8 @@ from pathlib import Path
 DEFAULTS = {
     "idle_seconds": 15.0,
     "normal_theme": "breeze_cursors",
+    "grab_controllers": False,
+    "controller_vendors": ["28de", "2dc8"],
 }
 EFFECT = "hidecursor"
 EFFECT_GROUP = "Effect-hidecursor"
@@ -64,6 +79,7 @@ HIDE_NOW_S = 1  # the effect's shortest timeout: 0 means never
 # effect treats as activity. Keyboard keys (a CEC remote) are not.
 EV_KEY, EV_REL, EV_ABS = 0x01, 0x02, 0x03
 BTN_MOUSE, BTN_JOYSTICK = 0x110, 0x120
+BTN_GAMEPAD = 0x130  # BTN_SOUTH: only gamepad nodes have it
 CMD_TIMEOUT_S = 8.0
 
 
@@ -71,6 +87,8 @@ CMD_TIMEOUT_S = 8.0
 class Config:
     idle_seconds: float = 15.0
     normal_theme: str = "breeze_cursors"
+    grab_controllers: bool = False
+    controller_vendors: tuple[int, ...] = (0x28DE, 0x2DC8)
 
     @property
     def inactivity_duration(self) -> int:
@@ -85,7 +103,12 @@ def load_config(args: argparse.Namespace, path: Path = CONFIG_PATH) -> Config:
             raw.update({k: v for k, v in tomllib.load(f).items() if k in DEFAULTS})
     if getattr(args, "idle", None) is not None:
         raw["idle_seconds"] = args.idle
-    cfg = Config(idle_seconds=float(raw["idle_seconds"]), normal_theme=str(raw["normal_theme"]))
+    cfg = Config(
+        idle_seconds=float(raw["idle_seconds"]),
+        normal_theme=str(raw["normal_theme"]),
+        grab_controllers=bool(raw["grab_controllers"]),
+        controller_vendors=tuple(int(str(v), 16) for v in raw["controller_vendors"]),
+    )
     if cfg.idle_seconds <= 0:
         raise SystemExit("idle_seconds must be > 0")
     return cfg
@@ -189,7 +212,27 @@ def is_pointer_activity(ev_type: int, code: int) -> bool:
     return ev_type == EV_KEY and BTN_MOUSE <= code < BTN_JOYSTICK
 
 
-def pointer_devices() -> list:
+def is_controller_input_node(vendor: int, caps: dict, vendors: tuple[int, ...]) -> bool:
+    """A keyboard/mouse node of a gamepad dongle, not the gamepad itself.
+
+    Vendor-matched, and without gamepad buttons: the node a game or Steam
+    reads must stay untouched.
+    """
+    if vendor not in vendors:
+        return False
+    keys = caps.get(EV_KEY, [])
+    if BTN_GAMEPAD in keys:
+        return False
+    return EV_REL in caps or BTN_MOUSE in keys or bool(keys)
+
+
+def is_pointer_device(caps: dict) -> bool:
+    import evdev
+
+    return evdev.ecodes.REL_X in caps.get(EV_REL, []) or BTN_MOUSE in caps.get(EV_KEY, [])
+
+
+def open_devices() -> list:
     try:
         import evdev
     except ImportError:
@@ -197,33 +240,99 @@ def pointer_devices() -> list:
     found = []
     for path in evdev.list_devices():
         try:
-            dev = evdev.InputDevice(path)
+            found.append(evdev.InputDevice(path))
         except OSError:
             continue
+    return found
+
+
+def pointer_devices(cfg: Config | None = None) -> list:
+    """Devices whose events can move the pointer, minus the controllers we keep away from KWin."""
+    found = []
+    for dev in open_devices():
         caps = dev.capabilities()
-        if evdev.ecodes.REL_X in caps.get(EV_REL, []) or BTN_MOUSE in caps.get(EV_KEY, []):
+        if cfg and cfg.grab_controllers and is_controller_input_node(dev.info.vendor, caps, cfg.controller_vendors):
+            dev.close()
+        elif is_pointer_device(caps):
             found.append(dev)
         else:
             dev.close()
     return found
 
 
-def wait_for_pointer_activity(timeout: float) -> bool:
-    """True as soon as any pointer device reports activity within `timeout`."""
-    devices = pointer_devices()
+class ControllerGrabs:
+    """Exclusive grabs on controller keyboard/mouse nodes, kept in sync with hot-plug."""
+
+    def __init__(self, cfg: Config, opener=None) -> None:
+        self.cfg = cfg
+        self._opener = opener or (lambda: open_devices())
+        self.grabbed: dict[str, object] = {}  # path -> device
+
+    def sync(self) -> list[str]:
+        """Grab new matching nodes, drop grabs on vanished ones. Returns log lines."""
+        notes = []
+        if not self.cfg.grab_controllers:
+            return notes
+        seen = set()
+        for dev in self._opener():
+            seen.add(dev.path)
+            if dev.path in self.grabbed:
+                dev.close()
+                continue
+            if not is_controller_input_node(dev.info.vendor, dev.capabilities(), self.cfg.controller_vendors):
+                dev.close()
+                continue
+            try:
+                dev.grab()
+            except OSError as e:
+                notes.append(f"could not grab {dev.path} ({dev.name}): {e}")
+                dev.close()
+                continue
+            self.grabbed[dev.path] = dev
+            notes.append(f"grabbed {dev.path} ({dev.name}): controller input stays away from KWin")
+        for path in [p for p in self.grabbed if p not in seen]:
+            self._release(path)
+            notes.append(f"{path} is gone")
+        return notes
+
+    def _release(self, path: str) -> None:
+        dev = self.grabbed.pop(path, None)
+        if dev is None:
+            return
+        try:
+            dev.ungrab()
+        except OSError:
+            pass
+        dev.close()
+
+    def release_all(self) -> None:
+        for path in list(self.grabbed):
+            self._release(path)
+
+
+def describe_event(dev, ev) -> str:
+    import evdev
+
+    return f"{dev.path} {dev.name!r} {evdev.ecodes.EV.get(ev.type)} {evdev.ecodes.bytype.get(ev.type, {}).get(ev.code, ev.code)}"
+
+
+def wait_for_pointer_activity(timeout: float, cfg: Config | None = None) -> str | None:
+    """Describe the first pointer event any device reports within `timeout`, else None."""
+    devices = pointer_devices(cfg)
     deadline = time.monotonic() + timeout
     try:
         while devices and (left := deadline - time.monotonic()) > 0:
             ready, _, _ = select.select(devices, [], [], min(left, 0.5))
             for dev in ready:
                 try:
-                    if any(is_pointer_activity(ev.type, ev.code) for ev in dev.read()):
-                        return True
+                    for ev in dev.read():
+                        if is_pointer_activity(ev.type, ev.code):
+                            return describe_event(dev, ev)
                 except OSError:
                     devices.remove(dev)  # unplugged
         if not devices:
             time.sleep(max(0.0, deadline - time.monotonic()))
-        return False
+        return None
     finally:
         for dev in devices:
             dev.close()
@@ -231,6 +340,9 @@ def wait_for_pointer_activity(timeout: float) -> bool:
 
 def run_loop(cfg: Config, stop: threading.Event) -> None:
     # Hide on start: the shortest timeout first, idle_seconds after the first motion.
+    grabs = ControllerGrabs(cfg)
+    for note in grabs.sync():
+        log(note)
     hide_now = enable_hiding(cfg, HIDE_NOW_S)
     if hide_now:
         log(f"KWin {EFFECT} effect loaded: pointer hides now, then after {cfg.inactivity_duration}s idle")
@@ -238,12 +350,15 @@ def run_loop(cfg: Config, stop: threading.Event) -> None:
         log(f"FAILED to load KWin {EFFECT} effect, will retry")
     try:
         while not stop.is_set():
+            for note in grabs.sync():
+                log(note)
             if hide_now:
-                if wait_for_pointer_activity(CHECK_S) and not stop.is_set():
+                source = wait_for_pointer_activity(CHECK_S, cfg)
+                if source and not stop.is_set():
                     hide_now = False
                     configure_effect(cfg)
                     _effects("reconfigureEffect", EFFECT)
-                    log(f"pointer activity: idle timeout now {cfg.inactivity_duration}s")
+                    log(f"pointer activity from {source}: idle timeout now {cfg.inactivity_duration}s")
                     continue
             elif stop.wait(CHECK_S):
                 break
@@ -252,6 +367,7 @@ def run_loop(cfg: Config, stop: threading.Event) -> None:
                 ok = enable_hiding(cfg)
                 log(f"{EFFECT} effect was not loaded: " + ("loaded again" if ok else "FAILED to load, will retry"))
     finally:
+        grabs.release_all()
         make_visible(cfg)
         log("stopped, cursor restored")
 
@@ -318,6 +434,33 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Print pointer-class events per device (read-only, no grab): who reveals the pointer?"""
+    cfg = load_config(args)
+    seconds = args.seconds if args.seconds is not None else 30.0
+    log(f"probing for {seconds:g}s: touch the controller, then the mouse")
+    devices = [d for d in open_devices() if is_pointer_device(d.capabilities()) or is_controller_input_node(d.info.vendor, d.capabilities(), cfg.controller_vendors)]
+    for d in devices:
+        kind = "controller input node (would be grabbed)" if is_controller_input_node(d.info.vendor, d.capabilities(), cfg.controller_vendors) else "pointer"
+        print(f"  {d.path} {d.name!r} vendor={d.info.vendor:04x} {kind}")
+    counts: dict[str, int] = {}
+    deadline = time.monotonic() + seconds
+    while devices and (left := deadline - time.monotonic()) > 0:
+        ready, _, _ = select.select(devices, [], [], min(left, 0.5))
+        for dev in ready:
+            try:
+                for ev in dev.read():
+                    if ev.type in (EV_REL, EV_ABS, EV_KEY):
+                        what = describe_event(dev, ev)
+                        counts[what] = counts.get(what, 0) + 1
+                        if counts[what] == 1:
+                            print(f"  event: {what} (reveals pointer: {is_pointer_activity(ev.type, ev.code)})", flush=True)
+            except OSError:
+                devices.remove(dev)
+    print(f"  {sum(counts.values())} events from {len(counts)} sources")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     pid = read_pid()
     print(f"hider: {'running pid ' + str(pid) if pid else 'not running'}")
@@ -328,10 +471,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog="mouse-hider", description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=["start", "stop", "restore", "status", "run"])
+    ap.add_argument("command", choices=["start", "stop", "restore", "status", "run", "probe"])
+    ap.add_argument("seconds", nargs="?", type=float, help="probe: how long to listen (default 30)")
     ap.add_argument("--idle", type=float, help="idle seconds before hiding (default 15)")
     args = ap.parse_args()
-    return {"start": cmd_start, "stop": cmd_stop, "restore": cmd_restore, "status": cmd_status, "run": cmd_run}[args.command](args)
+    commands = {"start": cmd_start, "stop": cmd_stop, "restore": cmd_restore, "status": cmd_status, "run": cmd_run, "probe": cmd_probe}
+    return commands[args.command](args)
 
 
 if __name__ == "__main__":
