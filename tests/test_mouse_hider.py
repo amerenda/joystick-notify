@@ -149,7 +149,8 @@ def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypat
 
     monkeypatch.setattr(mh, "wait_for_pointer_activity", fake_wait)
     monkeypatch.setattr(stop, "wait", lambda timeout: stop.set() or True)
-    mh.run_loop(mh.Config(idle_seconds=15), stop)
+    monkeypatch.setattr(mh, "SETTLE_S", 0)
+    mh.run_loop(mh.Config(idle_seconds=15, hold_seconds=0), stop)
 
     durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
     methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and c[2] == "/Effects"]
@@ -157,3 +158,34 @@ def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypat
     assert methods == ["isEffectLoaded", "loadEffect", "reconfigureEffect", "isEffectLoaded",
                        "reconfigureEffect", "isEffectLoaded", "unloadEffect", "isEffectLoaded"]
     assert not kwin.loaded  # stopped: effect unloaded
+
+
+def test_run_loop_keeps_hide_now_timeout_during_hold_and_signals_ready(monkeypatch):
+    import threading
+
+    kwin = FakeKWin()
+    monkeypatch.setattr(mh, "_run", kwin)
+    monkeypatch.setattr(mh, "SETTLE_S", 0)
+    ready = []
+    monkeypatch.setattr(mh, "notify_ready", lambda: ready.append(len([c for c in kwin.calls if any(x.endswith(".loadEffect") for x in c)])))
+    stop = threading.Event()
+    activity = iter([True, True])
+
+    def fake_wait(timeout):
+        if next(activity, None):
+            return True
+        stop.set()
+        return False
+
+    monkeypatch.setattr(mh, "wait_for_pointer_activity", fake_wait)
+    monkeypatch.setattr(stop, "wait", lambda timeout: False)
+    mh.run_loop(mh.Config(idle_seconds=15, hold_seconds=3600), stop)
+
+    durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
+    assert durations == ["1"]  # motion inside the hold never relaxes the timeout
+    assert ready == [1]  # READY only after the effect was loaded
+
+
+def test_notify_ready_is_a_noop_without_notify_socket(monkeypatch):
+    monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+    mh.notify_ready()

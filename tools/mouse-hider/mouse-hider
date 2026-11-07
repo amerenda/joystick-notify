@@ -51,6 +51,7 @@ from pathlib import Path
 DEFAULTS = {
     "idle_seconds": 15.0,
     "normal_theme": "breeze_cursors",
+    "hold_seconds": 30.0,
 }
 EFFECT = "hidecursor"
 EFFECT_GROUP = "Effect-hidecursor"
@@ -60,6 +61,7 @@ RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 PIDFILE = RUNTIME_DIR / "mouse-hider.pid"
 CHECK_S = 5.0
 HIDE_NOW_S = 1  # the effect's shortest timeout: 0 means never
+SETTLE_S = HIDE_NOW_S + 1.0  # the pointer is gone this long after the effect loads
 # evdev types/codes counted as pointer activity, the same events KWin's
 # effect treats as activity. Keyboard keys (a CEC remote) are not.
 EV_KEY, EV_REL, EV_ABS = 0x01, 0x02, 0x03
@@ -71,6 +73,7 @@ CMD_TIMEOUT_S = 8.0
 class Config:
     idle_seconds: float = 15.0
     normal_theme: str = "breeze_cursors"
+    hold_seconds: float = 30.0  # keep the 1s hide-now timeout this long, motion or not
 
     @property
     def inactivity_duration(self) -> int:
@@ -85,7 +88,8 @@ def load_config(args: argparse.Namespace, path: Path = CONFIG_PATH) -> Config:
             raw.update({k: v for k, v in tomllib.load(f).items() if k in DEFAULTS})
     if getattr(args, "idle", None) is not None:
         raw["idle_seconds"] = args.idle
-    cfg = Config(idle_seconds=float(raw["idle_seconds"]), normal_theme=str(raw["normal_theme"]))
+    cfg = Config(idle_seconds=float(raw["idle_seconds"]), normal_theme=str(raw["normal_theme"]),
+                 hold_seconds=float(raw["hold_seconds"]))
     if cfg.idle_seconds <= 0:
         raise SystemExit("idle_seconds must be > 0")
     return cfg
@@ -229,17 +233,38 @@ def wait_for_pointer_activity(timeout: float) -> bool:
             dev.close()
 
 
+def notify_ready() -> None:
+    """systemd Type=notify READY=1, so `systemctl start mouse-hider` returns only once hidden."""
+    path = os.environ.get("NOTIFY_SOCKET")
+    if not path:
+        return
+    import socket
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.connect("\0" + path[1:] if path.startswith("@") else path)
+        sock.sendall(b"READY=1")
+
+
 def run_loop(cfg: Config, stop: threading.Event) -> None:
-    # Hide on start: the shortest timeout first, idle_seconds after the first motion.
+    # Hide on start: the shortest timeout first, idle_seconds after the first
+    # motion once the hold has passed (the hider is started BEFORE the launch
+    # and must keep the pointer hidden until the launched app is up).
     hide_now = enable_hiding(cfg, HIDE_NOW_S)
+    hold_until = time.monotonic() + cfg.hold_seconds
     if hide_now:
         log(f"KWin {EFFECT} effect loaded: pointer hides now, then after {cfg.inactivity_duration}s idle")
+        time.sleep(SETTLE_S)
+        notify_ready()
+        log("pointer hidden, ready")
     else:
         log(f"FAILED to load KWin {EFFECT} effect, will retry")
     try:
         while not stop.is_set():
             if hide_now:
                 if wait_for_pointer_activity(CHECK_S) and not stop.is_set():
+                    if time.monotonic() < hold_until:
+                        stop.wait(min(CHECK_S, hold_until - time.monotonic()))
+                        continue
                     hide_now = False
                     configure_effect(cfg)
                     _effects("reconfigureEffect", EFFECT)

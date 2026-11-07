@@ -4,7 +4,11 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-Type=simple
+# READY=1 only once the pointer is hidden, so `systemctl start` (the couch
+# prestart hook) returns before the launch.
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=20
 ExecStart=/usr/bin/mouse-hider run
 # Whatever ends the hider (stop, crash, kill, logout), the cursor comes back.
 ExecStopPost=/usr/bin/mouse-hider restore
