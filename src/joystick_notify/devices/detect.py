@@ -60,6 +60,15 @@ _EXCLUDE_PATTERNS = ("LED", "Light", "Lighting")
 # phase3-notes.md (2026-09-12) in the Obsidian vault for the full incident.
 _VIRTUAL_DEVPATH_PREFIX = "/devices/virtual/"
 
+# Identity for a HID interface that reports no HID_UNIQ. The Steam Controller
+# Puck's per-slot hidraw interfaces are exactly that (only its keyboard/mouse
+# interfaces carry the dongle serial). Without this fallback the id was the
+# sysfs node name ("0003:28DE:1304.000A"), a counter that changes on every
+# re-enumeration and that device_present() can never match, so the owner was
+# reported absent while the controller was in use. HID_PHYS ("usb-<port
+# path>/inputN") is fixed by the physical port and interface number.
+PHYS_ID_PREFIX = "phys:"
+
 
 def stable_device_id(properties: dict) -> str | None:
     """Prefer HID_UNIQ (Bluetooth MAC, or a vendor's own unique string) as
@@ -73,6 +82,9 @@ def stable_device_id(properties: dict) -> str | None:
     uniq = properties.get("HID_UNIQ")
     if uniq:
         return uniq
+    phys = properties.get("HID_PHYS")
+    if phys:
+        return f"{PHYS_ID_PREFIX}{phys}"
     vid = properties.get("ID_VENDOR_ID")
     pid = properties.get("ID_MODEL_ID")
     if vid and pid:
@@ -186,15 +198,41 @@ def device_present(device_id: str, hid_root: str = HID_ROOT, usb_root: str = "/s
                 return True
         return False
 
+    if device_id.startswith(PHYS_ID_PREFIX):
+        # A phys id names a dongle slot, which exists whether or not a
+        # controller is talking through it, so this only proves the dongle
+        # is plugged in. Whether the controller itself is alive is the
+        # hidraw liveness watcher's call (HidrawLivenessWatcher.is_live).
+        wanted = f"HID_PHYS={device_id[len(PHYS_ID_PREFIX):]}"
+    else:
+        wanted = f"HID_UNIQ={device_id}"
     for uevent_path in glob.glob(os.path.join(hid_root, "*", "uevent")):
         try:
             with open(uevent_path) as f:
-                content = f.read()
+                lines = f.read().splitlines()
         except OSError:
             continue
-        if f"HID_UNIQ={device_id}" in content:
+        if wanted in lines:
             return True
     return False
+
+
+def owner_present(
+    device_id: str,
+    is_live: Callable[[str], bool] | None = None,
+    hid_root: str = HID_ROOT,
+    usb_root: str = "/sys/bus/usb/devices",
+) -> bool:
+    """Is the session owner's controller still there? Either hidraw reports
+    are flowing for it, or sysfs still lists it. A phys id (a dongle slot)
+    is only ever vouched for by live reports: the dongle staying plugged in
+    says nothing about the controller behind it.
+    """
+    if is_live is not None and is_live(device_id):
+        return True
+    if device_id.startswith(PHYS_ID_PREFIX):
+        return False
+    return device_present(device_id, hid_root, usb_root)
 
 
 def find_evdev_path_for_device(device_id: str) -> str | None:
@@ -229,6 +267,10 @@ def find_evdev_path_for_device(device_id: str) -> str | None:
             merged.update(properties)
             properties = merged
         if stable_device_id(properties) == device_id:
+            return devnode
+        # A phys id names the HID interface itself; the evdev child carries
+        # its parent's HID_PHYS after the merge above.
+        if device_id.startswith(PHYS_ID_PREFIX) and properties.get("HID_PHYS") == device_id[len(PHYS_ID_PREFIX):]:
             return devnode
     return None
 
@@ -412,6 +454,11 @@ def _is_status_only_report(data: bytes, device_class: str) -> bool:
     return len(data) == 2 and data[0] in _STEAM_PUCK_STATUS_ONLY_REPORT_IDS
 
 
+DEFAULT_FLOOD_READS_PER_S = 1500.0
+MAX_REPORTS_PER_WAKEUP = 64
+FLOOD_LOG_EVERY = 100
+
+
 class HidrawLivenessWatcher:
     """Direct port of v1's controller-liveness-watch.py: watches actual HID
     report data flow on /dev/hidraw* for receivers that produce no uevents
@@ -427,15 +474,18 @@ class HidrawLivenessWatcher:
         *,
         rescan_interval_s: float = 5.0,
         remove_timeout_s: float = 6.0,
-        flood_reads_per_s: float = 200.0,
+        flood_reads_per_s: float = DEFAULT_FLOOD_READS_PER_S,
         flood_backoff_s: float = 2.0,
     ) -> None:
         self._feed = feed
         self._health = health
         self._rescan_interval_s = rescan_interval_s
         self._remove_timeout_s = remove_timeout_s
-        # A real controller's HID report rate tops out in the low hundreds
-        # of Hz -- 200 reads/s is already generous headroom. Found live
+        # Reads are counted per report, not per wakeup (see _on_readable).
+        # The cap is a runaway guard, not a rate limit on real hardware:
+        # the Steam Controller Puck streams ~400 reports/s while a
+        # controller is on, even idle, which the original 200/s cap
+        # mistook for a flood every ~2.5s (issue #54). Found live
         # 2026-08-30: a misbehaving/flooding receiver (level-triggered
         # `loop.add_reader` fires again the instant a read drains less than
         # what's pending) drove 7.2M reads / 22.7GB in under an hour with
@@ -449,6 +499,7 @@ class HidrawLivenessWatcher:
         self._flood_backoff_s = flood_backoff_s
         self._read_window_start: dict[int, float] = {}
         self._read_window_count: dict[int, int] = {}
+        self._flood_trips: dict[int, int] = {}
         self._task: asyncio.Task | None = None
         self._fds: dict[int, tuple[str, str, str]] = {}  # fd -> (path, device_id, device_class)
         self._last_seen: dict[str, float] = {}
@@ -533,6 +584,9 @@ class HidrawLivenessWatcher:
             if path not in wanted:
                 self._safe_remove_reader(loop, fd)
                 del self._fds[fd]
+                self._read_window_start.pop(fd, None)
+                self._read_window_count.pop(fd, None)
+                self._flood_trips.pop(fd, None)
 
     def _safe_remove_reader(self, loop: asyncio.AbstractEventLoop, fd: int) -> None:
         try:
@@ -541,20 +595,37 @@ class HidrawLivenessWatcher:
         except OSError:
             pass
 
+    def is_live(self, device_id: str) -> bool:
+        """True while reports for `device_id` are flowing: the same signal
+        that raises its ADD and, by going quiet, its REMOVE."""
+        return device_id in self._reported_live
+
+    def seconds_since_activity(self, device_id: str) -> float | None:
+        seen = self._last_seen.get(device_id)
+        return None if seen is None else time.monotonic() - seen
+
     def _on_readable(self, fd: int) -> None:
         path, device_id, device_class = self._fds.get(fd, (None, None, None))
         if device_id is None:
             return
 
-        if self._over_flood_threshold(fd, device_id, path):
-            return
+        # The selector is level-triggered: draining only one report per
+        # wakeup at ~400 reports/s means ~400 wakeups/s of pure overhead
+        # and, worse, a flood counter that measures the wakeups rather than
+        # the device. Drain what is pending (bounded, so one chatty node
+        # can't starve the loop) and let the flood guard count reports.
+        for _ in range(MAX_REPORTS_PER_WAKEUP):
+            try:
+                data = os.read(fd, 4096)
+            except OSError:  # BlockingIOError: drained
+                return
+            if not data:
+                return
+            self._handle_report(device_id, device_class, data)
+            if self._over_flood_threshold(fd, device_id, device_class, path):
+                return
 
-        try:
-            data = os.read(fd, 4096)
-        except OSError:
-            return
-        if not data:
-            return
+    def _handle_report(self, device_id: str, device_class: str, data: bytes) -> None:
         if _is_status_only_report(data, device_class):
             if logger.isEnabledFor(logging.DEBUG):
                 # data.hex() is only worth building once we know it'll
@@ -566,16 +637,24 @@ class HidrawLivenessWatcher:
                     device_id, data.hex(),
                 )
             return
+        self._mark_seen(device_id, device_class)
+
+    def _mark_seen(self, device_id: str, device_class: str) -> None:
         self._last_seen[device_id] = time.monotonic()
         if device_id not in self._reported_live:
             self._reported_live.add(device_id)
             self._device_class_by_id[device_id] = device_class
             self._feed(RawEvent(device_id=device_id, kind=RawKind.ADD, device_class=device_class, source="hidraw_liveness"))
 
-    def _over_flood_threshold(self, fd: int, device_id: str, path: str) -> bool:
-        """Per-fd sliding-window read-rate cap -- see __init__'s docstring
-        comment for the live incident this closes. Returns True (and backs
-        the fd off) if this read should be skipped this cycle.
+    def _over_flood_threshold(self, fd: int, device_id: str, device_class: str, path: str) -> bool:
+        """Per-fd sliding-window report-rate cap -- see __init__'s comment
+        for the live incident this closes. Returns True (and backs the fd
+        off) if reading should stop for now. Called once per report read.
+
+        A device that trips this is by definition sending data, so it is
+        marked live before backing off: otherwise the backoff window itself
+        would count as silence toward the REMOVE timeout and an
+        owner-absence verdict (issue #55).
         """
         now = time.monotonic()
         window_start = self._read_window_start.get(fd)
@@ -588,11 +667,17 @@ class HidrawLivenessWatcher:
         if count <= self._flood_reads_per_s:
             return False
 
-        logger.warning(
-            "devices[%s]: hidraw node %s exceeded %d reads/s, backing off %.1fs "
-            "(flooding or misbehaving device?)",
-            device_id, path, int(self._flood_reads_per_s), self._flood_backoff_s,
-        )
+        trips = self._flood_trips.get(fd, 0) + 1
+        self._flood_trips[fd] = trips
+        # One warning, then a summary every 100th trip: a node that keeps
+        # tripping must not turn the journal into the flood.
+        if trips == 1 or trips % FLOOD_LOG_EVERY == 0:
+            logger.warning(
+                "devices[%s]: hidraw node %s exceeded %d reports/s, backing off %.1fs "
+                "(flooding or misbehaving device? trip %d)",
+                device_id, path, int(self._flood_reads_per_s), self._flood_backoff_s, trips,
+            )
+        self._mark_seen(device_id, device_class)
         self._back_off_reader(fd)
         return True
 

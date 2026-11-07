@@ -5,6 +5,8 @@ from joystick_notify.debounce import RawEvent, RawKind
 from joystick_notify.devices.detect import (
     HidrawLivenessWatcher,
     UdevWatcher,
+    device_present,
+    owner_present,
     _is_status_only_report,
     device_name,
     find_evdev_path_for_device,
@@ -426,6 +428,7 @@ def test_hidraw_liveness_watcher_add_tracks_device_class():
     fed = []
     watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
     read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)  # hidraw fds are O_NONBLOCK
     try:
         watcher._fds[read_fd] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
         os.write(write_fd, b"\x01")
@@ -481,6 +484,7 @@ def test_hidraw_liveness_watcher_ignores_dock_status_report_from_undocking(monke
     fed = []
     watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
     read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)  # hidraw fds are O_NONBLOCK
     try:
         watcher._fds[read_fd] = ("/dev/hidraw10", "FXB99617010AC", "steam_puck")
         os.write(write_fd, bytes.fromhex("7901"))
@@ -501,6 +505,7 @@ def test_hidraw_liveness_watcher_real_activity_still_fires_after_dock_status(mon
     fed = []
     watcher = HidrawLivenessWatcher(lambda e: fed.append(e))
     read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)  # hidraw fds are O_NONBLOCK
     try:
         watcher._fds[read_fd] = ("/dev/hidraw6", "FXB99617010AC", "steam_puck")
         os.write(write_fd, bytes.fromhex("4200000000000000ff0f23031302"))
@@ -522,54 +527,110 @@ def test_hidraw_liveness_watcher_real_activity_still_fires_after_dock_status(mon
 # hour with no ceiling at all. See HidrawLivenessWatcher.__init__'s
 # docstring comment for the full incident.
 
-def test_hidraw_liveness_watcher_flood_threshold_backs_off_and_stops_reading():
+def _report_pipe():
+    """A packetized, non-blocking fd pair: each send() is one report and each
+    read returns exactly one, like a real hidraw node (a plain pipe would
+    merge them into one read)."""
+    import socket
+
+    rx, tx = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    rx.setblocking(False)
+    return rx, tx
+
+
+def _watcher_with_node(**kwargs):
     fed = []
-    watcher = HidrawLivenessWatcher(lambda e: fed.append(e), flood_reads_per_s=3, flood_backoff_s=10.0)
+    watcher = HidrawLivenessWatcher(lambda e: fed.append(e), **kwargs)
     backed_off = []
-    # Avoid needing a running asyncio loop in this synchronous test --
-    # _back_off_reader's own loop.remove_reader/call_later plumbing is
-    # exercised separately by the resume test below.
+    # Avoid needing a running asyncio loop in these synchronous tests --
+    # _back_off_reader's own loop plumbing is exercised separately below.
     watcher._back_off_reader = lambda fd: backed_off.append(fd)
-    read_fd, write_fd = os.pipe()
-    os.set_blocking(read_fd, False)  # real hidraw nodes are opened O_NONBLOCK -- match that here
-    try:
-        watcher._fds[read_fd] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
-        os.write(write_fd, b"\x01")
+    rx, tx = _report_pipe()
+    watcher._fds[rx.fileno()] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
+    return watcher, fed, backed_off, rx, tx
+
+
+def test_hidraw_liveness_watcher_flood_threshold_backs_off_and_stops_reading():
+    watcher, fed, backed_off, rx, tx = _watcher_with_node(flood_reads_per_s=3, flood_backoff_s=10.0)
+    with rx, tx:
         for _ in range(3):
-            watcher._on_readable(read_fd)
+            tx.send(b"\x01")
+        watcher._on_readable(rx.fileno())
         assert backed_off == []
 
-        # 4th read in the same 1s window exceeds the 3 reads/s cap. The
-        # flood check runs before the actual read, so it still counts even
-        # though the pipe has no more data queued up for it by this point.
-        watcher._on_readable(read_fd)
-        assert backed_off == [read_fd]
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
+        # Four more reports in the same 1s window: the cap counts reports,
+        # so the 4th one of the window trips it.
+        tx.send(b"\x01")
+        watcher._on_readable(rx.fileno())
+        assert backed_off == [rx.fileno()]
 
 
 def test_hidraw_liveness_watcher_flood_window_resets_after_a_second():
-    fed = []
-    watcher = HidrawLivenessWatcher(lambda e: fed.append(e), flood_reads_per_s=2, flood_backoff_s=10.0)
-    backed_off = []
-    watcher._back_off_reader = lambda fd: backed_off.append(fd)
-    read_fd, write_fd = os.pipe()
-    os.set_blocking(read_fd, False)
-    try:
-        watcher._fds[read_fd] = ("/dev/hidraw3", "950F5726DC", "bitdo_dongle")
-        os.write(write_fd, b"\x01")
-        watcher._on_readable(read_fd)
-        watcher._on_readable(read_fd)
+    watcher, fed, backed_off, rx, tx = _watcher_with_node(flood_reads_per_s=2, flood_backoff_s=10.0)
+    with rx, tx:
+        for _ in range(2):
+            tx.send(b"\x01")
+        watcher._on_readable(rx.fileno())
         assert backed_off == []
 
         # Simulate the window having elapsed instead of sleeping for real.
-        watcher._read_window_start[read_fd] -= 1.5
-        watcher._on_readable(read_fd)
+        watcher._read_window_start[rx.fileno()] -= 1.5
+        for _ in range(2):
+            tx.send(b"\x01")
+        watcher._on_readable(rx.fileno())
         assert backed_off == []
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
+
+
+def test_hidraw_liveness_watcher_drains_every_pending_report_in_one_wakeup():
+    # ~400 reports/s with one read per wakeup is ~400 wakeups/s of overhead
+    # and a flood counter measuring wakeups instead of the device.
+    watcher, fed, backed_off, rx, tx = _watcher_with_node()
+    with rx, tx:
+        for _ in range(10):
+            tx.send(b"\x01")
+        watcher._on_readable(rx.fileno())
+        assert watcher._read_window_count[rx.fileno()] == 10
+        assert watcher.is_live("950F5726DC")
+
+
+def test_hidraw_liveness_watcher_default_cap_tolerates_a_steam_puck_stream():
+    # Issue #54: the Puck streams ~400 reports/s for a controller that is
+    # on, even idle. That must not read as a flood.
+    watcher, fed, backed_off, rx, tx = _watcher_with_node()
+    assert watcher._flood_reads_per_s >= 1000
+    with rx, tx:
+        for _ in range(500):
+            tx.send(b"\x01")
+            watcher._on_readable(rx.fileno())
+        assert backed_off == []
+
+
+def test_hidraw_liveness_watcher_flooding_device_is_marked_live_while_backed_off():
+    # Issue #55: the backoff window must not look like silence, or the
+    # REMOVE timeout and owner-absence logic would act on a busy device.
+    watcher, fed, backed_off, rx, tx = _watcher_with_node(flood_reads_per_s=1, flood_backoff_s=10.0)
+    with rx, tx:
+        for _ in range(3):
+            tx.send(b"\x01")
+        watcher._on_readable(rx.fileno())
+        assert backed_off == [rx.fileno()]
+        assert watcher.is_live("950F5726DC")
+        assert watcher.seconds_since_activity("950F5726DC") < 1.0
+
+
+def test_hidraw_liveness_watcher_flood_warning_is_logged_once_then_summarized(caplog):
+    import logging
+
+    watcher, fed, backed_off, rx, tx = _watcher_with_node(flood_reads_per_s=1, flood_backoff_s=10.0)
+    with rx, tx, caplog.at_level(logging.WARNING, logger="joystick_notify.devices.detect"):
+        for _ in range(5):
+            watcher._read_window_start.pop(rx.fileno(), None)
+            watcher._read_window_count.pop(rx.fileno(), None)
+            for _ in range(3):
+                tx.send(b"\x01")
+            watcher._on_readable(rx.fileno())
+    assert len(backed_off) == 5
+    assert len([r for r in caplog.records if "exceeded" in r.message]) == 1
 
 
 def test_hidraw_liveness_watcher_resume_reader_noop_if_device_already_gone():
@@ -642,3 +703,91 @@ def test_find_evdev_path_for_device_returns_none_when_no_match(monkeypatch):
     monkeypatch.setattr(pyudev, "Context", lambda: _FakeUdevContext([]))
 
     assert find_evdev_path_for_device("nonexistent") is None
+
+
+# --- Identity of HID interfaces without HID_UNIQ (issue #55) ---
+# The Steam Controller Puck's per-slot hidraw interfaces report an empty
+# HID_UNIQ. The id used to be the sysfs node name ("0003:28DE:1304.000A"),
+# which changes on every re-enumeration and which device_present() could
+# never find, so the owner was "absent" for as long as the session ran.
+
+PUCK_SLOT_UEVENT = {
+    "HID_ID": "0003:000028DE:00001304",
+    "HID_NAME": "Valve Software Steam Controller Puck",
+    "HID_PHYS": "usb-0000:00:14.0-5/input2",
+    "HID_UNIQ": "",
+}
+
+
+def test_stable_device_id_uses_hid_phys_when_uniq_is_empty():
+    assert stable_device_id(PUCK_SLOT_UEVENT) == "phys:usb-0000:00:14.0-5/input2"
+
+
+def test_stable_device_id_phys_is_independent_of_the_sysfs_node_counter():
+    first = dict(PUCK_SLOT_UEVENT, DEVPATH="/devices/x/0003:28DE:1304.000A")
+    after_replug = dict(PUCK_SLOT_UEVENT, DEVPATH="/devices/x/0003:28DE:1304.0014")
+    assert stable_device_id(first) == stable_device_id(after_replug)
+
+
+def test_stable_device_id_still_prefers_uniq_over_phys():
+    assert stable_device_id(dict(PUCK_SLOT_UEVENT, HID_UNIQ="FXB99617010AC")) == "FXB99617010AC"
+
+
+def _fake_hid_tree(tmp_path, entries):
+    root = tmp_path / "hid"
+    for name, lines in entries.items():
+        d = root / name
+        d.mkdir(parents=True)
+        (d / "uevent").write_text("\n".join(lines) + "\n")
+    return str(root)
+
+
+def test_device_present_matches_uniq_exactly_not_as_a_substring(tmp_path):
+    root = _fake_hid_tree(tmp_path, {"0003:2DC8:6013.001A": ["HID_UNIQ=950F5726DC9"]})
+    assert device_present("950F5726DC", hid_root=root) is False
+    assert device_present("950F5726DC9", hid_root=root) is True
+
+
+def test_device_present_finds_a_phys_id(tmp_path):
+    root = _fake_hid_tree(tmp_path, {"0003:28DE:1304.000A": ["HID_PHYS=usb-0000:00:14.0-5/input2", "HID_UNIQ="]})
+    assert device_present("phys:usb-0000:00:14.0-5/input2", hid_root=root) is True
+    assert device_present("phys:usb-0000:00:14.0-5/input3", hid_root=root) is False
+
+
+def test_owner_present_phys_id_follows_liveness_not_the_dongle(tmp_path):
+    root = _fake_hid_tree(tmp_path, {"0003:28DE:1304.000A": ["HID_PHYS=usb-0000:00:14.0-5/input2"]})
+    phys = "phys:usb-0000:00:14.0-5/input2"
+    # Dongle plugged in, controller silent: not present.
+    assert owner_present(phys, lambda _id: False, hid_root=root) is False
+    assert owner_present(phys, None, hid_root=root) is False
+    # Reports flowing: present, whatever sysfs says.
+    assert owner_present(phys, lambda _id: True, hid_root=root) is True
+
+
+def test_owner_present_uniq_id_is_present_while_sysfs_lists_it(tmp_path):
+    root = _fake_hid_tree(tmp_path, {"0003:2DC8:6013.001A": ["HID_UNIQ=950F5726DC"]})
+    assert owner_present("950F5726DC", lambda _id: False, hid_root=root) is True
+    assert owner_present("someone-else", lambda _id: False, hid_root=root) is False
+
+
+def test_hidraw_candidate_nodes_use_the_stable_phys_id(tmp_path, monkeypatch):
+    hid_root = tmp_path / "hid"
+    node = hid_root / "0003:28DE:1304.000A"
+    (node / "hidraw" / "hidraw0").mkdir(parents=True)
+    (node / "uevent").write_text(
+        "HID_ID=0003:000028DE:00001304\nHID_NAME=Valve Software Steam Controller Puck\n"
+        "HID_PHYS=usb-0000:00:14.0-5/input2\nHID_UNIQ=\n"
+    )
+    monkeypatch.setattr("joystick_notify.devices.detect.HID_ROOT", str(hid_root))
+    nodes = list(HidrawLivenessWatcher(lambda e: None)._find_candidate_nodes())
+    assert nodes == [("/dev/hidraw0", "phys:usb-0000:00:14.0-5/input2", "steam_puck")]
+
+
+def test_find_evdev_path_for_device_resolves_a_phys_id(monkeypatch):
+    import pyudev
+
+    hid_parent = _FakeDevice({"HID_UNIQ": "FXB99617010AC", "HID_PHYS": "usb-0000:00:14.0-5/input2"})
+    node = _FakeDevice({"ID_INPUT_JOYSTICK": "1"}, parent=hid_parent, device_node="/dev/input/event3")
+    monkeypatch.setattr(pyudev, "Context", lambda: _FakeUdevContext([node]))
+
+    assert find_evdev_path_for_device("phys:usb-0000:00:14.0-5/input2") == "/dev/input/event3"
