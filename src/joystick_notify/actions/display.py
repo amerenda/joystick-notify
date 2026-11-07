@@ -37,6 +37,32 @@ class OutputInfo:
     preferred_mode: str = ""
 
 
+def merge_drm_connectors(
+    outputs: list[OutputInfo], configured: tuple[str, ...] = (), sysfs_root: Path | str = "/sys/class/drm"
+) -> list[OutputInfo]:
+    """Add connectors kscreen-doctor does not list to `outputs`.
+
+    A TV with no DDC (HDMI-A-1 here) is only on the bus while the EDID
+    override runs, so outside couch mode kscreen omits it and the wizard
+    had no way to pick it. Every DRM connector in sysfs, and any port already
+    saved in the config, is offered too.
+    """
+    known = {o.name for o in outputs}
+    extra: list[str] = []
+    for path in sorted(Path(sysfs_root).glob("card*-*")):
+        name = path.name.split("-", 1)[1]
+        if name.startswith("Writeback"):
+            continue
+        extra.append(name)
+    extra.extend(p for p in configured if p)
+    merged = list(outputs)
+    for name in extra:
+        if name not in known:
+            known.add(name)
+            merged.append(OutputInfo(name=name, enabled=False, connected=False))
+    return merged
+
+
 def _mode_label(mode: dict) -> str:
     # Real kscreen-doctor -j output already provides a clean, pre-formatted
     # "name" per mode (e.g. "2560x1440@60") — use it directly rather than
