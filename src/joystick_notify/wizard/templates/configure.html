@@ -26,7 +26,7 @@
         <select id="desk_port" name="desk_port">
           <option value="">— select —</option>
           {% for o in outputs %}
-          <option value="{{ o.name }}" {% if o.name == config.display.desk_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }})</option>
+          <option value="{{ o.name }}" {% if o.name == config.display.desk_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }}){% if not o.connected %} — not on the bus right now{% endif %}</option>
           {% endfor %}
         </select>
         <label for="desk_mode">Desk mode</label>
@@ -36,7 +36,7 @@
         <select id="couch_port" name="couch_port">
           <option value="">— select —</option>
           {% for o in outputs %}
-          <option value="{{ o.name }}" {% if o.name == config.display.couch_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }})</option>
+          <option value="{{ o.name }}" {% if o.name == config.display.couch_port %}selected{% endif %}>{{ o.model or o.name }} ({{ o.name }}){% if not o.connected %} — not on the bus right now{% endif %}</option>
           {% endfor %}
         </select>
         <label for="couch_mode">Couch mode</label>

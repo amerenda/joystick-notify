@@ -153,6 +153,15 @@ def build_hooks(
         # cheap enough not to matter.
         return config_store.load(config_path).cec
 
+    def _current_display():
+        # Same reason as _current_cec(): ports and modes saved in the wizard
+        # (e.g. couch_port) must apply on the next transition, not after a
+        # daemon restart.
+        return config_store.load(config_path).display
+
+    def _current_audio():
+        return config_store.load(config_path).audio
+
     async def _cec_adapter(cec: CecConfig) -> str | None:
         # Self-heal runs even with an explicit adapter configured: skipping
         # it there meant an unconfigured /dev/cec0 (2026-10-23) was never
@@ -214,8 +223,8 @@ def build_hooks(
                 )
                 health.ok("cec", "wake + active-source sent")
                 _spawn_wake_verify(adapter, cec)
-        await display_actions.activate_couch(config.display, health)
-        await audio_actions.activate_couch(config.audio, health)
+        await display_actions.activate_couch(_current_display(), health)
+        await audio_actions.activate_couch(_current_audio(), health)
         if config.shortcuts.exit_couch_enabled:
             await resources.manual_exit_watcher.start(device_id)
 
@@ -246,8 +255,8 @@ def build_hooks(
         # user's actual monitor/audio switch hostage behind it. The switch
         # that matters every time should never wait on the part that's
         # allowed to fail.
-        await display_actions.activate_desk(config.display, health)
-        await audio_actions.activate_desk(config.audio, health)
+        await display_actions.activate_desk(_current_display(), health)
+        await audio_actions.activate_desk(_current_audio(), health)
         await screen_lock_actions.activate_desk(config.screen_lock, health, resources.screen_lock_cookie)
         resources.screen_lock_cookie = None
         if resources.relock_on_desk:
@@ -312,10 +321,10 @@ def build_hooks(
                 )
 
     async def detect_live_mode():
-        return await display_actions.detect_active_mode(config.display)
+        return await display_actions.detect_active_mode(_current_display())
 
     async def activate_desk_display() -> None:
-        await display_actions.activate_desk(config.display, health)
+        await display_actions.activate_desk(_current_display(), health)
 
     async def exit_couch_idle() -> None:
         # Wakes the TV back up and dismisses the screensaver -- the mirror

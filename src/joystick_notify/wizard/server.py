@@ -379,7 +379,9 @@ async def configure_get(request: Request):
 
     config = config_store.load()
     kjson = await display_actions.get_kscreen_json() or {"outputs": []}
-    outputs = display_actions.parse_outputs(kjson)
+    outputs = display_actions.merge_drm_connectors(
+        display_actions.parse_outputs(kjson), (config.display.desk_port, config.display.couch_port)
+    )
     sinks = await audio_actions.list_sinks()
     detected_launchers = launchers.detect_launchers()
     cec_adapters = cec_discover.discover_adapters()

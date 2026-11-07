@@ -227,3 +227,15 @@ def test_restore_dpms_off_excludes_outputs_that_were_already_on(monkeypatch):
     assert off_cmd[:3] == ["kscreen-doctor", "--dpms", "off"]
     assert "--dpms-excluded" in off_cmd and "HDMI-A-1" in off_cmd
     assert "HDMI-A-2" not in off_cmd  # the one we WANT set off is not excluded
+
+
+def test_merge_drm_connectors_offers_outputs_kscreen_does_not_list(tmp_path):
+    from joystick_notify.actions.display import OutputInfo, merge_drm_connectors
+
+    for d in ("card1-HDMI-A-1", "card1-HDMI-A-2", "card1-DP-1", "card1-Writeback-1", "version"):
+        (tmp_path / d).mkdir()
+    listed = [OutputInfo(name="HDMI-A-2", enabled=True, connected=True, model="Monitor")]
+    merged = {o.name: o for o in merge_drm_connectors(listed, ("HDMI-A-1", "DP-9"), tmp_path)}
+    assert set(merged) == {"HDMI-A-1", "HDMI-A-2", "DP-1", "DP-9"}
+    assert merged["HDMI-A-2"].model == "Monitor"
+    assert merged["HDMI-A-1"].connected is False

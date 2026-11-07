@@ -456,3 +456,45 @@ async def test_exit_relocks_only_when_couch_started_from_a_locked_screen(tmp_pat
     await hooks.activate_desk()  # a second exit must not lock again
 
     assert locks == ([True] if locked_at_entry else [])
+
+
+@pytest.mark.asyncio
+async def test_activate_couch_uses_display_and_audio_saved_after_startup(tmp_path, monkeypatch):
+    """Saving couch_port in the wizard must apply to the next couch
+    transition; the daemon used to keep the display section it loaded at
+    startup (couch_port == desk_port) until restarted."""
+    from joystick_notify import daemon as daemon_module
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    seen = {}
+
+    async def fake_display(display, health):
+        seen["couch_port"] = display.couch_port
+
+    async def fake_audio(audio, health):
+        seen["couch_sink"] = audio.couch_sink
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_couch", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_couch", fake_display)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_couch", fake_audio)
+
+    config_path = tmp_path / "config.toml"
+    config = JoystickNotifyConfig()
+    config.cec.enabled = False
+    config.shortcuts.exit_couch_enabled = False
+    config.display.desk_port = config.display.couch_port = "HDMI-A-2"
+    config_store.save(config, config_path)
+
+    health = Health(path=Path(tmp_path) / "health.json")
+    hooks = build_hooks(config, health, ManualExitWatcher(lambda: None, health), config_path)
+
+    disk = config_store.load(config_path)
+    disk.display.couch_port = "HDMI-A-1"
+    disk.audio.couch_sink = "hdmi-sink"
+    config_store.save(disk, config_path)
+
+    await hooks.activate_couch("device-1")
+
+    assert seen == {"couch_port": "HDMI-A-1", "couch_sink": "hdmi-sink"}
