@@ -146,7 +146,7 @@ def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypat
     monkeypatch.setattr(mh, "wait_for_pointer_activity", fake_wait)
     monkeypatch.setattr(stop, "wait", lambda timeout: stop.set() or True)
     monkeypatch.setattr(mh, "SETTLE_S", 0)
-    mh.run_loop(mh.Config(idle_seconds=15, hold_seconds=0), stop)
+    mh.run_loop(mh.Config(always_hidden=False, idle_seconds=15, hold_seconds=0), stop)
 
     durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
     methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and c[2] == "/Effects"]
@@ -175,11 +175,70 @@ def test_run_loop_keeps_hide_now_timeout_during_hold_and_signals_ready(monkeypat
 
     monkeypatch.setattr(mh, "wait_for_pointer_activity", fake_wait)
     monkeypatch.setattr(stop, "wait", lambda timeout: False)
-    mh.run_loop(mh.Config(idle_seconds=15, hold_seconds=3600), stop)
+    mh.run_loop(mh.Config(always_hidden=False, idle_seconds=15, hold_seconds=3600), stop)
 
     durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
     assert durations == ["1"]  # motion inside the hold never relaxes the timeout
     assert ready == [1]  # READY only after the effect was loaded
+
+
+def test_env_flag_defaults_true_and_reads_off_values():
+    assert mh.env_flag("X", True, {}) is True
+    assert mh.env_flag("X", True, {"X": ""}) is True
+    for off in ("0", "false", "No", "OFF"):
+        assert mh.env_flag("X", True, {"X": off}) is False
+    assert mh.env_flag("X", False, {"X": "1"}) is True
+
+
+def test_load_config_always_hidden_follows_the_env_var(tmp_path, monkeypatch):
+    monkeypatch.delenv("MOUSE_HIDER_ALWAYS_HIDDEN", raising=False)
+    assert mh.load_config(tmp_path / "nope.toml").always_hidden is True
+    monkeypatch.setenv("MOUSE_HIDER_ALWAYS_HIDDEN", "0")
+    assert mh.load_config(tmp_path / "nope.toml").always_hidden is False
+
+
+@pytest.mark.parametrize(
+    "name, keys, rel_x, expected",
+    [
+        ("Logitech G309", [0x110, 30], True, True),
+        ("keyd virtual pointer", [0x110], True, True),
+        ("Valve Software Steam Controller Puck", [30, 0x110], True, True),
+        ("libvirtualhid Mouse", [0x110], True, False),  # Sunshine remote input stays usable
+        ("libvirtualhid Mouse (Absolute)", [0x110], False, False),
+        ("Xbox Controller", [0x110, 0x130, 0x131], True, False),  # gamepad: never grab
+        ("Some Keyboard", [30, 31], False, False),  # not a pointer
+    ],
+)
+def test_should_grab(name, keys, rel_x, expected):
+    assert mh.should_grab(name, keys, rel_x) is expected
+
+
+def test_run_loop_always_hidden_keeps_one_second_timeout_grabs_and_releases(monkeypatch):
+    import threading
+
+    kwin = FakeKWin()
+    monkeypatch.setattr(mh, "_run", kwin)
+    events = []
+
+    class FakeGrabber:
+        def scan(self):
+            events.append("scan")
+            return 2
+
+        def release(self):
+            events.append("release")
+
+    monkeypatch.setattr(mh, "PointerGrabber", FakeGrabber)
+    monkeypatch.setattr(mh, "SETTLE_S", 0)
+    stop = threading.Event()
+    waits = iter([False, True])  # one full tick, then stop
+    monkeypatch.setattr(stop, "wait", lambda timeout: next(waits))
+    mh.run_loop(mh.Config(always_hidden=True, idle_seconds=15), stop)
+
+    durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
+    assert durations == ["1"]  # never relaxed to idle_seconds
+    assert events == ["scan", "scan", "release"]  # at start, hotplug rescan, then released on stop
+    assert not kwin.loaded
 
 
 def test_notify_ready_is_a_noop_without_notify_socket(monkeypatch):
