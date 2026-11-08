@@ -4,11 +4,13 @@ project(jn_hidecursor LANGUAGES CXX)
 find_package(ECM REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
+# Qt6 first: ECM's KDEInstallDirs6 asks the located Qt6 for its qmake.
+find_package(Qt6 REQUIRED COMPONENTS Core)
+
 include(KDEInstallDirs6)
 include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 
-find_package(Qt6 REQUIRED COMPONENTS Core)
 find_package(KF6 REQUIRED COMPONENTS CoreAddons)
 find_package(KWin REQUIRED COMPONENTS kwineffects)
 
