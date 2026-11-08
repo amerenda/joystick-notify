@@ -10,7 +10,7 @@ Hides the pointer after N seconds of inactivity and restores it on motion. Stand
 
 How it hides: it loads KWin's built-in `hidecursor` effect (KWin 6.2+) at runtime while it runs, sets the effect's timeout in kwinrc `[Effect-hidecursor]`, and unloads the effect when it stops. KWin hides the pointer over every window and shows it on the next pointer event. On start the pointer hides right away (the effect's shortest timeout, 1s); the first pointer event switches to `idle_seconds`, because the effect's reconfigure always shows the pointer and motion has just shown it anyway. The effect is never enabled in kwinrc `[Plugins]`, so nothing survives a crash, logout or reboot.
 
-Config `~/.config/mouse-hider/config.toml` (all optional): `hold_seconds = 30` (keep the 1s hide-now timeout this long after start, motion or not), `idle_seconds = 15` (whole seconds, minimum 1), `normal_theme = "breeze_cursors"` (what `restore` puts back if the transparent `invisible` theme from the old theme-swapping version is still live). Flag `--idle` overrides it.
+Config: none of its own. The idle timeout is `[mouse_hider] idle_seconds` (whole seconds, minimum 1, default 15) in joystick-notify's `~/.config/joystick-notify/config.toml`, set from the wizard (Launch tab, "Hide Mouse Pointer"). Fixed internally: the pointer stays on the 1s hide-now timeout for the first 30s after start, and `restore` puts back `breeze_cursors` if the transparent `invisible` theme from the old theme-swapping version is still live.
 
 Wizard (Lifecycle Hooks card, Launch tab) - the recommended, crash-proof wiring uses the shipped user unit, whose `ExecStopPost` restores the cursor however the hider ends (stop, crash, kill, logout) and which survives a daemon restart:
 

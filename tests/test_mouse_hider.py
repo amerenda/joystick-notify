@@ -1,4 +1,3 @@
-import argparse
 import importlib.machinery
 import importlib.util
 from pathlib import Path
@@ -12,10 +11,6 @@ mh = importlib.util.module_from_spec(_spec)
 import sys
 sys.modules["mouse_hider"] = mh
 _loader.exec_module(mh)
-
-
-def args(**kw):
-    return argparse.Namespace(idle=kw.get("idle"))
 
 
 class FakeKWin:
@@ -41,19 +36,20 @@ class FakeKWin:
         return 0, ""
 
 
-def test_config_defaults_and_file_and_cli_override(tmp_path):
-    cfg = mh.load_config(args(), tmp_path / "nope.toml")
-    assert (cfg.idle_seconds, cfg.normal_theme) == (15.0, "breeze_cursors")
-    f = tmp_path / "c.toml"
-    f.write_text('idle_seconds = 30\nnormal_theme = "Breeze_Light"\nhide_theme = "old"\nbogus = 1\n')
-    cfg = mh.load_config(args(), f)
-    assert (cfg.idle_seconds, cfg.normal_theme) == (30.0, "Breeze_Light")
-    assert mh.load_config(args(idle=5), f).idle_seconds == 5.0
+def test_config_defaults_and_reads_joystick_notify_config(tmp_path):
+    assert mh.load_config(tmp_path / "nope.toml").idle_seconds == 15.0
+    f = tmp_path / "config.toml"
+    f.write_text("[mouse_hider]\nidle_seconds = 30\n[idle]\nidle_after_s = 5\n")
+    assert mh.load_config(f).idle_seconds == 30.0
+    f.write_text("[idle]\nidle_after_s = 5\n")
+    assert mh.load_config(f).idle_seconds == 15.0
 
 
 def test_config_rejects_bad_values(tmp_path):
+    f = tmp_path / "config.toml"
+    f.write_text("[mouse_hider]\nidle_seconds = 0\n")
     with pytest.raises(SystemExit):
-        mh.load_config(args(idle=0), tmp_path / "x.toml")
+        mh.load_config(f)
 
 
 def test_inactivity_duration_is_whole_seconds_and_never_zero():

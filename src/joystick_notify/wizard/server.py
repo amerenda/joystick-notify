@@ -545,6 +545,7 @@ async def configure_post(request: Request):
     config.idle.screensaver_enabled = form.get("idle_screensaver_enabled") == "on"
     config.idle.idle_after_s = _positive_float("idle_after_s", config.idle.idle_after_s)
 
+    config.mouse_hider.idle_seconds = _positive_float("mouse_hider_idle_seconds", config.mouse_hider.idle_seconds)
     config.screen_lock.enabled = form.get("screen_lock_enabled") == "on"
     config.screen_lock.hold_inhibit = form.get("screen_lock_hold_inhibit") == "on"
     config.notifications.enabled = form.get("notifications_enabled") == "on"

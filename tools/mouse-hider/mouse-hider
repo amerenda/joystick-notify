@@ -28,10 +28,9 @@ Safety properties (the whole point of this script):
     over from the old theme-swapping version; it works whether or not the
     hider runs.
 
-Config: ~/.config/mouse-hider/config.toml (all keys optional)
-    idle_seconds = 15
-    normal_theme = "breeze_cursors"   # what `restore` puts back if a hidden theme is live
-CLI flag --idle overrides the file.
+Config: no settings of its own. The idle timeout is [mouse_hider] idle_seconds
+in joystick-notify's config.toml (~/.config/joystick-notify/), set from the
+wizard; 15 when that is absent.
 """
 from __future__ import annotations
 
@@ -48,15 +47,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULTS = {
-    "idle_seconds": 15.0,
-    "normal_theme": "breeze_cursors",
-    "hold_seconds": 30.0,
-}
+DEFAULT_IDLE_SECONDS = 15.0
+NORMAL_THEME = "breeze_cursors"  # what `restore` puts back if the old transparent theme is live
+HOLD_SECONDS = 30.0  # keep the 1s hide-now timeout this long after start, motion or not
 EFFECT = "hidecursor"
 EFFECT_GROUP = "Effect-hidecursor"
 HIDDEN_THEME = "invisible"  # the old version's transparent theme (ansible-playbooks roles/mouse-hide)
-CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mouse-hider" / "config.toml"
+CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "joystick-notify" / "config.toml"
 RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
 PIDFILE = RUNTIME_DIR / "mouse-hider.pid"
 CHECK_S = 5.0
@@ -71,9 +68,9 @@ CMD_TIMEOUT_S = 8.0
 
 @dataclass
 class Config:
-    idle_seconds: float = 15.0
-    normal_theme: str = "breeze_cursors"
-    hold_seconds: float = 30.0  # keep the 1s hide-now timeout this long, motion or not
+    idle_seconds: float = DEFAULT_IDLE_SECONDS
+    normal_theme: str = NORMAL_THEME
+    hold_seconds: float = HOLD_SECONDS
 
     @property
     def inactivity_duration(self) -> int:
@@ -81,17 +78,14 @@ class Config:
         return max(1, round(self.idle_seconds))
 
 
-def load_config(args: argparse.Namespace, path: Path = CONFIG_PATH) -> Config:
-    raw = dict(DEFAULTS)
+def load_config(path: Path = CONFIG_PATH) -> Config:
+    idle = DEFAULT_IDLE_SECONDS
     if path.exists():
         with path.open("rb") as f:
-            raw.update({k: v for k, v in tomllib.load(f).items() if k in DEFAULTS})
-    if getattr(args, "idle", None) is not None:
-        raw["idle_seconds"] = args.idle
-    cfg = Config(idle_seconds=float(raw["idle_seconds"]), normal_theme=str(raw["normal_theme"]),
-                 hold_seconds=float(raw["hold_seconds"]))
+            idle = tomllib.load(f).get("mouse_hider", {}).get("idle_seconds", idle)
+    cfg = Config(idle_seconds=float(idle))
     if cfg.idle_seconds <= 0:
-        raise SystemExit("idle_seconds must be > 0")
+        raise SystemExit("mouse_hider idle_seconds must be > 0")
     return cfg
 
 
@@ -293,7 +287,7 @@ def read_pid() -> int | None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    cfg = load_config(args)
+    cfg = load_config()
     if not cure_hidden_theme(cfg):
         log(f"WARNING: could not confirm {cfg.normal_theme!r} is live before starting")
     stop = threading.Event()
@@ -312,8 +306,6 @@ def cmd_start(args: argparse.Namespace) -> int:
         log(f"already running (pid {read_pid()})")
         return 0
     cmd = [sys.executable, os.path.abspath(__file__), "run"]
-    if args.idle is not None:
-        cmd += ["--idle", str(args.idle)]
     logf = open(RUNTIME_DIR / "mouse-hider.log", "ab")
     p = subprocess.Popen(cmd, stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, start_new_session=True)
     log(f"started (pid {p.pid})")
@@ -335,7 +327,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
-    cfg = load_config(args)
+    cfg = load_config()
     if make_visible(cfg):
         log(f"cursor visible ({EFFECT} effect unloaded)")
         return 0
@@ -354,7 +346,6 @@ def cmd_status(args: argparse.Namespace) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(prog="mouse-hider", description=__doc__.split("\n\n")[0])
     ap.add_argument("command", choices=["start", "stop", "restore", "status", "run"])
-    ap.add_argument("--idle", type=float, help="idle seconds before hiding (default 15)")
     args = ap.parse_args()
     return {"start": cmd_start, "stop": cmd_stop, "restore": cmd_restore, "status": cmd_status, "run": cmd_run}[args.command](args)
 

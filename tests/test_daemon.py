@@ -459,6 +459,33 @@ async def test_exit_relocks_only_when_couch_started_from_a_locked_screen(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("keep_unlocked", [True, False])
+async def test_couch_idle_engages_screensaver_only_when_screen_may_lock(tmp_path, monkeypatch, keep_unlocked):
+    """The screensaver locks the screen, so couch idle must skip it while
+    screen_lock.enabled (keep unlocked in couch mode) is on."""
+    from joystick_notify import daemon as daemon_module
+
+    engaged = []
+
+    async def fake_screensaver(health):
+        engaged.append(True)
+        return True
+
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_screensaver", fake_screensaver)
+
+    config = JoystickNotifyConfig()
+    config.screen_lock.enabled = keep_unlocked
+    config.shortcuts.exit_couch_enabled = False
+    config_store.save(config, tmp_path / "config.toml")
+    health = Health(path=Path(tmp_path) / "health.json")
+    hooks = build_hooks(config, health, ManualExitWatcher(lambda: None, health), tmp_path / "config.toml")
+
+    await hooks.enter_couch_idle()
+
+    assert engaged == ([] if keep_unlocked else [True])
+
+
+@pytest.mark.asyncio
 async def test_activate_couch_uses_display_and_audio_saved_after_startup(tmp_path, monkeypatch):
     """Saving couch_port in the wizard must apply to the next couch
     transition; the daemon used to keep the display section it loaded at
