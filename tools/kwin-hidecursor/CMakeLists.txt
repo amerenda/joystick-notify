@@ -5,7 +5,7 @@ find_package(ECM REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
 # Qt6 first: ECM's KDEInstallDirs6 asks the located Qt6 for its qmake.
-find_package(Qt6 REQUIRED COMPONENTS Core)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui DBus Quick Widgets)
 
 include(KDEInstallDirs6)
 include(KDECMakeSettings)
