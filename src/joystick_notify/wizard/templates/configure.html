@@ -285,12 +285,12 @@
       </script>
 
       <div class="card">
-        <h2>Bypass Lock Screen on Connect</h2>
+        <h2>Keep Screen Unlocked in Couch Mode</h2>
         <p class="muted" style="color:#e0b13c;">Security tradeoff, not a cosmetic setting: this dismisses an
-        active lock screen and disables auto-lock for the duration of couch mode. It makes physical access to this
+        active lock screen, disables auto-lock and never locks the screen for couch idle for the duration of couch mode. It makes physical access to this
         machine equivalent to being logged in while couch mode is active. Only enable this if you're comfortable
         with that on this specific machine.</p>
-        <label><input type="checkbox" name="screen_lock_enabled" {% if config.screen_lock.enabled %}checked{% endif %}> Unlock Screen and Disable Auto-Lock During Couch Mode</label>
+        <label><input type="checkbox" name="screen_lock_enabled" {% if config.screen_lock.enabled %}checked{% endif %}> Keep the Screen Unlocked While Couch Mode Is Active</label>
         <label><input type="checkbox" name="screen_lock_hold_inhibit" {% if config.screen_lock.hold_inhibit %}checked{% endif %}> Also Hold a Screensaver Inhibit for the Whole Session (recommended if enabled above)</label>
       </div>
 
@@ -344,6 +344,15 @@
 
         <label for="idle_after_s">Idle After (seconds)</label>
         <input type="number" id="idle_after_s" name="idle_after_s" min="1" step="1" value="{{ config.idle.idle_after_s|int }}">
+      </div>
+
+      <div class="card">
+        <h2>Hide Mouse Pointer</h2>
+        <p class="muted">Used by <code>mouse-hider</code> (see the lifecycle hooks above): how long the pointer must sit
+        still before it is hidden. Takes effect the next time couch mode starts.</p>
+        <label for="mouse_hider_idle_seconds">Hide After (seconds)</label>
+        <input type="number" id="mouse_hider_idle_seconds" name="mouse_hider_idle_seconds" min="1" step="1"
+               value="{{ config.mouse_hider.idle_seconds|int }}">
       </div>
 
       <div class="card">
