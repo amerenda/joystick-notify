@@ -9,6 +9,9 @@ After=graphical-session.target
 Type=notify
 NotifyAccess=main
 TimeoutStartSec=20
+# 1 (default): the pointer never reappears, mouse devices are grabbed. 0: hide
+# after [mouse_hider] idle_seconds of inactivity and show again on motion.
+Environment=MOUSE_HIDER_ALWAYS_HIDDEN=1
 ExecStart=/usr/bin/mouse-hider run
 # Whatever ends the hider (stop, crash, kill, logout), the cursor comes back.
 ExecStopPost=/usr/bin/mouse-hider restore
