@@ -349,7 +349,9 @@
       <div class="card">
         <h2>Hide Mouse Pointer</h2>
         <p class="muted">Used by <code>mouse-hider</code> (see the lifecycle hooks above): how long the pointer must sit
-        still before it is hidden. Takes effect the next time couch mode starts.</p>
+        still before it is hidden. Only used when mouse-hider's "always hidden" mode is turned off
+        (<code>MOUSE_HIDER_ALWAYS_HIDDEN=0</code> in its systemd unit; by default the pointer never comes back).
+        Takes effect the next time couch mode starts.</p>
         <label for="mouse_hider_idle_seconds">Hide After (seconds)</label>
         <input type="number" id="mouse_hider_idle_seconds" name="mouse_hider_idle_seconds" min="1" step="1"
                value="{{ config.mouse_hider.idle_seconds|int }}">

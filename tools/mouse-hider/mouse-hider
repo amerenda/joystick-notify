@@ -28,6 +28,14 @@ Safety properties (the whole point of this script):
     over from the old theme-swapping version; it works whether or not the
     hider runs.
 
+Always hidden (default): the hidecursor effect alone shows the pointer again on
+every motion, so with MOUSE_HIDER_ALWAYS_HIDDEN on (the default; set it to 0 in
+the systemd unit to go back to hide-on-idle) the hider also takes an exclusive
+evdev grab of every mouse-like input device, so no pointer motion ever reaches
+the compositor and the pointer never comes back while the hider runs. The grabs
+go with the process (stop, crash, kill). Not grabbed: Sunshine's virtual mouse
+(libvirtualhid, remote streaming input) and anything with gamepad buttons.
+
 Config: no settings of its own. The idle timeout is [mouse_hider] idle_seconds
 in joystick-notify's config.toml (~/.config/joystick-notify/), set from the
 wizard; 15 when that is absent.
@@ -66,8 +74,16 @@ BTN_MOUSE, BTN_JOYSTICK = 0x110, 0x120
 CMD_TIMEOUT_S = 8.0
 
 
+def env_flag(name: str, default: bool, environ: dict[str, str] | None = None) -> bool:
+    raw = (os.environ if environ is None else environ).get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no", "off")
+
+
 @dataclass
 class Config:
+    always_hidden: bool = True  # MOUSE_HIDER_ALWAYS_HIDDEN, set in the systemd unit
     idle_seconds: float = DEFAULT_IDLE_SECONDS
     normal_theme: str = NORMAL_THEME
     hold_seconds: float = HOLD_SECONDS
@@ -83,7 +99,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if path.exists():
         with path.open("rb") as f:
             idle = tomllib.load(f).get("mouse_hider", {}).get("idle_seconds", idle)
-    cfg = Config(idle_seconds=float(idle))
+    cfg = Config(always_hidden=env_flag("MOUSE_HIDER_ALWAYS_HIDDEN", True), idle_seconds=float(idle))
     if cfg.idle_seconds <= 0:
         raise SystemExit("mouse_hider idle_seconds must be > 0")
     return cfg
@@ -206,6 +222,70 @@ def pointer_devices() -> list:
     return found
 
 
+BTN_GAMEPAD, BTN_THUMBR = 0x130, 0x13F
+UNGRABBED_NAMES = ("libvirtualhid",)  # Sunshine's remote-input devices
+
+
+def should_grab(name: str, key_codes, has_rel_x: bool) -> bool:
+    """A mouse-like device that is not Sunshine's virtual input and not a gamepad."""
+    if not (has_rel_x or BTN_MOUSE in key_codes):
+        return False
+    if name.startswith(UNGRABBED_NAMES):
+        return False
+    return not any(BTN_GAMEPAD <= code <= BTN_THUMBR for code in key_codes)
+
+
+class PointerGrabber:
+    """Exclusive evdev grabs on mouse-like devices, so the pointer never moves.
+
+    Devices another process already grabbed (keyd takes the physical ones) fail
+    with EBUSY and are skipped; the next scan retries them.
+    """
+
+    def __init__(self) -> None:
+        self.grabbed: dict[str, object] = {}
+
+    def scan(self) -> int:
+        try:
+            import evdev
+        except ImportError:
+            return 0
+        for path in evdev.list_devices():
+            if path in self.grabbed:
+                continue
+            try:
+                dev = evdev.InputDevice(path)
+            except OSError:
+                continue
+            caps = dev.capabilities()
+            if not should_grab(dev.name, caps.get(EV_KEY, []), evdev.ecodes.REL_X in caps.get(EV_REL, [])):
+                dev.close()
+                continue
+            try:
+                dev.grab()
+            except OSError:
+                dev.close()
+                continue
+            self.grabbed[path] = dev
+            log(f"grabbed {dev.name!r} ({path})")
+        for path, dev in list(self.grabbed.items()):
+            if not os.path.exists(path):  # unplugged
+                self._drop(path)
+        return len(self.grabbed)
+
+    def _drop(self, path: str) -> None:
+        dev = self.grabbed.pop(path)
+        try:
+            dev.ungrab()
+        except OSError:
+            pass
+        dev.close()
+
+    def release(self) -> None:
+        for path in list(self.grabbed):
+            self._drop(path)
+
+
 def wait_for_pointer_activity(timeout: float) -> bool:
     """True as soon as any pointer device reports activity within `timeout`."""
     devices = pointer_devices()
@@ -239,7 +319,33 @@ def notify_ready() -> None:
         sock.sendall(b"READY=1")
 
 
+def run_loop_always_hidden(cfg: Config, stop: threading.Event) -> None:
+    """Pointer gone for good: 1s hide timeout forever, every pointer device grabbed."""
+    grabber = PointerGrabber()
+    hidden = enable_hiding(cfg, HIDE_NOW_S)
+    n = grabber.scan()
+    if hidden:
+        log(f"KWin {EFFECT} effect loaded, {n} pointer device(s) grabbed: pointer stays hidden")
+        time.sleep(SETTLE_S)
+        notify_ready()
+        log("pointer hidden, ready")
+    else:
+        log(f"FAILED to load KWin {EFFECT} effect, will retry")
+    try:
+        while not stop.wait(CHECK_S):
+            grabber.scan()  # hotplugged mice
+            if effect_loaded() is not True:
+                ok = enable_hiding(cfg, HIDE_NOW_S)
+                log(f"{EFFECT} effect was not loaded: " + ("loaded again" if ok else "FAILED to load, will retry"))
+    finally:
+        grabber.release()
+        make_visible(cfg)
+        log("stopped, cursor restored")
+
+
 def run_loop(cfg: Config, stop: threading.Event) -> None:
+    if cfg.always_hidden:
+        return run_loop_always_hidden(cfg, stop)
     # Hide on start: the shortest timeout first, idle_seconds after the first
     # motion once the hold has passed (the hider is started BEFORE the launch
     # and must keep the pointer hidden until the launched app is up).
