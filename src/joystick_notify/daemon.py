@@ -306,7 +306,11 @@ def build_hooks(
         # WITHOUT touching display/audio or leaving Mode.COUCH -- the
         # couch session stays fully set up so a reconnect resumes
         # instantly instead of redoing the whole desk->couch activation.
-        await screen_lock_actions.activate_screensaver(health)
+        # Engaging the screensaver locks the screen, which "keep the screen
+        # unlocked in couch mode" forbids -- skip it, the TV standby below
+        # still blanks the picture. Fresh from disk like _current_cec().
+        if not config_store.load(config_path).screen_lock.enabled:
+            await screen_lock_actions.activate_screensaver(health)
         cec = _current_cec()
         if cec.enabled and cec.power_off_on_teardown:
             adapter = await _cec_adapter(cec)
