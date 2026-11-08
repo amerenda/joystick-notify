@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Category": "Accessibility",
+        "Description": "Hide the mouse pointer for as long as the effect is loaded (joystick-notify couch mode)",
+        "EnabledByDefault": false,
+        "Id": "jn_hidecursor",
+        "License": "MIT",
+        "Name": "Hide Cursor (always)"
+    }
+}
