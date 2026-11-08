@@ -16,19 +16,27 @@ _loader.exec_module(mh)
 class FakeKWin:
     """Answers the qdbus6/kwriteconfig6/plasma-apply-cursortheme calls."""
 
-    def __init__(self, loaded=False, theme="breeze_cursors", load_works=True):
+    def __init__(self, loaded=False, theme="breeze_cursors", load_works=True, forced_available=False):
         self.loaded, self.theme, self.load_works = loaded, theme, load_works
+        self.forced_available, self.forced_loaded = forced_available, False
         self.calls = []
 
     def __call__(self, cmd):
         self.calls.append(cmd)
         method = cmd[3].rsplit(".", 1)[-1] if cmd[0] == "qdbus6" and len(cmd) > 3 else None
+        forced = len(cmd) > 4 and cmd[4] == mh.FORCE_EFFECT
         if method == "isEffectLoaded":
-            return 0, "true" if self.loaded else "false"
+            return 0, "true" if (self.forced_loaded if forced else self.loaded) else "false"
         if method == "loadEffect":
-            self.loaded = self.load_works
+            if forced:
+                self.forced_loaded = self.forced_available
+            else:
+                self.loaded = self.load_works
         elif method == "unloadEffect":
-            self.loaded = False
+            if forced:
+                self.forced_loaded = False
+            else:
+                self.loaded = False
         elif method == "supportInformation":
             return 0, f"Platform\nfoo\nCursor\n======\nthemeName: {self.theme}\n"
         elif cmd[0] == "plasma-apply-cursortheme":
@@ -151,8 +159,7 @@ def test_run_loop_hides_now_then_switches_to_idle_seconds_after_motion(monkeypat
     durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
     methods = [c[3].rsplit(".", 1)[-1] for c in kwin.calls if c[0] == "qdbus6" and c[2] == "/Effects"]
     assert durations == ["1", "15"]  # hide now, then the real timeout
-    assert methods == ["isEffectLoaded", "loadEffect", "reconfigureEffect", "isEffectLoaded",
-                       "reconfigureEffect", "isEffectLoaded", "unloadEffect", "isEffectLoaded"]
+    assert [m for m in methods if m != "isEffectLoaded"] == ["loadEffect", "reconfigureEffect", "reconfigureEffect", "unloadEffect"]
     assert not kwin.loaded  # stopped: effect unloaded
 
 
@@ -213,10 +220,9 @@ def test_should_grab(name, keys, rel_x, expected):
     assert mh.should_grab(name, keys, rel_x) is expected
 
 
-def test_run_loop_always_hidden_keeps_one_second_timeout_grabs_and_releases(monkeypatch):
+def _always_hidden_run(monkeypatch, kwin):
     import threading
 
-    kwin = FakeKWin()
     monkeypatch.setattr(mh, "_run", kwin)
     events = []
 
@@ -234,10 +240,27 @@ def test_run_loop_always_hidden_keeps_one_second_timeout_grabs_and_releases(monk
     waits = iter([False, True])  # one full tick, then stop
     monkeypatch.setattr(stop, "wait", lambda timeout: next(waits))
     mh.run_loop(mh.Config(always_hidden=True, idle_seconds=15), stop)
+    return events
+
+
+def test_run_loop_always_hidden_loads_jn_hidecursor_grabs_and_releases(monkeypatch):
+    kwin = FakeKWin(forced_available=True)
+    events = _always_hidden_run(monkeypatch, kwin)
+
+    loaded = [c[4] for c in kwin.calls if c[0] == "qdbus6" and c[3] == "org.kde.kwin.Effects.loadEffect"]
+    assert loaded == [mh.FORCE_EFFECT]  # the timer-based stock effect is never needed
+    assert not any(c[0] == "kwriteconfig6" for c in kwin.calls)
+    assert events == ["scan", "scan", "release"]  # at start, hotplug rescan, then released on stop
+    assert not kwin.forced_loaded and not kwin.loaded  # stopped: pointer back
+
+
+def test_run_loop_always_hidden_falls_back_to_stock_effect_when_plugin_missing(monkeypatch):
+    kwin = FakeKWin(forced_available=False)
+    events = _always_hidden_run(monkeypatch, kwin)
 
     durations = [c[-1] for c in kwin.calls if c[0] == "kwriteconfig6" and "InactivityDuration" in c]
     assert durations == ["1"]  # never relaxed to idle_seconds
-    assert events == ["scan", "scan", "release"]  # at start, hotplug rescan, then released on stop
+    assert events == ["scan", "scan", "release"]
     assert not kwin.loaded
 
 

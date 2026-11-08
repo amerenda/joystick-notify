@@ -35,6 +35,7 @@ depends=(
   'python-tomli-w'
   'python-jeepney'
   'kscreen'
+  'kwin'
   'pipewire-pulse'
   'v4l-utils'
 )
@@ -42,7 +43,7 @@ optdepends=(
   'python-pyqt6: tray icon'
   'libcec: cec-client fallback if cec-ctl/kernel CEC is unavailable'
 )
-makedepends=('python-build' 'python-installer' 'python-wheel' 'gcc')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'gcc' 'cmake' 'extra-cmake-modules' 'kwin' 'vulkan-headers')
 install=joystick-notify.install
 source=()
 sha256sums=()
@@ -55,6 +56,8 @@ build() {
   cd "$(_repo_root)"
   python -m build --wheel --no-isolation --outdir "$srcdir/dist"
   gcc -O2 -o "$srcdir/usbreset" packaging/bin/usbreset.c
+  cmake -S tools/kwin-hidecursor -B "$srcdir/kwin-hidecursor" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build "$srcdir/kwin-hidecursor"
 }
 
 package() {
@@ -73,6 +76,7 @@ package() {
   install -Dm0644 packaging/systemd/mouse-hider-restore.service "$pkgdir/usr/lib/systemd/user/mouse-hider-restore.service"
   install -Dm0644 packaging/systemd/mouse-hider.service "$pkgdir/usr/lib/systemd/user/mouse-hider.service"
   install -Dm0755 tools/mouse-hider/mouse-hider "$pkgdir/usr/bin/mouse-hider"
+  DESTDIR="$pkgdir" cmake --install "$srcdir/kwin-hidecursor"
 
   install -Dm0644 packaging/systemd-system/cec0-configure.service "$pkgdir/usr/lib/systemd/system/cec0-configure.service"
   install -Dm0644 "packaging/systemd-system/pulse8-cec-attach@.service" "$pkgdir/usr/lib/systemd/system/pulse8-cec-attach@.service"

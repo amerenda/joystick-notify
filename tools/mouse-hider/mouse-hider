@@ -59,6 +59,7 @@ DEFAULT_IDLE_SECONDS = 15.0
 NORMAL_THEME = "breeze_cursors"  # what `restore` puts back if the old transparent theme is live
 HOLD_SECONDS = 30.0  # keep the 1s hide-now timeout this long after start, motion or not
 EFFECT = "hidecursor"
+FORCE_EFFECT = "jn_hidecursor"  # tools/kwin-hidecursor: hides while loaded, no timer, no input watching
 EFFECT_GROUP = "Effect-hidecursor"
 HIDDEN_THEME = "invisible"  # the old version's transparent theme (ansible-playbooks roles/mouse-hide)
 CONFIG_PATH = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "joystick-notify" / "config.toml"
@@ -135,9 +136,9 @@ def _effects(method: str, *args: str) -> tuple[int, str]:
     return _run(["qdbus6", "org.kde.KWin", "/Effects", f"org.kde.kwin.Effects.{method}", *args])
 
 
-def effect_loaded() -> bool | None:
+def effect_loaded(name: str = EFFECT) -> bool | None:
     """None when KWin can't be asked at all."""
-    rc, out = _effects("isEffectLoaded", EFFECT)
+    rc, out = _effects("isEffectLoaded", name)
     if rc != 0:
         return None
     return out.strip().lower() == "true"
@@ -162,12 +163,20 @@ def enable_hiding(cfg: Config, duration: int | None = None) -> bool:
     return effect_loaded() is True
 
 
-def disable_hiding() -> bool:
-    """Unload the effect (KWin shows the pointer again) and VERIFY."""
-    if effect_loaded() is False:
+def enable_forced_hiding() -> bool:
+    """Load jn_hidecursor and VERIFY. False when the plugin is not installed or KWin refuses it."""
+    if effect_loaded(FORCE_EFFECT):
         return True
-    _effects("unloadEffect", EFFECT)
-    return effect_loaded() is False
+    _effects("loadEffect", FORCE_EFFECT)
+    return effect_loaded(FORCE_EFFECT) is True
+
+
+def disable_hiding() -> bool:
+    """Unload the effects (KWin shows the pointer again) and VERIFY."""
+    for name in (FORCE_EFFECT, EFFECT):
+        if effect_loaded(name) is not False:
+            _effects("unloadEffect", name)
+    return effect_loaded(FORCE_EFFECT) is not True and effect_loaded() is False
 
 
 def live_theme() -> str | None:
@@ -320,23 +329,33 @@ def notify_ready() -> None:
 
 
 def run_loop_always_hidden(cfg: Config, stop: threading.Event) -> None:
-    """Pointer gone for good: 1s hide timeout forever, every pointer device grabbed."""
+    """Pointer gone for good: jn_hidecursor loaded and every pointer device grabbed.
+
+    Without the jn_hidecursor plugin this falls back to the stock effect on its
+    1s timeout, which flashes the pointer whenever KWin itself moves it (a game
+    releasing its pointer lock), but is otherwise hidden.
+    """
     grabber = PointerGrabber()
-    hidden = enable_hiding(cfg, HIDE_NOW_S)
+    forced = enable_forced_hiding()
+    hidden = forced or enable_hiding(cfg, HIDE_NOW_S)
     n = grabber.scan()
     if hidden:
-        log(f"KWin {EFFECT} effect loaded, {n} pointer device(s) grabbed: pointer stays hidden")
+        mode = FORCE_EFFECT if forced else f"{EFFECT} (FALLBACK, {FORCE_EFFECT} unavailable: pointer flashes when KWin warps it)"
+        log(f"KWin {mode} loaded, {n} pointer device(s) grabbed: pointer stays hidden")
         time.sleep(SETTLE_S)
         notify_ready()
         log("pointer hidden, ready")
     else:
-        log(f"FAILED to load KWin {EFFECT} effect, will retry")
+        log("FAILED to load a KWin hide effect, will retry")
     try:
         while not stop.wait(CHECK_S):
             grabber.scan()  # hotplugged mice
-            if effect_loaded() is not True:
+            if forced and effect_loaded(FORCE_EFFECT) is True:
+                continue
+            forced = enable_forced_hiding()
+            if not forced and effect_loaded() is not True:
                 ok = enable_hiding(cfg, HIDE_NOW_S)
-                log(f"{EFFECT} effect was not loaded: " + ("loaded again" if ok else "FAILED to load, will retry"))
+                log("hide effect was not loaded: " + ("loaded again" if ok else "FAILED to load, will retry"))
     finally:
         grabber.release()
         make_visible(cfg)
