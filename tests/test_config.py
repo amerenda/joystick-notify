@@ -9,9 +9,9 @@ def test_missing_config_returns_defaults_unconfigured(tmp_path):
     assert cfg.configured is False
     assert cfg.cec.enabled is False
     assert cfg.wizard.bind_address == "127.0.0.1"
-    # Bypassing the lock screen is a real security tradeoff -- must
-    # default off, same treatment as CEC.
-    assert cfg.screen_lock.enabled is False
+    # Couch mode keeps the screen unlocked by default.
+    assert cfg.screen_lock.enabled is True
+    assert cfg.mouse_hider.idle_seconds == 15.0
     # Waiting for a reconnect and the idle screensaver are pure safety/
     # convenience defaults, not security tradeoffs -- on by default.
     assert cfg.idle.wait_for_game is True
