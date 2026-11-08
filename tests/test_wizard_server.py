@@ -124,7 +124,7 @@ def test_configure_get_renders_all_sections(client, monkeypatch):
         "Wizard Access", "wizard_lan_access", "wizard_bind_address", "wizard_port",
         "Controller Shortcut: Exit Couch Mode", "exit_couch_hold_seconds",
         "custom_command_name", "custom_command_value", "+ Add Command",
-        "idle_wait_for_game", "idle_screensaver_enabled", "idle_after_s",
+        "idle_wait_for_game", "idle_screensaver_enabled", "idle_after_s", "mouse_hider_idle_seconds",
         "systemd_service_name", "Restart Daemon", "API Access",
     ):
         assert needle in resp.text, f"missing from rendered page: {needle}"
@@ -785,6 +785,27 @@ def test_configure_post_unchecking_idle_toggles_saves_false(client):
     saved = config_store.load()
     assert saved.idle.wait_for_game is False
     assert saved.idle.screensaver_enabled is False
+
+
+def test_configure_post_saves_mouse_hider_idle_and_screen_lock(client):
+    client.post("/setup-password", data={"password": "longenough1", "confirm": "longenough1"})
+    auth_headers = _basic(auth_module.ADMIN_USERNAME, "longenough1")
+
+    resp = client.post(
+        "/configure",
+        headers=auth_headers,
+        data={
+            "desk_port": "", "couch_port": "", "desk_sink": "", "couch_sink": "",
+            "mouse_hider_idle_seconds": "45",
+        },
+    )
+    assert resp.status_code == 303
+
+    from joystick_notify.config import store as config_store
+
+    saved = config_store.load()
+    assert saved.mouse_hider.idle_seconds == 45.0
+    assert saved.screen_lock.enabled is False  # unchecked box is absent from the form
 
 
 def test_configure_post_saves_wizard_port(client):
