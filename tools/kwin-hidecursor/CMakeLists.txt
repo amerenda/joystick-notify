@@ -14,6 +14,8 @@ include(KDECompilerSettings NO_POLICY_SCOPE)
 find_package(KF6 REQUIRED COMPONENTS CoreAddons)
 find_package(KWin REQUIRED COMPONENTS kwineffects)
 
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 kcoreaddons_add_plugin(jn_hidecursor
     SOURCES jn_hidecursor.cpp
     INSTALL_NAMESPACE "kwin/effects/plugins")
