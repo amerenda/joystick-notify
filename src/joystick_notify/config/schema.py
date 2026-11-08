@@ -127,12 +127,22 @@ class CustomCommand:
 
 
 @dataclass
+class MouseHiderConfig:
+    # Seconds of pointer inactivity before tools/mouse-hider hides the
+    # cursor. mouse-hider reads this straight from config.toml (it has no
+    # settings file of its own), so the wizard is the only place to set it.
+    idle_seconds: float = 15.0
+
+
+@dataclass
 class ScreenLockConfig:
-    # A real security tradeoff, not a cosmetic feature: bypassing the lock
-    # screen makes physical access to the machine equivalent to being
-    # logged in. Explicit opt-in only — see actions/screen_lock.py's
-    # module docstring. Default False, same treatment CEC gets.
-    enabled: bool = False
+    # Keep the screen unlocked for the whole of couch mode: dismiss an
+    # active lock, disable auto-lock, and never engage the screensaver for
+    # couch idle (which would lock it). Default True -- nobody wants a lock
+    # screen on the TV mid-game. It is a real security tradeoff (physical
+    # access equals being logged in while couch mode is on), so the wizard
+    # says so next to the toggle. See actions/screen_lock.py.
+    enabled: bool = True
     # Also hold a ScreenSaver.Inhibit() D-Bus cookie for the whole couch
     # session, on top of disabling the config-based autolock -- the robust
     # layer for cases where the config-based disable alone doesn't hold.
@@ -236,6 +246,7 @@ class JoystickNotifyConfig:
     cec: CecConfig = field(default_factory=CecConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     idle: IdleConfig = field(default_factory=IdleConfig)
+    mouse_hider: MouseHiderConfig = field(default_factory=MouseHiderConfig)
     on_connect: ActionConfig = field(default_factory=ActionConfig)
     custom_commands: list[CustomCommand] = field(default_factory=list)
     screen_lock: ScreenLockConfig = field(default_factory=ScreenLockConfig)
