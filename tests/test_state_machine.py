@@ -1039,3 +1039,58 @@ async def test_reconcile_startup_mode_fresh_boot_inconclusive_does_not_force(tmp
     assert calls["desk"] == 0
     assert health.get("state_machine") is None
     await sm.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alive_seq,expected_mode,expected_desk", [([False], Mode.DESK, 1), ([True, True, True, True, False], Mode.DESK, 1)])
+async def test_restart_mid_couch_rearms_launch_exit_watch(tmp_path, alive_seq, expected_mode, expected_desk):
+    # 2026-11-11: daemon restarted while couch-configured (not a fresh boot);
+    # mode is corrected to COUCH, and the launched game ending (or already
+    # gone) must still tear down to desk without any controller event.
+    seq = list(alive_seq)
+
+    async def detect_live_mode():
+        return Mode.COUCH
+
+    async def is_launch_process_alive():
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    async def has_launch_target():
+        return True
+
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks(
+        detect_live_mode=detect_live_mode,
+        is_launch_process_alive=is_launch_process_alive,
+        has_launch_target=has_launch_target,
+    )
+    sm = StateMachine(hooks, health, disconnect_grace_s=10, poll_interval_s=0.01)
+    sm._fresh_boot = False
+    await sm.reconcile_startup_mode()
+    assert sm.mode == Mode.COUCH
+    for _ in range(100):
+        if sm.mode == expected_mode:
+            break
+        await asyncio.sleep(0.01)
+    assert sm.mode == expected_mode
+    assert calls["desk"] == expected_desk
+    await sm.aclose()
+
+
+@pytest.mark.asyncio
+async def test_restart_mid_couch_stays_while_game_runs(tmp_path):
+    async def detect_live_mode():
+        return Mode.COUCH
+
+    async def is_launch_process_alive():
+        return True
+
+    health = make_health(tmp_path)
+    hooks, calls = make_hooks(detect_live_mode=detect_live_mode, is_launch_process_alive=is_launch_process_alive)
+    sm = StateMachine(hooks, health, disconnect_grace_s=10, poll_interval_s=0.01)
+    sm._fresh_boot = False
+    await sm.reconcile_startup_mode()
+    await asyncio.sleep(0.1)
+    assert sm.mode == Mode.COUCH
+    assert calls["desk"] == 0
+    await sm.aclose()
