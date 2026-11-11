@@ -264,6 +264,14 @@ def build_hooks(
             await screen_lock_actions.lock(health)
         await notifications_actions.activate_desk(config.notifications, health, resources.notifications_cookie)
         resources.notifications_cookie = None
+        # After the desk display/audio switch, before the slow best-effort
+        # CEC standby: see launchers.start_steam_background().
+        if (
+            config.on_connect.steam_background
+            and config.on_connect.run == "steam-bigpicture"
+            and not config.on_connect.teardown_command
+        ):
+            await launchers.start_steam_background()
         cec = _current_cec()
         if cec.enabled and cec.power_off_on_teardown:
             adapter = await _cec_adapter(cec)
