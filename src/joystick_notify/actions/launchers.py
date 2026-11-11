@@ -282,18 +282,18 @@ async def exit_launched(preset_or_command: str, teardown_command: str = "") -> N
 
 
 async def start_steam_background() -> None:
-    """Restarts Steam silently (tray only, no window) after a couch session
+    """Restarts Steam normally (desktop client) after a couch session
     so it keeps doing background work -- Vulkan shader pre-caching above
     all -- while the desk is in use, instead of leaving it closed until
     the next couch session (when that backlog would land right before a
     game). Called by the daemon at the END of the desk teardown, after the
-    display switch: a windowless Steam has no swapchain to race the
-    modeset, but starting it after the switch keeps that whole class of
-    problem (see launch_steam_bigpicture()) out of the picture anyway.
+    display switch, so the desktop client opens on the desk display at the
+    desk mode and never has to survive a modeset (see
+    launch_steam_bigpicture()).
     """
     if _is_steam_running():
         return
-    await _run_detached(["steam", "-silent"])
+    await _run_detached(["steam"])
 
 
 async def launch(preset_or_command: str) -> None:
@@ -318,7 +318,7 @@ async def is_launch_process_alive(preset_or_command: str) -> bool:
 
 
 # Big Picture is a Steam *window*, not a process: with Steam running
-# silently in the background all the time (autostarted at login so it
+# in the background all the time (autostarted at login so it
 # can pre-cache shaders), "a steam process exists" no longer means "a
 # couch session is live". The session is the "Steam Big Picture Mode"
 # X11 window (XWayland, WM_CLASS steamwebhelper/steam -- confirmed live
@@ -391,7 +391,7 @@ async def _is_big_picture_session_alive() -> bool:
       (or BIG_PICTURE_APPEAR_TIMEOUT_S passes);
     - window seen earlier, now missing for BIG_PICTURE_GONE_POLLS polls in a
       row -> False (Big Picture was closed, even though Steam runs on);
-    - never seen and not launching -> False: a silent background Steam is
+    - never seen and not launching -> False: a background desktop Steam is
       not a session, so the startup stale-session check must not arm on it;
     - xprop unavailable -> the old process check.
     """
