@@ -262,6 +262,14 @@ class StateMachine:
                 self.mode.value, detected.value,
             )
             self.mode = detected
+            if self.mode == Mode.COUCH:
+                # A mid-session restart never re-runs the couch transition,
+                # so the owner watch it would have started is gone and
+                # nothing would notice the launched game (Big Picture)
+                # ending -- the session would sit in couch until a
+                # controller event. Confirmed live 2026-11-11. Re-arm the
+                # watch; with no owner, only its launch-exit check runs.
+                self._spawn_task("owner_watch", self._owner_watch_loop())
         self._health.ok("state_machine", f"mode={self.mode.value}")
 
     async def check_for_stale_session_at_startup(self) -> None:
