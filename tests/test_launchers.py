@@ -377,7 +377,7 @@ async def test_shutdown_steam_and_wait_logs_pid_diagnostics_on_timeout(monkeypat
 
 
 # --- Big Picture window as the session signal (2026-11-10) ---------------
-# Steam now runs silently in the background (login autostart, shader
+# Steam now runs in the background (login autostart, shader
 # pre-caching), so a steam process no longer means a couch session; the
 # "Steam Big Picture Mode" window does.
 
@@ -404,8 +404,8 @@ async def test_bp_alive_false_when_steam_not_running(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bp_silent_background_steam_is_not_a_session(monkeypatch):
-    # Startup stale-session check with only `steam -silent` running: must
+async def test_bp_background_desktop_steam_is_not_a_session(monkeypatch):
+    # Startup stale-session check with only the desktop Steam client running: must
     # not arm (would otherwise force a desk resync + TV standby later).
     launchers = _bp(monkeypatch, True, [False])
     assert await launchers.is_launch_process_alive("steam-bigpicture") is False
@@ -486,7 +486,7 @@ async def test_launch_marks_big_picture_as_starting(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_steam_background_starts_silent_only_when_not_running(monkeypatch):
+async def test_start_steam_background_starts_steam_only_when_not_running(monkeypatch):
     from joystick_notify.actions import launchers
 
     calls = []
@@ -499,4 +499,4 @@ async def test_start_steam_background_starts_silent_only_when_not_running(monkey
     await launchers.start_steam_background()
     monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)
     await launchers.start_steam_background()
-    assert calls == [["steam", "-silent"]]
+    assert calls == [["steam"]]
