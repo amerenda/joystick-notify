@@ -525,3 +525,44 @@ async def test_activate_couch_uses_display_and_audio_saved_after_startup(tmp_pat
     await hooks.activate_couch("device-1")
 
     assert seen == {"couch_port": "HDMI-A-1", "couch_sink": "hdmi-sink"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("steam_background,teardown,expected", [(True, "", 1), (False, "", 0), (True, "custom.sh", 0)])
+async def test_activate_desk_restarts_steam_in_background_when_enabled(tmp_path, monkeypatch, steam_background, teardown, expected):
+    from joystick_notify import daemon as daemon_module
+
+    order = []
+
+    async def fake_exit_launched(preset_or_command, teardown_command):
+        order.append("exit")
+
+    async def fake_start_background():
+        order.append("background")
+
+    async def fake_display_desk(*args, **kwargs):
+        order.append("display")
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.launchers, "exit_launched", fake_exit_launched)
+    monkeypatch.setattr(daemon_module.launchers, "start_steam_background", fake_start_background)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_desk", fake_display_desk)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+
+    config = JoystickNotifyConfig()
+    config.on_connect.run = "steam-bigpicture"
+    config.on_connect.teardown_command = teardown
+    config.on_connect.steam_background = steam_background
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
+    await hooks.activate_desk()
+
+    assert order.count("background") == expected
+    if expected:
+        # Steam shut down first, desk display back, then the silent restart.
+        assert order.index("exit") < order.index("display") < order.index("background")
