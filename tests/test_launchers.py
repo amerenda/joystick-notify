@@ -374,3 +374,129 @@ async def test_shutdown_steam_and_wait_logs_pid_diagnostics_on_timeout(monkeypat
     assert any("prior steam pids before -shutdown" in r.message and "111" in r.message for r in caplog.records)
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("111" in r.message and "222" in r.message for r in warnings)
+
+
+# --- Big Picture window as the session signal (2026-11-10) ---------------
+# Steam now runs silently in the background (login autostart, shader
+# pre-caching), so a steam process no longer means a couch session; the
+# "Steam Big Picture Mode" window does.
+
+
+def _bp(monkeypatch, steam_running, windows):
+    """windows: list of successive _big_picture_window_open() results."""
+    from joystick_notify.actions import launchers
+
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: steam_running)
+    seq = list(windows)
+
+    async def fake_window_open():
+        return seq.pop(0)
+
+    monkeypatch.setattr(launchers, "_big_picture_window_open", fake_window_open)
+    launchers._big_picture_state.reset()
+    return launchers
+
+
+@pytest.mark.asyncio
+async def test_bp_alive_false_when_steam_not_running(monkeypatch):
+    launchers = _bp(monkeypatch, False, [])
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is False
+
+
+@pytest.mark.asyncio
+async def test_bp_silent_background_steam_is_not_a_session(monkeypatch):
+    # Startup stale-session check with only `steam -silent` running: must
+    # not arm (would otherwise force a desk resync + TV standby later).
+    launchers = _bp(monkeypatch, True, [False])
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is False
+
+
+@pytest.mark.asyncio
+async def test_bp_window_open_is_alive(monkeypatch):
+    launchers = _bp(monkeypatch, True, [True])
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is True
+
+
+@pytest.mark.asyncio
+async def test_bp_missing_window_right_after_launch_is_still_starting(monkeypatch):
+    launchers = _bp(monkeypatch, True, [False, False])
+    launchers._big_picture_state.launched()
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is True
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is True
+
+
+@pytest.mark.asyncio
+async def test_bp_never_appears_after_launch_times_out(monkeypatch):
+    launchers = _bp(monkeypatch, True, [False])
+    launchers._big_picture_state.launched()
+    launchers._big_picture_state.launched_at -= launchers.BIG_PICTURE_APPEAR_TIMEOUT_S + 1
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is False
+
+
+@pytest.mark.asyncio
+async def test_bp_closed_after_seen_needs_consecutive_misses(monkeypatch):
+    # Seen, then one blip (window recreated), back, then closed for good
+    # while Steam keeps running -> dead only after GONE_POLLS misses in a row.
+    launchers = _bp(monkeypatch, True, [True, False, True, False, False])
+    alive = [await launchers.is_launch_process_alive("steam-bigpicture") for _ in range(5)]
+    assert alive == [True, True, True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_bp_falls_back_to_process_check_without_xprop(monkeypatch):
+    launchers = _bp(monkeypatch, True, [None])
+    assert await launchers.is_launch_process_alive("steam-bigpicture") is True
+
+
+@pytest.mark.asyncio
+async def test_bp_window_open_parses_xprop_output(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    outputs = {
+        ("xprop", "-root", "_NET_CLIENT_LIST"): (0, "_NET_CLIENT_LIST(WINDOW): window id # 0x2e00035, 0x5800001\n"),
+        ("xprop", "-id", "0x2e00035", "_NET_WM_NAME"): (0, '_NET_WM_NAME(UTF8_STRING) = "Steam Big Picture Mode"\n'),
+        ("xprop", "-id", "0x5800001", "_NET_WM_NAME"): (0, '_NET_WM_NAME(UTF8_STRING) = "Crimson Desert"\n'),
+    }
+
+    async def fake_capture(cmd):
+        return outputs[tuple(cmd)]
+
+    monkeypatch.setattr(launchers, "_run_capture", fake_capture)
+    assert await launchers._big_picture_window_open() is True
+
+    outputs[("xprop", "-root", "_NET_CLIENT_LIST")] = (0, "_NET_CLIENT_LIST(WINDOW): window id # 0x5800001\n")
+    assert await launchers._big_picture_window_open() is False
+
+    outputs[("xprop", "-root", "_NET_CLIENT_LIST")] = (1, "")
+    assert await launchers._big_picture_window_open() is None
+
+
+@pytest.mark.asyncio
+async def test_launch_marks_big_picture_as_starting(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    async def fake_run_detached(cmd):
+        return None
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: False)
+    launchers._big_picture_state.reset()
+    await launchers.launch_steam_bigpicture()
+    assert launchers._big_picture_state.launched_at is not None
+
+
+@pytest.mark.asyncio
+async def test_start_steam_background_starts_silent_only_when_not_running(monkeypatch):
+    from joystick_notify.actions import launchers
+
+    calls = []
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: False)
+    await launchers.start_steam_background()
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)
+    await launchers.start_steam_background()
+    assert calls == [["steam", "-silent"]]
