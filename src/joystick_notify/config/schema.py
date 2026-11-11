@@ -116,9 +116,9 @@ class ActionConfig:
     # or custom command.
     teardown_command: str = ""
     # steam-bigpicture preset only: after the desk teardown (Steam shut
-    # down, desk display back), restart Steam silently in the background
-    # (`steam -silent`) so it keeps pre-caching shaders while the desk is
-    # in use. Pairs with a login autostart of `steam -silent`.
+    # down, desk display back), start Steam again (`steam`, the normal
+    # desktop client) so it keeps pre-caching shaders while the desk is
+    # in use. Pairs with a login autostart of `steam`.
     steam_background: bool = False
 
 
