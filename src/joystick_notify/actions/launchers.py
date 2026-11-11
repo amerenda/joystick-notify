@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import time
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -241,6 +243,7 @@ async def launch_steam_bigpicture() -> None:
     switch -- reliable > fast, matching launch_startup_grace_s already
     tolerating a slower cold boot.
     """
+    _big_picture_state.launched()
     if _is_steam_running():
         await _shutdown_steam_and_wait()
     await _run_detached(["steam", "-gamepadui"])
@@ -272,8 +275,25 @@ async def exit_launched(preset_or_command: str, teardown_command: str = "") -> N
     if teardown_command:
         await run_custom_command(teardown_command)
         return
-    if preset_or_command == "steam-bigpicture" and _is_steam_running():
-        await _shutdown_steam_and_wait()
+    if preset_or_command == "steam-bigpicture":
+        _big_picture_state.reset()
+        if _is_steam_running():
+            await _shutdown_steam_and_wait()
+
+
+async def start_steam_background() -> None:
+    """Restarts Steam silently (tray only, no window) after a couch session
+    so it keeps doing background work -- Vulkan shader pre-caching above
+    all -- while the desk is in use, instead of leaving it closed until
+    the next couch session (when that backlog would land right before a
+    game). Called by the daemon at the END of the desk teardown, after the
+    display switch: a windowless Steam has no swapchain to race the
+    modeset, but starting it after the switch keeps that whole class of
+    problem (see launch_steam_bigpicture()) out of the picture anyway.
+    """
+    if _is_steam_running():
+        return
+    await _run_detached(["steam", "-silent"])
 
 
 async def launch(preset_or_command: str) -> None:
@@ -293,5 +313,114 @@ async def is_launch_process_alive(preset_or_command: str) -> bool:
     teardown for something we simply don't know how to check).
     """
     if preset_or_command == "steam-bigpicture":
-        return _is_steam_running()
+        return await _is_big_picture_session_alive()
     return True
+
+
+# Big Picture is a Steam *window*, not a process: with Steam running
+# silently in the background all the time (autostarted at login so it
+# can pre-cache shaders), "a steam process exists" no longer means "a
+# couch session is live". The session is the "Steam Big Picture Mode"
+# X11 window (XWayland, WM_CLASS steamwebhelper/steam -- confirmed live
+# 2026-11-10 on archlinux, and it stays listed while a game runs on top
+# of it). Leaving Big Picture keeps Steam itself running, so only the
+# window tells the two apart.
+BIG_PICTURE_WINDOW_TITLE = "Steam Big Picture Mode"
+# A launch shuts down any running Steam (up to STEAM_SHUTDOWN_TIMEOUT_S)
+# and cold-starts Big Picture; until its window has been seen once, a
+# missing window means "still starting", not "closed".
+BIG_PICTURE_APPEAR_TIMEOUT_S = 240.0
+# Consecutive missing-window polls (after it was seen) before Big Picture
+# counts as closed -- rides out a window being recreated.
+BIG_PICTURE_GONE_POLLS = 2
+XPROP_TIMEOUT_S = 3.0
+
+
+class _BigPictureState:
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.launched_at: float | None = None
+        self.seen = False
+        self.misses = 0
+
+    def launched(self) -> None:
+        self.reset()
+        self.launched_at = time.monotonic()
+
+
+_big_picture_state = _BigPictureState()
+
+
+async def _run_capture(cmd: list[str]) -> tuple[int, str] | None:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+    except OSError:
+        return None
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), XPROP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return None
+    return proc.returncode, out.decode(errors="replace")
+
+
+async def _big_picture_window_open() -> bool | None:
+    """True/False from the X11 client list; None when xprop can't answer
+    (not installed, no X connection) -- callers fall back to the process
+    check rather than guessing."""
+    root = await _run_capture(["xprop", "-root", "_NET_CLIENT_LIST"])
+    if root is None or root[0] != 0:
+        return None
+    for wid in re.findall(r"0x[0-9a-fA-F]+", root[1].partition("#")[2]):
+        res = await _run_capture(["xprop", "-id", wid, "_NET_WM_NAME"])
+        if res is not None and res[0] == 0 and f'"{BIG_PICTURE_WINDOW_TITLE}"' in res[1]:
+            return True
+    return False
+
+
+async def _is_big_picture_session_alive() -> bool:
+    """A couch session launched as steam-bigpicture is alive while the Big
+    Picture window is open:
+    - no Steam process at all -> False (as before);
+    - window open -> True;
+    - window missing right after a launch -> True until it first appears
+      (or BIG_PICTURE_APPEAR_TIMEOUT_S passes);
+    - window seen earlier, now missing for BIG_PICTURE_GONE_POLLS polls in a
+      row -> False (Big Picture was closed, even though Steam runs on);
+    - never seen and not launching -> False: a silent background Steam is
+      not a session, so the startup stale-session check must not arm on it;
+    - xprop unavailable -> the old process check.
+    """
+    state = _big_picture_state
+    if not _is_steam_running():
+        state.reset()
+        return False
+    window = await _big_picture_window_open()
+    if window is None:
+        return True
+    if window:
+        state.seen = True
+        state.misses = 0
+        state.launched_at = None
+        return True
+    if state.launched_at is not None and not state.seen:
+        if time.monotonic() - state.launched_at < BIG_PICTURE_APPEAR_TIMEOUT_S:
+            return True
+        logger.warning(
+            "launchers: no %r window %.0fs after launch -- treating Big Picture as closed",
+            BIG_PICTURE_WINDOW_TITLE, BIG_PICTURE_APPEAR_TIMEOUT_S,
+        )
+        state.reset()
+        return False
+    if state.seen:
+        state.misses += 1
+        if state.misses < BIG_PICTURE_GONE_POLLS:
+            return True
+        logger.info("launchers: %r window gone -- Big Picture closed", BIG_PICTURE_WINDOW_TITLE)
+        state.reset()
+        return False
+    return False
