@@ -564,5 +564,5 @@ async def test_activate_desk_restarts_steam_in_background_when_enabled(tmp_path,
 
     assert order.count("background") == expected
     if expected:
-        # Steam shut down first, desk display back, then the silent restart.
+        # Steam shut down first, desk display back, then the restart.
         assert order.index("exit") < order.index("display") < order.index("background")
