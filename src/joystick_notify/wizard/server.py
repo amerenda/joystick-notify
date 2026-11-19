@@ -262,9 +262,13 @@ async def api_exit_steam_bigpicture(request: Request):
     directly -- the exact same nice-exit path (`steam -shutdown`, already
     PID-tracked to avoid the launch race) the desk/couch mode-switch
     teardown already calls, so there's exactly one place that knows how
-    to shut Big Picture down cleanly.
+    to shut Big Picture down cleanly. With on_connect.steam_background set,
+    that path closes only the Big Picture window and leaves Steam running.
     """
-    await launchers.exit_launched("steam-bigpicture")
+    config = config_store.load()
+    await launchers.exit_launched(
+        "steam-bigpicture", steam_background=config.on_connect.steam_background
+    )
     return JSONResponse({"ok": True})
 
 
