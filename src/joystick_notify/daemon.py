@@ -245,7 +245,11 @@ def build_hooks(
         # root cause. Getting rid of it before the desk resolution switch
         # avoids the same race in the other direction.
         if config.on_connect.run or config.on_connect.teardown_command:
-            await launchers.exit_launched(config.on_connect.run, config.on_connect.teardown_command)
+            await launchers.exit_launched(
+                config.on_connect.run,
+                config.on_connect.teardown_command,
+                steam_background=config.on_connect.steam_background,
+            )
         # Display/audio/screen-lock FIRST, CEC standby LAST: CEC standby is
         # best-effort and can legitimately take a long time (up to
         # standby_verify_attempts * standby_verify_delay_s *PER TARGET* --
