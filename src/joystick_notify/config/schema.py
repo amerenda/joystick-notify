@@ -118,7 +118,9 @@ class ActionConfig:
     # steam-bigpicture preset only: after the desk teardown (Steam shut
     # down, desk display back), start Steam again (`steam`, the normal
     # desktop client) so it keeps pre-caching shaders while the desk is
-    # in use. Pairs with a login autostart of `steam`.
+    # in use. Pairs with a login autostart of `steam`. With this set, the
+    # desk teardown never runs `steam -shutdown`: it only closes the Big
+    # Picture window (launchers.close_big_picture()).
     steam_background: bool = False
 
 
