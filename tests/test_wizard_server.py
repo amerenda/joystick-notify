@@ -1352,8 +1352,8 @@ def test_api_exit_steam_bigpicture_calls_exit_launched(isolated_config, monkeypa
 
     calls = []
 
-    async def fake_exit_launched(preset_or_command, teardown_command=""):
-        calls.append((preset_or_command, teardown_command))
+    async def fake_exit_launched(preset_or_command, teardown_command="", *, steam_background=False):
+        calls.append((preset_or_command, teardown_command, steam_background))
 
     monkeypatch.setattr(server_module.launchers, "exit_launched", fake_exit_launched)
 
@@ -1366,7 +1366,18 @@ def test_api_exit_steam_bigpicture_calls_exit_launched(isolated_config, monkeypa
     resp = client.post("/api/exit/steam-bigpicture", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
-    assert calls == [("steam-bigpicture", "")]
+    assert calls == [("steam-bigpicture", "", False)]
+
+    # on_connect.steam_background reaches exit_launched (close Big Picture only).
+    from joystick_notify.config import store as config_store
+
+    config = config_store.load()
+    config.on_connect.steam_background = True
+    config_store.save(config)
+    calls.clear()
+    resp = client.post("/api/exit/steam-bigpicture", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert calls == [("steam-bigpicture", "", True)]
 
 
 def test_api_exit_steam_bigpicture_bearer_token_scoped_correctly(isolated_config):

@@ -500,3 +500,76 @@ async def test_start_steam_background_starts_steam_only_when_not_running(monkeyp
     monkeypatch.setattr(launchers, "_is_steam_running", lambda: True)
     await launchers.start_steam_background()
     assert calls == [["steam"]]
+
+
+def _close_bp(monkeypatch, windows, steam_running=True):
+    """close_big_picture() harness: `windows` is the sequence of
+    _big_picture_window_open() answers; records detached commands and
+    -shutdown waits."""
+    from joystick_notify.actions import launchers
+
+    calls = []
+    answers = list(windows)
+
+    async def fake_window_open():
+        # Last answer repeats once the sequence is used up.
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    async def fake_run_detached(cmd):
+        calls.append(cmd)
+
+    async def fake_shutdown():
+        calls.append("shutdown-wait")
+
+    monkeypatch.setattr(launchers, "_is_steam_running", lambda: steam_running)
+    monkeypatch.setattr(launchers, "_big_picture_window_open", fake_window_open)
+    monkeypatch.setattr(launchers, "_run_detached", fake_run_detached)
+    monkeypatch.setattr(launchers, "_shutdown_steam_and_wait", fake_shutdown)
+    return launchers, calls
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_steam_background_never_shuts_down_when_bp_already_closed(monkeypatch):
+    # The 2026-11-18 case: the teardown starts because Big Picture closed;
+    # Steam (desktop client) must not get -shutdown, nothing is awaited.
+    launchers, calls = _close_bp(monkeypatch, [False])
+    await launchers.exit_launched("steam-bigpicture", steam_background=True)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_steam_background_closes_open_bp_window(monkeypatch):
+    # Desk Mode button with Big Picture still open: close the window only.
+    launchers, calls = _close_bp(monkeypatch, [True, True, False])
+    await launchers.close_big_picture(timeout_s=5, poll_s=0)
+    assert calls == [["steam", "steam://close/bigpicture"]]
+
+
+@pytest.mark.asyncio
+async def test_close_big_picture_falls_back_to_shutdown_when_window_stays(monkeypatch, caplog):
+    launchers, calls = _close_bp(monkeypatch, [True])
+    with caplog.at_level("WARNING"):
+        await launchers.close_big_picture(timeout_s=0.01, poll_s=0)
+    assert calls == [["steam", "steam://close/bigpicture"], "shutdown-wait"]
+    assert any("still open" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_close_big_picture_falls_back_to_shutdown_without_xprop(monkeypatch):
+    launchers, calls = _close_bp(monkeypatch, [None])
+    await launchers.close_big_picture(timeout_s=1, poll_s=0)
+    assert calls == ["shutdown-wait"]
+
+
+@pytest.mark.asyncio
+async def test_close_big_picture_noop_when_steam_not_running(monkeypatch):
+    launchers, calls = _close_bp(monkeypatch, [True], steam_running=False)
+    await launchers.close_big_picture(timeout_s=1, poll_s=0)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_exit_launched_without_steam_background_still_shuts_down(monkeypatch):
+    launchers, calls = _close_bp(monkeypatch, [False])
+    await launchers.exit_launched("steam-bigpicture")
+    assert calls == ["shutdown-wait"]

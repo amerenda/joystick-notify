@@ -258,7 +258,9 @@ async def run_custom_command(command: str) -> None:
     await _run_detached(["/bin/sh", "-c", command])
 
 
-async def exit_launched(preset_or_command: str, teardown_command: str = "") -> None:
+async def exit_launched(
+    preset_or_command: str, teardown_command: str = "", *, steam_background: bool = False
+) -> None:
     """Desk-mode teardown counterpart to launch() -- Sunshine-style paired
     command, not a fixed on/off switch: `teardown_command` is arbitrary,
     user-supplied, and always wins when set, for any preset or custom
@@ -271,14 +273,73 @@ async def exit_launched(preset_or_command: str, teardown_command: str = "") -> N
     set) intentionally does nothing -- leaving it running across the
     desk<->couch cycle is a valid, explicit choice, not a gap to warn
     about.
+
+    `steam_background` (on_connect.steam_background): Steam stays
+    running after the couch session, so the teardown only closes the Big
+    Picture window (close_big_picture()) and never waits on `-shutdown`.
+    Root-caused live 2026-11-18: after a 40 s session the `-shutdown`
+    wait took 99 s, and the TV stayed on for all of it, because the
+    display switch runs only after this returns.
     """
     if teardown_command:
         await run_custom_command(teardown_command)
         return
     if preset_or_command == "steam-bigpicture":
         _big_picture_state.reset()
+        if steam_background:
+            await close_big_picture()
+            return
         if _is_steam_running():
             await _shutdown_steam_and_wait()
+
+
+# Upper limit for the Big Picture window to close after
+# `steam://close/bigpicture`. After it, close_big_picture() falls back to
+# the full `-shutdown` wait: the window must be gone before the desk
+# display switch (2026-08-22 HDMI signal loss, see
+# launch_steam_bigpicture()).
+BIG_PICTURE_CLOSE_TIMEOUT_S = 15.0
+BIG_PICTURE_CLOSE_POLL_S = 0.5
+
+
+async def close_big_picture(
+    timeout_s: float = BIG_PICTURE_CLOSE_TIMEOUT_S, poll_s: float = BIG_PICTURE_CLOSE_POLL_S
+) -> None:
+    """Closes only the Big Picture window and leaves Steam running as the
+    desktop client (on_connect.steam_background):
+    - Steam not running, or the window already gone (the normal case: the
+      teardown started because Big Picture closed) -> returns at once;
+    - window open (Desk Mode button, exit shortcut, power-off, Sunshine
+      stop) -> `steam steam://close/bigpicture`, then waits for the window
+      to go;
+    - xprop can't answer, or the window is still open after `timeout_s`
+      -> the old `-shutdown` wait, so a fullscreen Big Picture never sees
+      the desk modeset.
+    """
+    if not _is_steam_running():
+        return
+    window = await _big_picture_window_open()
+    if window is False:
+        logger.info("launchers: Big Picture already closed -- leaving Steam running")
+        return
+    if window is None:
+        logger.warning("launchers: can't see the Big Picture window (xprop) -- falling back to steam -shutdown")
+        await _shutdown_steam_and_wait()
+        return
+    await _run_detached(["steam", "steam://close/bigpicture"])
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        await asyncio.sleep(poll_s)
+        if not _is_steam_running():
+            return
+        if await _big_picture_window_open() is False:
+            logger.info("launchers: Big Picture closed -- leaving Steam running")
+            return
+    logger.warning(
+        "launchers: Big Picture still open %.0fs after steam://close/bigpicture -- falling back to steam -shutdown",
+        timeout_s,
+    )
+    await _shutdown_steam_and_wait()
 
 
 async def start_steam_background() -> None:

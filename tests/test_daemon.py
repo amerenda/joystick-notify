@@ -155,7 +155,7 @@ async def test_activate_desk_exits_launched_process_via_builtin_default(tmp_path
 
     exit_calls = []
 
-    async def fake_exit_launched(preset_or_command, teardown_command):
+    async def fake_exit_launched(preset_or_command, teardown_command, **kwargs):
         exit_calls.append((preset_or_command, teardown_command))
 
     async def _noop(*args, **kwargs):
@@ -183,7 +183,7 @@ async def test_activate_desk_uses_custom_teardown_command_when_set(tmp_path, mon
 
     exit_calls = []
 
-    async def fake_exit_launched(preset_or_command, teardown_command):
+    async def fake_exit_launched(preset_or_command, teardown_command, **kwargs):
         exit_calls.append((preset_or_command, teardown_command))
 
     async def _noop(*args, **kwargs):
@@ -212,7 +212,7 @@ async def test_activate_desk_skips_exit_launched_when_nothing_configured(tmp_pat
 
     exit_calls = []
 
-    async def fake_exit_launched(preset_or_command, teardown_command):
+    async def fake_exit_launched(preset_or_command, teardown_command, **kwargs):
         exit_calls.append((preset_or_command, teardown_command))
 
     async def _noop(*args, **kwargs):
@@ -534,7 +534,7 @@ async def test_activate_desk_restarts_steam_in_background_when_enabled(tmp_path,
 
     order = []
 
-    async def fake_exit_launched(preset_or_command, teardown_command):
+    async def fake_exit_launched(preset_or_command, teardown_command, **kwargs):
         order.append("exit")
 
     async def fake_start_background():
@@ -566,3 +566,34 @@ async def test_activate_desk_restarts_steam_in_background_when_enabled(tmp_path,
     if expected:
         # Steam shut down first, desk display back, then the restart.
         assert order.index("exit") < order.index("display") < order.index("background")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("steam_background", [True, False])
+async def test_activate_desk_passes_steam_background_to_exit_launched(tmp_path, monkeypatch, steam_background):
+    from joystick_notify import daemon as daemon_module
+
+    seen = []
+
+    async def fake_exit_launched(preset_or_command, teardown_command, **kwargs):
+        seen.append(kwargs.get("steam_background"))
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(daemon_module.launchers, "exit_launched", fake_exit_launched)
+    monkeypatch.setattr(daemon_module.launchers, "start_steam_background", _noop)
+    monkeypatch.setattr(daemon_module.display_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.audio_actions, "activate_desk", _noop)
+    monkeypatch.setattr(daemon_module.screen_lock_actions, "activate_desk", _noop)
+
+    config = JoystickNotifyConfig()
+    config.on_connect.run = "steam-bigpicture"
+    config.on_connect.steam_background = steam_background
+    health = Health(path=Path(tmp_path) / "health.json")
+    watcher = ManualExitWatcher(lambda: None, health)
+
+    hooks = build_hooks(config, health, watcher, tmp_path / "config.toml")
+    await hooks.activate_desk()
+
+    assert seen == [steam_background]
